@@ -1,0 +1,221 @@
+export interface PointerClick {
+  x: number;
+  y: number;
+  button: number;
+  touch: boolean;
+}
+
+interface TouchTrack {
+  id: number;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  t0: number;
+  moved: boolean;
+}
+
+/**
+ * Unified keyboard / mouse / touch input. Touch gets a floating joystick on the left half
+ * of the screen, tap-to-click everywhere else and two-finger pinch zoom.
+ */
+export class Input {
+  readonly keys = new Set<string>();
+  private pressed = new Set<string>();
+  readonly pointer = { x: 0, y: 0, over: false, moved: false };
+  primaryDown = false;
+  clicks: PointerClick[] = [];
+  rightClicks = 0;
+  wheel = 0;
+  pinch = 1;
+  lastPointerType: string = 'mouse';
+  readonly joy = { active: false, x: 0, y: 0, originX: 0, originY: 0, curX: 0, curY: 0 };
+  /** When false the joystick zone is disabled (e.g. menus open). */
+  joystickEnabled = true;
+
+  private joyId: number | null = null;
+  private touches = new Map<number, TouchTrack>();
+  private pinchDist = 0;
+  private mouseDown: { x: number; y: number; t0: number; button: number } | null = null;
+  private suppressTap = false;
+
+  constructor(private canvas: HTMLElement) {
+    window.addEventListener('keydown', (e) => this.onKey(e, true));
+    window.addEventListener('keyup', (e) => this.onKey(e, false));
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this.primaryDown = false;
+      this.endJoystick();
+    });
+    canvas.addEventListener('pointerdown', (e) => this.onDown(e));
+    window.addEventListener('pointermove', (e) => this.onMove(e));
+    window.addEventListener('pointerup', (e) => this.onUp(e));
+    window.addEventListener('pointercancel', (e) => this.onUp(e, true));
+    canvas.addEventListener('pointerleave', () => {
+      this.pointer.over = false;
+    });
+    canvas.addEventListener('pointerenter', () => {
+      this.pointer.over = true;
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1;
+        this.wheel += e.deltaY * scale;
+      },
+      { passive: false },
+    );
+  }
+
+  get isTouch(): boolean {
+    return this.lastPointerType === 'touch';
+  }
+
+  down(code: string): boolean {
+    return this.keys.has(code);
+  }
+
+  /** True only on the frame the key went down. */
+  hit(code: string): boolean {
+    return this.pressed.has(code);
+  }
+
+  endFrame(): void {
+    this.pressed.clear();
+    this.clicks.length = 0;
+    this.rightClicks = 0;
+    this.wheel = 0;
+    this.pinch = 1;
+    this.pointer.moved = false;
+  }
+
+  private onKey(e: KeyboardEvent, isDown: boolean): void {
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) {
+      return;
+    }
+    if (isDown) {
+      if (!this.keys.has(e.code)) this.pressed.add(e.code);
+      this.keys.add(e.code);
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    } else {
+      this.keys.delete(e.code);
+    }
+  }
+
+  private localPos(e: PointerEvent): { x: number; y: number } {
+    const r = this.canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  private onDown(e: PointerEvent): void {
+    this.lastPointerType = e.pointerType;
+    const p = this.localPos(e);
+    this.pointer.x = p.x;
+    this.pointer.y = p.y;
+    this.pointer.over = true;
+    if (e.pointerType === 'touch') {
+      e.preventDefault();
+      const r = this.canvas.getBoundingClientRect();
+      const inJoyZone = p.x < r.width * 0.42 && p.y > r.height * 0.3;
+      if (this.joystickEnabled && this.joyId === null && inJoyZone) {
+        this.joyId = e.pointerId;
+        this.joy.active = true;
+        this.joy.originX = e.clientX;
+        this.joy.originY = e.clientY;
+        this.joy.curX = e.clientX;
+        this.joy.curY = e.clientY;
+        this.joy.x = 0;
+        this.joy.y = 0;
+        return;
+      }
+      this.touches.set(e.pointerId, { id: e.pointerId, startX: p.x, startY: p.y, x: p.x, y: p.y, t0: performance.now(), moved: false });
+      if (this.touches.size === 1) {
+        this.primaryDown = true;
+        this.suppressTap = false;
+      } else if (this.touches.size === 2) {
+        this.primaryDown = false;
+        this.suppressTap = true;
+        const [a, b] = [...this.touches.values()];
+        this.pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+      }
+      return;
+    }
+    this.mouseDown = { x: p.x, y: p.y, t0: performance.now(), button: e.button };
+    if (e.button === 0) this.primaryDown = true;
+    if (e.button === 2) this.rightClicks++;
+  }
+
+  private onMove(e: PointerEvent): void {
+    if (e.pointerId === this.joyId) {
+      const dx = e.clientX - this.joy.originX;
+      const dy = e.clientY - this.joy.originY;
+      const max = 55;
+      const len = Math.hypot(dx, dy);
+      const k = len > max ? max / len : 1;
+      this.joy.curX = this.joy.originX + dx * k;
+      this.joy.curY = this.joy.originY + dy * k;
+      this.joy.x = (dx * k) / max;
+      this.joy.y = (dy * k) / max;
+      return;
+    }
+    const p = this.localPos(e);
+    const track = this.touches.get(e.pointerId);
+    if (track) {
+      track.x = p.x;
+      track.y = p.y;
+      if (Math.hypot(p.x - track.startX, p.y - track.startY) > 12) track.moved = true;
+      if (this.touches.size >= 2) {
+        const [a, b] = [...this.touches.values()];
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (this.pinchDist > 0 && d > 0) this.pinch *= this.pinchDist / d;
+        this.pinchDist = d;
+        return;
+      }
+    }
+    if (e.pointerType !== 'touch') this.lastPointerType = e.pointerType;
+    this.pointer.x = p.x;
+    this.pointer.y = p.y;
+    this.pointer.moved = true;
+  }
+
+  private onUp(e: PointerEvent, cancelled = false): void {
+    if (e.pointerId === this.joyId) {
+      this.endJoystick();
+      return;
+    }
+    const track = this.touches.get(e.pointerId);
+    if (track) {
+      this.touches.delete(e.pointerId);
+      const quick = performance.now() - track.t0 < 450;
+      if (!cancelled && !track.moved && quick && !this.suppressTap) {
+        this.clicks.push({ x: track.x, y: track.y, button: 0, touch: true });
+      }
+      if (this.touches.size === 0) {
+        this.primaryDown = false;
+        this.suppressTap = false;
+        this.pinchDist = 0;
+      }
+      return;
+    }
+    if (this.mouseDown) {
+      const p = this.localPos(e);
+      const moved = Math.hypot(p.x - this.mouseDown.x, p.y - this.mouseDown.y);
+      const onCanvas = e.target === this.canvas;
+      if (!cancelled && moved < 8 && this.mouseDown.button === 0 && onCanvas) {
+        this.clicks.push({ x: p.x, y: p.y, button: 0, touch: false });
+      }
+      if (this.mouseDown.button === 0) this.primaryDown = false;
+      this.mouseDown = null;
+    }
+  }
+
+  private endJoystick(): void {
+    this.joyId = null;
+    this.joy.active = false;
+    this.joy.x = 0;
+    this.joy.y = 0;
+  }
+}

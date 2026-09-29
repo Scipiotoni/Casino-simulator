@@ -1,0 +1,395 @@
+import { ROULETTE_ORDER, WHEEL_SEGMENTS, rouletteColor } from '../render/textures';
+import type { Card, Outcome, SharedVisual, Tier } from './types';
+
+/**
+ * Pure game rules. Every game resolves to an Outcome with a payout; the house edge comes
+ * from each machine's RTP so the casino profits over time while players still see wins.
+ */
+
+// Reel symbol indices (see REEL_SYMBOLS): 0 seven, 1 cherry, 2 bar, 3 lemon, 4 bell, 5 grape, 6 diamond, 7 star
+const SEVEN = 0;
+const CHERRY = 1;
+const SYMBOL_COUNT = 8;
+
+interface SlotLine {
+  kind: 'three' | 'two' | 'one';
+  sym: number;
+  p: number;
+  mult: number;
+  label: string;
+}
+
+export const SLOT_TABLE: SlotLine[] = [
+  { kind: 'three', sym: SEVEN, p: 0.001, mult: 100, label: 'TRIPLE 7s!' },
+  { kind: 'three', sym: 6, p: 0.0025, mult: 40, label: 'Diamonds!' },
+  { kind: 'three', sym: 7, p: 0.004, mult: 20, label: 'Triple stars!' },
+  { kind: 'three', sym: 2, p: 0.006, mult: 12, label: 'Triple BAR!' },
+  { kind: 'three', sym: 4, p: 0.01, mult: 8, label: 'Bells!' },
+  { kind: 'three', sym: 5, p: 0.016, mult: 5, label: 'Grapes!' },
+  { kind: 'three', sym: 3, p: 0.03, mult: 3, label: 'Lemons!' },
+  { kind: 'three', sym: CHERRY, p: 0.02, mult: 4, label: 'Cherries!' },
+  { kind: 'two', sym: CHERRY, p: 0.05, mult: 2, label: 'Two cherries' },
+  { kind: 'one', sym: CHERRY, p: 0.13, mult: 1, label: 'Cherry' },
+];
+
+export const SLOT_BASE_RTP = SLOT_TABLE.reduce((a, l) => a + l.p * l.mult, 0);
+
+function randSym(exclude: number[] = []): number {
+  for (;;) {
+    const s = Math.floor(Math.random() * SYMBOL_COUNT);
+    if (!exclude.includes(s)) return s;
+  }
+}
+
+export function tierFor(mult: number): Tier {
+  if (mult <= 0) return 'lose';
+  if (mult < 1.01) return 'push';
+  if (mult >= 10) return 'big';
+  return 'win';
+}
+
+export function resolveSlot(bet: number, rtp: number, cheat: boolean, jackpotPot = 0): Outcome {
+  const scale = (rtp / SLOT_BASE_RTP) * (cheat ? 2.4 : 1);
+  let r = Math.random();
+  for (const line of SLOT_TABLE) {
+    const p = line.p * scale;
+    if (r < p) {
+      let symbols: [number, number, number];
+      if (line.kind === 'three') symbols = [line.sym, line.sym, line.sym];
+      else if (line.kind === 'two') symbols = [CHERRY, CHERRY, randSym([CHERRY])];
+      else {
+        const b = randSym([CHERRY]);
+        symbols = [CHERRY, b, randSym([CHERRY])];
+      }
+      const isSeven = line.kind === 'three' && line.sym === SEVEN;
+      if (isSeven && jackpotPot > 0) {
+        return { bet, payout: Math.round(jackpotPot), label: 'MEGA JACKPOT!', tier: 'jackpot', visual: { kind: 'slot', symbols } };
+      }
+      const payout = Math.round(bet * line.mult);
+      return { bet, payout, label: line.label, tier: isSeven ? 'jackpot' : tierFor(line.mult), visual: { kind: 'slot', symbols } };
+    }
+    r -= p;
+  }
+  // Loss. Sometimes show a teasing near miss.
+  let symbols: [number, number, number];
+  if (Math.random() < 0.14) {
+    const s = Math.random() < 0.6 ? SEVEN : 6;
+    symbols = [s, s, randSym([s, CHERRY])];
+  } else {
+    const a = randSym([CHERRY]);
+    const b = randSym();
+    const c = a === b ? randSym([a]) : randSym();
+    symbols = [a, b, c];
+  }
+  return { bet, payout: 0, label: 'No luck', tier: 'lose', visual: { kind: 'slot', symbols } };
+}
+
+export function resolveClaw(bet: number, cheat: boolean): Outcome {
+  const win = Math.random() < (cheat ? 0.6 : 0.2);
+  return { bet, payout: 0, label: win ? 'Got a plushie!' : 'So close...', tier: win ? 'win' : 'lose', visual: { kind: 'claw', win } };
+}
+
+const PACHINKO_TABLE = [
+  { mult: 40, p: 0.003, label: 'FEVER MODE!!' },
+  { mult: 10, p: 0.015, label: 'Big hit!' },
+  { mult: 4, p: 0.05, label: 'Hit!' },
+  { mult: 2, p: 0.1, label: 'Nice!' },
+  { mult: 1, p: 0.18, label: 'Break even' },
+];
+const PACHINKO_BASE = PACHINKO_TABLE.reduce((a, l) => a + l.p * l.mult, 0);
+
+export function resolvePachinko(bet: number, rtp: number, cheat: boolean): Outcome {
+  const scale = (rtp / PACHINKO_BASE) * (cheat ? 2.2 : 1);
+  let r = Math.random();
+  for (const l of PACHINKO_TABLE) {
+    const p = l.p * scale;
+    if (r < p) {
+      return { bet, payout: Math.round(bet * l.mult), label: l.label, tier: l.mult >= 40 ? 'jackpot' : tierFor(l.mult), visual: { kind: 'pachinko', mult: l.mult } };
+    }
+    r -= p;
+  }
+  return { bet, payout: 0, label: 'Balls lost', tier: 'lose', visual: { kind: 'pachinko', mult: 0 } };
+}
+
+// ------------------------------------------------------------------ roulette
+
+export type RouletteBet = { kind: 'color'; color: 'red' | 'black' } | { kind: 'dozen'; dozen: number } | { kind: 'straight'; number: number };
+
+export function pickRouletteBet(risk: number): RouletteBet {
+  const r = Math.random();
+  if (r < 0.55 - risk * 0.2) return { kind: 'color', color: Math.random() < 0.5 ? 'red' : 'black' };
+  if (r < 0.82 - risk * 0.2) return { kind: 'dozen', dozen: Math.floor(Math.random() * 3) };
+  return { kind: 'straight', number: 1 + Math.floor(Math.random() * 36) };
+}
+
+/** Draw the winning pocket; the zero is weighted so every bet type returns `rtp`. */
+export function spinRoulette(rtp: number): number {
+  const zeroP = Math.max(1 / 37, 1 - rtp);
+  if (Math.random() < zeroP) return 0;
+  return 1 + Math.floor(Math.random() * 36);
+}
+
+export function resolveRouletteBet(bet: number, rb: RouletteBet, number: number, cheat: boolean): Outcome {
+  let win = false;
+  let mult = 0;
+  let label = '';
+  const col = rouletteColor(number);
+  const numLabel = `${col === 'green' ? 'Green' : col === 'red' ? 'Red' : 'Black'} ${number}`;
+  if (rb.kind === 'color') {
+    win = col === rb.color;
+    mult = 2;
+    label = win ? `${numLabel}!` : numLabel;
+  } else if (rb.kind === 'dozen') {
+    win = number > 0 && Math.floor((number - 1) / 12) === rb.dozen;
+    mult = 3;
+    label = win ? `${['1st', '2nd', '3rd'][rb.dozen]} dozen hits!` : numLabel;
+  } else {
+    win = number === rb.number;
+    mult = 36;
+    label = win ? `Straight up ${number}!!` : numLabel;
+  }
+  if (!win && cheat && Math.random() < 0.35) {
+    win = true;
+    label = 'Lucky push...';
+    mult = rb.kind === 'straight' ? 8 : mult;
+  }
+  const betLabel = rb.kind === 'color' ? rb.color : rb.kind === 'dozen' ? `dozen ${rb.dozen + 1}` : `#${rb.number}`;
+  return {
+    bet,
+    payout: win ? Math.round(bet * mult) : 0,
+    label,
+    tier: win ? tierFor(mult) : 'lose',
+    visual: { kind: 'roulette', number, bet: betLabel },
+  };
+}
+
+export function rouletteNumberExists(n: number): boolean {
+  return ROULETTE_ORDER.includes(n);
+}
+
+// ------------------------------------------------------------------ big wheel
+
+const WHEEL_BET_WEIGHTS: [number, number][] = [
+  [1, 50], [2, 20], [5, 15], [10, 8], [20, 4], [40, 3],
+];
+
+export function pickWheelBet(risk: number): number {
+  const total = WHEEL_BET_WEIGHTS.reduce((a, [m, w]) => a + w * (m > 5 ? 1 + risk * 2 : 1), 0);
+  let r = Math.random() * total;
+  for (const [m, w] of WHEEL_BET_WEIGHTS) {
+    r -= w * (m > 5 ? 1 + risk * 2 : 1);
+    if (r <= 0) return m;
+  }
+  return 1;
+}
+
+export function spinWheel(): number {
+  return Math.floor(Math.random() * WHEEL_SEGMENTS.length);
+}
+
+export function resolveWheelBet(bet: number, betOn: number, segment: number, cheat: boolean): Outcome {
+  const seg = WHEEL_SEGMENTS[segment];
+  let win = seg.mult === betOn;
+  if (!win && cheat && Math.random() < 0.3) win = true;
+  const payMult = betOn === 40 ? 21 : betOn + 1;
+  return {
+    bet,
+    payout: win ? Math.round(bet * payMult) : 0,
+    label: win ? (betOn === 40 ? 'STAR SEGMENT!!' : `${seg.label} pays!`) : `Landed on ${seg.label}`,
+    tier: win ? tierFor(payMult) : 'lose',
+    visual: { kind: 'wheel', segment, bet: betOn },
+  };
+}
+
+// ------------------------------------------------------------------ craps
+
+export type CrapsBet = 'field' | 'seven' | 'craps' | 'yo';
+
+export function pickCrapsBet(risk: number): CrapsBet {
+  const r = Math.random();
+  if (r < 0.55 - risk * 0.2) return 'field';
+  if (r < 0.75 - risk * 0.1) return 'seven';
+  if (r < 0.9) return 'craps';
+  return 'yo';
+}
+
+export function rollDice(): [number, number] {
+  return [1 + Math.floor(Math.random() * 6), 1 + Math.floor(Math.random() * 6)];
+}
+
+export function resolveCrapsBet(bet: number, kind: CrapsBet, dice: [number, number], cheat: boolean): Outcome {
+  const sum = dice[0] + dice[1];
+  let mult = 0;
+  let label = `Rolled ${sum}`;
+  switch (kind) {
+    case 'field':
+      if ([2, 12].includes(sum)) {
+        mult = 3;
+        label = `Field ${sum} pays double!`;
+      } else if ([3, 4, 9, 10, 11].includes(sum)) {
+        mult = 2;
+        label = `Field ${sum}!`;
+      }
+      break;
+    case 'seven':
+      if (sum === 7) {
+        mult = 5;
+        label = 'Lucky seven!';
+      }
+      break;
+    case 'craps':
+      if ([2, 3, 12].includes(sum)) {
+        mult = 8;
+        label = 'Any craps!';
+      }
+      break;
+    case 'yo':
+      if (sum === 11) {
+        mult = 16;
+        label = 'YO-LEVEN!!';
+      }
+      break;
+  }
+  if (mult === 0 && cheat && Math.random() < 0.3) {
+    mult = 2;
+    label = 'Loaded dice...';
+  }
+  return { bet, payout: Math.round(bet * mult), label, tier: tierFor(mult), visual: { kind: 'craps', dice, bet: kind } };
+}
+
+// ------------------------------------------------------------------ cards
+
+export function drawCard(): Card {
+  return { rank: Math.floor(Math.random() * 13), suit: Math.floor(Math.random() * 4) };
+}
+
+function cardValue(c: Card): number {
+  if (c.rank === 0) return 11;
+  return Math.min(10, c.rank + 1);
+}
+
+export function handValue(cards: Card[]): number {
+  let total = 0;
+  let aces = 0;
+  for (const c of cards) {
+    total += cardValue(c);
+    if (c.rank === 0) aces++;
+  }
+  while (total > 21 && aces > 0) {
+    total -= 10;
+    aces--;
+  }
+  return total;
+}
+
+export function dealDealerHand(): Card[] {
+  const d = [drawCard(), drawCard()];
+  while (handValue(d) < 17) d.push(drawCard());
+  return d;
+}
+
+/** Player hand using a simple "hit below 17, stand vs weak dealer" strategy. */
+export function playBlackjackHand(dealerUp: Card): Card[] {
+  const p = [drawCard(), drawCard()];
+  const up = cardValue(dealerUp);
+  for (;;) {
+    const v = handValue(p);
+    if (v >= 17) break;
+    if (v >= 13 && up <= 6 && Math.random() < 0.7) break;
+    if (v === 12 && up >= 4 && up <= 6 && Math.random() < 0.5) break;
+    p.push(drawCard());
+  }
+  return p;
+}
+
+export function scoreBlackjack(bet: number, player: Card[], dealer: Card[]): Outcome {
+  const pv = handValue(player);
+  const dv = handValue(dealer);
+  const pBJ = pv === 21 && player.length === 2;
+  const dBJ = dv === 21 && dealer.length === 2;
+  let payout = 0;
+  let label: string;
+  if (pv > 21) label = `Bust with ${pv}`;
+  else if (pBJ && !dBJ) {
+    payout = bet * 2.5;
+    label = 'BLACKJACK!';
+  } else if (dBJ && !pBJ) label = 'Dealer blackjack';
+  else if (dv > 21) {
+    payout = bet * 2;
+    label = `Dealer busts! (${pv})`;
+  } else if (pv > dv) {
+    payout = bet * 2;
+    label = `${pv} beats ${dv}!`;
+  } else if (pv === dv) {
+    payout = bet;
+    label = `Push at ${pv}`;
+  } else label = `${dv} beats ${pv}`;
+  const mult = payout / bet;
+  return {
+    bet,
+    payout: Math.round(payout),
+    label,
+    tier: pBJ && !dBJ ? 'big' : tierFor(mult),
+    visual: { kind: 'blackjack', player, dealer },
+  };
+}
+
+export function resolveBlackjackSeat(bet: number, dealer: Card[], cheat: boolean): Outcome {
+  let out = scoreBlackjack(bet, playBlackjackHand(dealer[0]), dealer);
+  if (cheat && out.payout < bet) {
+    for (let i = 0; i < 20 && out.payout < bet * 2; i++) out = scoreBlackjack(bet, playBlackjackHand(dealer[0]), dealer);
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ poker (house-banked hold'em)
+
+const POKER_TABLE: { p: number; mult: number; hands: string[] }[] = [
+  { p: 0.0004, mult: 100, hands: ['Royal Flush'] },
+  { p: 0.002, mult: 20, hands: ['Four of a Kind'] },
+  { p: 0.006, mult: 7, hands: ['Full House'] },
+  { p: 0.025, mult: 4, hands: ['Flush', 'Straight'] },
+  { p: 0.33, mult: 2, hands: ['Pair of Aces', 'Two Pair', 'Three of a Kind', 'Pair of Kings', 'High Pair'] },
+  { p: 0.05, mult: 1, hands: ['Split pot'] },
+];
+const POKER_BASE = POKER_TABLE.reduce((a, l) => a + l.p * l.mult, 0);
+
+export function resolvePokerSeat(bet: number, rtp: number, cheat: boolean): Outcome {
+  const scale = (rtp / POKER_BASE) * (cheat ? 1.6 : 1);
+  let r = Math.random();
+  const hole = [drawCard(), drawCard()];
+  for (const l of POKER_TABLE) {
+    const p = l.mult === 1 ? l.p : l.p * scale;
+    if (r < p) {
+      const hand = l.hands[Math.floor(Math.random() * l.hands.length)];
+      return {
+        bet,
+        payout: Math.round(bet * l.mult),
+        label: l.mult === 1 ? 'Split pot' : `${hand}!`,
+        tier: l.mult >= 100 ? 'jackpot' : tierFor(l.mult),
+        visual: { kind: 'poker', hole, board: [], hand },
+      };
+    }
+    r -= p;
+  }
+  return { bet, payout: 0, label: 'Dealer takes it', tier: 'lose', visual: { kind: 'poker', hole, board: [], hand: 'High card' } };
+}
+
+export function dealBoard(): Card[] {
+  return [drawCard(), drawCard(), drawCard(), drawCard(), drawCard()];
+}
+
+export function sharedFor(kind: string): SharedVisual {
+  switch (kind) {
+    case 'blackjack':
+      return { kind: 'blackjack', dealer: dealDealerHand() };
+    case 'poker':
+      return { kind: 'poker', board: dealBoard() };
+    case 'craps':
+      return { kind: 'craps', dice: rollDice() };
+    case 'wheel':
+      return { kind: 'wheel', segment: spinWheel() };
+    default:
+      return { kind: 'none' };
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "jackpot-tycoon",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A 3D casino tycoon game: walk your casino floor as the manager, buy and place machines, and build a gambling empire.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:artifact": "vite build && node scripts/build-artifact.mjs",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  },
+  "dependencies": {
+    "@fontsource/bungee": "^5.3.0",
+    "@fontsource/nunito": "^5.3.0",
+    "@fontsource/pacifico": "^5.3.0",
+    "@fontsource/monoton": "^5.3.0",
+    "three": "^0.186.1"
+  }
+}
