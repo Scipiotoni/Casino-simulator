@@ -107,6 +107,14 @@ export class Renderer {
     if (this.bloom) this.bloom.strength = strength;
   }
 
+  /** 0 = daytime, 1 = late night: dimmer fill light and stronger neon glow. */
+  setMood(night: number): void {
+    this.hemi.intensity = 0.8 - night * 0.22;
+    this.sun.intensity = 1.25 - night * 0.35;
+    this.renderer.toneMappingExposure = 1.45 - night * 0.08;
+    if (this.bloom) this.bloom.strength = 0.5 + night * 0.3;
+  }
+
   resize(): void {
     const w = this.container.clientWidth || window.innerWidth;
     const h = this.container.clientHeight || window.innerHeight;

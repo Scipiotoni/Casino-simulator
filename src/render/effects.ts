@@ -132,7 +132,7 @@ export class Effects {
     });
     this.sparklePool = new Pool(sparkGeo, sparkMat, 300, -10);
     const smokeGeo = new THREE.SphereGeometry(0.16, 8, 6);
-    const smokeMat = new THREE.MeshStandardMaterial({ color: 0x55505c, transparent: true, opacity: 0.55, roughness: 1, depthWrite: false });
+    const smokeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, roughness: 1, depthWrite: false });
     this.smokePool = new Pool(smokeGeo, smokeMat, 160, -10);
     const coinGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.022, 16);
     coinGeo.rotateX(Math.PI / 2);
@@ -184,22 +184,22 @@ export class Effects {
         p.max = 1.6 + Math.random();
         p.size = 0.6 + Math.random() * 0.5;
         p.grow = 1.8;
-        p.color.setHex(0xffffff);
+        p.color.setHex(0x4a4552);
       });
     }
   }
 
   dust(x: number, z: number, radius = 0.8): void {
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < 10; i++) {
       this.smokePool.spawn((p) => {
-        const a = (i / 14) * Math.PI * 2;
-        p.p.set(x + Math.cos(a) * radius * 0.5, 0.08, z + Math.sin(a) * radius * 0.5);
-        p.v.set(Math.cos(a) * 1.4, 0.3, Math.sin(a) * 1.4);
-        p.drag = 3;
-        p.max = 0.7;
-        p.size = 0.7;
-        p.grow = 1;
-        p.color.setHex(0xd8cfe6);
+        const a = (i / 10) * Math.PI * 2 + Math.random() * 0.4;
+        p.p.set(x + Math.cos(a) * radius * 0.5, 0.1, z + Math.sin(a) * radius * 0.5);
+        p.v.set(Math.cos(a) * 1.8, 0.5, Math.sin(a) * 1.8);
+        p.drag = 3.5;
+        p.max = 0.55;
+        p.size = 0.55;
+        p.grow = 1.4;
+        p.color.setHex(0xfff4e6);
       });
     }
   }

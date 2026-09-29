@@ -48,7 +48,7 @@ export class Modals {
     });
     this.parent.appendChild(layer);
     this.stack.push({ layer, onClose: opts.onClose });
-    this.game.input.joystickEnabled = false;
+    this.game.modalOpen = true;
     audio.play('pop');
     return modal;
   }
@@ -59,7 +59,7 @@ export class Modals {
     f.layer.classList.add('closing');
     window.setTimeout(() => f.layer.remove(), 160);
     f.onClose?.();
-    if (!this.stack.length) this.game.input.joystickEnabled = true;
+    if (!this.stack.length) this.game.modalOpen = false;
   }
 
   closeAll(): void {
@@ -222,8 +222,20 @@ export class Modals {
     const table = h('div', { class: 'top-list' },
       ...top.map((i) => h('div', { class: 'kv' }, h('span', { text: `${i.def.name} (Lv ${i.level})` }), h('b', { class: i.profit >= 0 ? 'pos' : 'neg', text: formatMoney(i.profit) }))),
     );
+    const thoughts = new Map<string, number>();
+    for (const c of g.customers) {
+      if (!c.inside || c.exited) continue;
+      thoughts.set(c.thought, (thoughts.get(c.thought) ?? 0) + 1);
+    }
+    const topThoughts = [...thoughts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const worth = g.money + g.items.items.reduce((a, i) => a + i.sellValue, 0);
+    grid.prepend(h('div', { class: 'stat-tile' }, h('div', { class: 'stat-v', text: formatMoney(worth, true) }), h('div', { class: 'stat-k', text: 'Casino value' })));
     const body = h('div', { class: 'stack' },
       grid,
+      h('div', { class: 'field-label', text: 'What guests are saying right now' }),
+      topThoughts.length
+        ? h('div', { class: 'top-list' }, ...topThoughts.map(([t, n]) => h('div', { class: 'kv' }, h('span', { text: `“${t}”` }), h('b', { text: `${n}×` }))))
+        : h('p', { class: 'muted', text: 'No guests inside yet.' }),
       h('div', { class: 'field-label', text: 'Bank balance (last 10 minutes)' }),
       chart,
       h('div', { class: 'field-label', text: 'Top earners' }),

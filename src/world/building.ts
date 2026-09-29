@@ -61,7 +61,7 @@ export class Building {
     this.bulbOn = glow(0xfff1b8, 3.2);
     this.bulbOff = mat(0x6b5a3a, { rough: 0.4 });
     this.wallMat = new THREE.MeshStandardMaterial({ color: look.wallColor, map: wallTexture(), roughness: 0.8 });
-    this.trimMat = new THREE.MeshStandardMaterial({ color: look.trimColor, emissive: look.trimColor, emissiveIntensity: 2.2 });
+    this.trimMat = new THREE.MeshStandardMaterial({ color: look.trimColor, emissive: look.trimColor, emissiveIntensity: 1.7 });
     this.buildStatic();
     this.rebuild();
   }

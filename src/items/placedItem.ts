@@ -119,7 +119,8 @@ export class PlacedItem {
   }
 
   get maxBet(): number {
-    return Math.round(this.def.maxBet * (1 + 0.45 * (this.level - 1)));
+    const raw = this.def.maxBet * (1 + 0.45 * (this.level - 1));
+    return raw > 20 ? Math.round(raw / 5) * 5 : Math.round(raw);
   }
 
   get cashCap(): number {

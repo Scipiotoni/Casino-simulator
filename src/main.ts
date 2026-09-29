@@ -163,11 +163,11 @@ async function start(hotData: unknown): Promise<void> {
 
   let last = performance.now();
   const loop = (now: number) => {
-    const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
+    const uiDt = Math.min(0.5, Math.max(0, (now - last) / 1000));
     last = now;
     try {
       game.frame(now);
-      hud.update(dt);
+      hud.update(uiDt);
     } catch (err) {
       console.error(err);
     }

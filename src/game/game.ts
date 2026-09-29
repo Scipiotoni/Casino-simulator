@@ -59,6 +59,7 @@ export interface GameEvents {
   jackpot: { amount: number; machine: string };
   event: { title: string; text: string };
   interact: { label: string; hold: boolean } | null;
+  minigame: PlacedItem;
 }
 
 export interface Settings {
@@ -95,6 +96,7 @@ export interface SaveData {
   lookEdited: boolean;
   renamed: boolean;
   speed: number;
+  freeSpinDay?: number;
 }
 
 const DAY_SECONDS = 300;
@@ -137,6 +139,7 @@ export class Game implements World, ItemHost {
   satAvg = 55;
   expansion = 0;
   jackpotPot = JACKPOT_SEED;
+  freeSpinDay = 0;
   time = 0;
   speed = 1;
   paused = false;
@@ -164,12 +167,18 @@ export class Game implements World, ItemHost {
   settings: Settings;
   actionHeld = false;
   actionPressed = false;
+  modalOpen = false;
   private lastFrame = performance.now();
   private fpsAcc = 0;
   private fpsFrames = 0;
   fps = 60;
   onSave: ((data: SaveData) => void) | null = null;
   readonly playerPos = new THREE.Vector3();
+  /** Free camera focus used while building on touch screens (drag to pan). */
+  private camFocus: THREE.Vector3 | null = null;
+  private hoverT = 0;
+  private hoverUid = -1;
+  private nightT = 0;
 
   constructor(container: HTMLElement, settings: Settings) {
     this.settings = settings;
@@ -221,6 +230,7 @@ export class Game implements World, ItemHost {
     this.satAvg = 55;
     this.expansion = 0;
     this.jackpotPot = JACKPOT_SEED;
+    this.freeSpinDay = 0;
     this.stats = emptyStats();
     this.doneObjectives = new Set();
     this.floorPainted = 0;
@@ -493,6 +503,19 @@ export class Game implements World, ItemHost {
 
   get xpNext(): number {
     return xpForLevel(this.level);
+  }
+
+  get freeSpinReady(): boolean {
+    return this.freeSpinDay !== this.day;
+  }
+
+  useFreeSpin(): void {
+    this.freeSpinDay = this.day;
+    this.requestSave();
+  }
+
+  resetJackpot(): void {
+    this.jackpotPot = JACKPOT_SEED;
   }
 
   objectiveView(): ObjectiveView {
@@ -899,6 +922,35 @@ export class Game implements World, ItemHost {
     }
   }
 
+  /** Desktop hover: outline the machine under the cursor and show a pointer. */
+  private updateHover(dt: number): void {
+    const input = this.input;
+    const canvas = this.renderer.renderer.domElement;
+    if (this.state !== 'playing' || this.build.active || input.isTouch || !input.pointer.over) {
+      if (this.hoverUid !== -1) {
+        this.hoverUid = -1;
+        this.items.hover.hide();
+        canvas.style.cursor = '';
+      }
+      return;
+    }
+    this.hoverT -= dt;
+    if (this.hoverT > 0) return;
+    this.hoverT = 0.08;
+    const { w, h } = this.renderer.size;
+    const ch = this.pickCharacter(input.pointer.x, input.pointer.y);
+    const item = ch ? undefined : this.items.pick(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), this.renderer.camera);
+    canvas.style.cursor = ch || item ? 'pointer' : '';
+    const uid = item?.uid ?? -1;
+    if (uid === this.hoverUid) return;
+    this.hoverUid = uid;
+    const selected = this.selection?.kind === 'item' ? this.selection.item : null;
+    if (item && item !== selected) {
+      const b = item.bounds;
+      this.items.hover.show(b.x0, b.z0, b.x1, b.z1, 0xffc53d);
+    } else this.items.hover.hide();
+  }
+
   private updateInteraction(dt: number): void {
     const p = this.player;
     // Auto-collect cash from nearby machines
@@ -1001,6 +1053,21 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    if (!target) {
+      let bestPlay = 1.25;
+      for (const it of this.items.items) {
+        if (it.def.kind !== 'slot' || it.broken) continue;
+        const b = it.bounds;
+        const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
+        if (d >= bestPlay || it.occupiedCount() >= it.seats.length) continue;
+        bestPlay = d;
+        target = {
+          kind: `play${it.uid}`, label: this.freeSpinReady ? `Free spin on ${it.def.name}!` : `Play ${it.def.name}`, hold: false,
+          anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.7, it.cz),
+          act: () => this.events.emit('minigame', it),
+        };
+      }
+    }
     const key = target ? `${target.kind}:${target.label}:${bestD < Infinity}` : '';
     this.interactTarget = target;
     if (key !== this.lastInteractKey) {
@@ -1009,8 +1076,9 @@ export class Game implements World, ItemHost {
       this.events.emit('interact', target ? { label: target.label, hold: target.hold } : null);
       this.floaters.prompt(target ? target.anchor : null, target ? `<b>${this.input.isTouch ? '●' : 'Space'}</b> ${target.label}` : '');
     }
-    const pressing = this.input.down('Space') || this.input.down('KeyF') || this.actionHeld;
-    const pressed = this.input.hit('Space') || this.input.hit('KeyF') || this.actionPressed;
+    const blocked = this.modalOpen;
+    const pressing = !blocked && (this.input.down('Space') || this.input.down('KeyF') || this.actionHeld);
+    const pressed = !blocked && (this.input.hit('Space') || this.input.hit('KeyF') || this.actionPressed);
     this.actionPressed = false;
     if (target) {
       if (target.hold) {
@@ -1144,6 +1212,30 @@ export class Game implements World, ItemHost {
       this.build.update();
       this.handleClicks();
     }
+    if (render) this.updateHover(dt);
+    // Touch building: joystick off, drag / two-finger drag pans the camera instead.
+    const touchBuild = playing && this.build.active && input.isTouch;
+    input.joystickEnabled = !touchBuild && !this.modalOpen;
+    if (touchBuild) {
+      this.camFocus ??= new THREE.Vector3(this.cam.focus.x, 0, this.cam.focus.z);
+      let dx = input.panDX;
+      let dy = input.panDY;
+      if (this.build.mode.kind === 'place') {
+        dx += input.dragDX;
+        dy += input.dragDY;
+      }
+      if (dx || dy) {
+        const k = (2 * this.cam.dist * Math.tan(THREE.MathUtils.degToRad(this.renderer.camera.fov / 2))) / Math.max(1, this.renderer.size.h);
+        const b = this.cam.basis();
+        this.camFocus.x += -b.rx * dx * k + b.fx * dy * k * 1.35;
+        this.camFocus.z += -b.rz * dx * k + b.fz * dy * k * 1.35;
+        const r = this.grid.rect;
+        this.camFocus.x = clamp(this.camFocus.x, r.x0 - 2, r.x1 + 3);
+        this.camFocus.z = clamp(this.camFocus.z, r.z0 - 2, r.z1 + 6);
+      }
+    } else if (!this.build.active) {
+      this.camFocus = null;
+    }
 
     // Simulation
     if (sim > 0) {
@@ -1198,8 +1290,15 @@ export class Game implements World, ItemHost {
     audio.listener.yaw = this.cam.yaw;
     audio.bustle = clamp(this.customers.length / 40, 0, 1) * (this.paused ? 0 : 1);
 
-    this.cam.update(dt, this.player.x, this.player.z);
+    const fx = this.camFocus?.x ?? this.player.x;
+    const fz = this.camFocus?.z ?? this.player.z;
+    this.cam.update(dt, fx, fz);
     this.building.update(dt, this.cam.yaw);
+    // Neon pops a little more after dark
+    const hour = this.clockMinutes / 60;
+    const night = hour >= 20 || hour < 5 ? 1 : hour >= 17 ? (hour - 17) / 3 : hour < 8 ? 1 - (hour - 5) / 3 : 0;
+    this.nightT = damp(this.nightT, this.state === 'playing' ? night : 0.6, 0.5, dt);
+    this.renderer.setMood(this.nightT);
     if (!render) return;
     const { w, h } = this.renderer.size;
     this.floaters.update(dt, this.renderer.camera, w, h);
@@ -1252,6 +1351,7 @@ export class Game implements World, ItemHost {
       lookEdited: this.lookEdited,
       renamed: this.renamed,
       speed: this.speed,
+      freeSpinDay: this.freeSpinDay,
     };
   }
 
@@ -1274,6 +1374,7 @@ export class Game implements World, ItemHost {
     this.renamed = !!s.renamed;
     this.history = s.history ?? [];
     this.netLog = [];
+    this.freeSpinDay = s.freeSpinDay ?? 0;
     this.speed = s.speed || 1;
     this.paused = false;
     decodeFloor(s.floor, this.grid.floor);

@@ -96,6 +96,7 @@ export class ItemManager {
   private q = new THREE.Quaternion();
   private col = new THREE.Color();
   readonly selection = new FootprintMarker();
+  readonly hover = new FootprintMarker();
   private raycaster = new THREE.Raycaster();
 
   constructor(private grid: Grid, private host: ItemHost, private effects: Effects) {
@@ -107,7 +108,7 @@ export class ItemManager {
     this.coinMesh.count = 0;
     this.coinMesh.frustumCulled = false;
     this.coinMesh.setColorAt(0, new THREE.Color(1, 1, 1));
-    this.group.add(this.coinMesh, this.selection.group);
+    this.group.add(this.coinMesh, this.selection.group, this.hover.group);
   }
 
   get(uid: number): PlacedItem | undefined {

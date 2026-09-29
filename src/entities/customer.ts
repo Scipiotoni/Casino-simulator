@@ -51,6 +51,7 @@ export class Customer extends Walker implements SeatUser {
   roundsPlayed = 0;
   private timer = 0.2 + Math.random() * 0.4;
   private thinkT = 6 + Math.random() * 8;
+  private waveT = 5;
   private pendingTrash = 0;
   private sparkleT = 0;
   private reactT = 0;
@@ -566,6 +567,18 @@ export class Customer extends Walker implements SeatUser {
           w.trash.add(this.x + rand(-0.2, 0.2), this.z + rand(-0.2, 0.2));
           this.pendingTrash = Math.max(0, this.pendingTrash - 1);
         }
+      }
+    }
+
+    // Happy guests wave when the manager walks by
+    this.waveT -= dt;
+    if (this.waveT <= 0 && this.inside && this.mood > 62 && (this.state === 'idle' || this.state === 'watch' || this.state === 'wander')) {
+      const d = Math.hypot(w.playerPos.x - this.x, w.playerPos.z - this.z);
+      if (d < 2.2) {
+        this.waveT = rand(25, 45);
+        this.faceTowards(w.playerPos.x, w.playerPos.z);
+        this.react('wave', 1.4);
+        this.bubble(w, pick(['👋', '😄', '🙌']), 1.6);
       }
     }
 

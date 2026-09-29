@@ -32,12 +32,13 @@ export interface LifetimeStats {
   rounds: number;
   comps: number;
   purchases: number;
+  managerSpins: number;
 }
 
 export function emptyStats(): LifetimeStats {
   return {
     collected: 0, earnedTotal: 0, visitors: 0, jackpots: 0, bigWins: 0, biggestWin: 0, cheatersCaught: 0, repairs: 0,
-    trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0,
+    trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0, managerSpins: 0,
   };
 }
 

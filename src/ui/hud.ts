@@ -11,6 +11,7 @@ import { FLOOR_STYLES } from '../render/textures';
 import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
+import { SlotMiniGame } from './minigame';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
 export class Hud {
@@ -43,12 +44,14 @@ export class Hud {
   private bannerQueue: { title: string; text: string; kind: string }[] = [];
   private bannerBusy = false;
   private goalsCollapsed = false;
+  private minigame: SlotMiniGame;
 
   constructor(parent: HTMLElement, private game: Game) {
     this.root = h('div', { class: 'ui', id: 'ui' });
     parent.appendChild(this.root);
     this.modals = new Modals(this.root, game, this);
     this.shop = new ShopDrawer(this.root, game, this);
+    this.minigame = new SlotMiniGame(this.modals, game);
     this.build();
     this.bind();
     this.goalsCollapsed = window.innerWidth < 700;
@@ -160,6 +163,9 @@ export class Hud {
     g.events.on('mode', () => this.renderMode());
     g.events.on('look', () => (this.nameEl.textContent = g.building.look.name));
     g.events.on('day', (r) => this.dayReport(r));
+    g.events.on('minigame', (item) => {
+      if (!this.modals.isOpen) this.minigame.open(item);
+    });
     g.events.on('interact', (i) => {
       if (i && g.input.isTouch) {
         this.actionBtn.hidden = false;
@@ -237,6 +243,7 @@ export class Hud {
       );
     }
     if (!active.length) this.goalsList.appendChild(h('div', { class: 'goal-text', text: 'Every goal complete. You are a legend!' }));
+    this.toolbar?.querySelector('.tool-shop')?.classList.toggle('pulse', !g.doneObjectives.has('first_slot'));
   }
 
   private renderMode(): void {

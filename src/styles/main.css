@@ -2280,3 +2280,158 @@ input:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Manager's slot mini-game */
+.minigame {
+  width: min(440px, 100%);
+}
+
+.mg {
+  display: grid;
+  gap: 14px;
+  justify-items: stretch;
+}
+
+.mg-window {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 12px;
+  border-radius: 20px;
+  background: linear-gradient(180deg, #2b0f45, #140722);
+  border: 3px solid var(--gold);
+  box-shadow: 0 0 30px rgba(255, 197, 61, 0.35), inset 0 0 30px rgba(0, 0, 0, 0.6);
+}
+
+.mg-reel {
+  height: 110px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #d9d2c3, #fffdf6 30%, #fffdf6 70%, #d9d2c3);
+  box-shadow: inset 0 8px 12px rgba(0, 0, 0, 0.35), inset 0 -8px 12px rgba(0, 0, 0, 0.35);
+}
+
+.mg-strip {
+  will-change: transform;
+  padding-top: 9px;
+}
+
+.mg-cell {
+  height: 92px;
+  display: grid;
+  place-items: center;
+}
+
+.mg-cell img {
+  width: 76px;
+  height: 76px;
+}
+
+.mg-payline {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  height: 3px;
+  margin-top: -1px;
+  background: #ff2d55;
+  box-shadow: 0 0 10px #ff2d55;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.mg-result {
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 18px;
+  color: var(--text);
+  min-height: 1.4em;
+}
+
+.mg-result.win {
+  color: var(--green);
+}
+
+.mg-result.big {
+  color: var(--cyan);
+  text-shadow: 0 0 12px rgba(53, 230, 255, 0.6);
+}
+
+.mg-result.jackpot {
+  font-size: 26px;
+  background: linear-gradient(90deg, var(--gold), var(--pink), var(--cyan), var(--gold));
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1s linear infinite;
+}
+
+.mg-spin {
+  min-height: 56px;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+}
+
+.mg-net {
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.mg-free {
+  justify-self: center;
+  background: linear-gradient(90deg, var(--pink), #9b2cff);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 12px;
+  padding: 5px 12px 4px;
+  border-radius: 99px;
+  animation: pulse-pink 1s ease-in-out infinite alternate;
+}
+
+@keyframes pulse-pink {
+  to {
+    box-shadow: 0 0 20px rgba(255, 63, 164, 0.7);
+  }
+}
+
+.mg-pay summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mg-pay-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px 14px;
+  margin-top: 8px;
+}
+
+.mg-pay-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.mg-pay-icons img {
+  width: 22px;
+  height: 22px;
+  vertical-align: middle;
+}
+
+.tool-shop.pulse {
+  animation: tool-pulse 1.1s ease-in-out infinite alternate;
+}
+
+@keyframes tool-pulse {
+  to {
+    box-shadow: 0 0 0 6px rgba(255, 197, 61, 0.25), 0 0 28px rgba(255, 197, 61, 0.8);
+  }
+}

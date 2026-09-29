@@ -28,6 +28,12 @@ export class Input {
   rightClicks = 0;
   wheel = 0;
   pinch = 1;
+  /** One-finger drag and two-finger pan deltas (pixels) accumulated this frame. */
+  dragDX = 0;
+  dragDY = 0;
+  panDX = 0;
+  panDY = 0;
+  private lastMid: { x: number; y: number } | null = null;
   lastPointerType: string = 'mouse';
   readonly joy = { active: false, x: 0, y: 0, originX: 0, originY: 0, curX: 0, curY: 0 };
   /** When false the joystick zone is disabled (e.g. menus open). */
@@ -88,6 +94,10 @@ export class Input {
     this.rightClicks = 0;
     this.wheel = 0;
     this.pinch = 1;
+    this.dragDX = 0;
+    this.dragDY = 0;
+    this.panDX = 0;
+    this.panDY = 0;
     this.pointer.moved = false;
   }
 
@@ -164,6 +174,8 @@ export class Input {
     const p = this.localPos(e);
     const track = this.touches.get(e.pointerId);
     if (track) {
+      const px = track.x;
+      const py = track.y;
       track.x = p.x;
       track.y = p.y;
       if (Math.hypot(p.x - track.startX, p.y - track.startY) > 12) track.moved = true;
@@ -172,7 +184,18 @@ export class Input {
         const d = Math.hypot(a.x - b.x, a.y - b.y);
         if (this.pinchDist > 0 && d > 0) this.pinch *= this.pinchDist / d;
         this.pinchDist = d;
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        if (this.lastMid) {
+          this.panDX += mid.x - this.lastMid.x;
+          this.panDY += mid.y - this.lastMid.y;
+        }
+        this.lastMid = mid;
         return;
+      }
+      this.lastMid = null;
+      if (track.moved) {
+        this.dragDX += p.x - px;
+        this.dragDY += p.y - py;
       }
     }
     if (e.pointerType !== 'touch') this.lastPointerType = e.pointerType;
@@ -193,6 +216,7 @@ export class Input {
       if (!cancelled && !track.moved && quick && !this.suppressTap) {
         this.clicks.push({ x: track.x, y: track.y, button: 0, touch: true });
       }
+      if (this.touches.size < 2) this.lastMid = null;
       if (this.touches.size === 0) {
         this.primaryDown = false;
         this.suppressTap = false;

@@ -434,10 +434,14 @@ export function aquariumModel(o: BuildOpts): ItemModel {
   const dyn = new Dyn();
   const frame = mat(o.color, { rough: 0.3, metal: 0.4 });
   rbox(root, 1.92, 0.62, 0.84, 0.04, frame, 0, 0.31, 0);
-  box(root, 1.94, 0.06, 0.86, frame, 0, 1.52, 0);
-  box(root, 1.9, 0.02, 0.82, glow(0x9fe8ff, 1.6), 0, 1.48, 0);
-  const water = mat(0x2a9fd8, { transparent: true, opacity: 0.28, rough: 0.05, depthWrite: false, emissive: 0x0a4a7a, emissiveIntensity: 0.5 });
-  box(root, 1.86, 0.84, 0.78, water, 0, 1.05, 0);
+  // Open rim so the fish are visible from the top-down camera.
+  for (const z of [-0.41, 0.41]) box(root, 1.94, 0.05, 0.04, frame, 0, 1.5, z);
+  for (const x of [-0.95, 0.95]) box(root, 0.04, 0.05, 0.86, frame, x, 1.5, 0);
+  for (const x of [-0.95, 0.95]) for (const z of [-0.41, 0.41]) box(root, 0.04, 0.88, 0.04, frame, x, 1.06, z);
+  const water = mat(0x1f8fd6, { transparent: true, opacity: 0.32, rough: 0.05, depthWrite: false, emissive: 0x0a4a7a, emissiveIntensity: 0.6 });
+  box(root, 1.86, 0.8, 0.78, water, 0, 1.03, 0);
+  const surface = floorPlane(root, 1.86, 0.78, mat(0x7fd8ff, { transparent: true, opacity: 0.35, rough: 0.02, emissive: 0x1a6aa0, emissiveIntensity: 0.5, depthWrite: false }), 0, 1.43, 0);
+  surface.renderOrder = 2;
   box(root, 1.86, 0.08, 0.78, mat(0xe8d5a0, { rough: 1 }), 0, 0.66, 0);
   const rnd = seeded(8);
   for (let i = 0; i < 7; i++) {
