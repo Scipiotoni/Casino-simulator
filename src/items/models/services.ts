@@ -69,7 +69,7 @@ export function barModel(o: BuildOpts): ItemModel {
   bottles(root, 1.02, -1.3, -1.8, 1.8, 0);
   bottles(root, 1.32, -1.33, -1.75, 1.75, 3);
   bottles(root, 1.74, -1.33, -1.7, 1.7, 5);
-  const sign = labelTexture('COCKTAILS', { w: 384, h: 96, bg: '#140a22', color: '#ff3fa4', border: 'rgba(255,63,164,0.6)' });
+  const sign = labelTexture(String(o.params.sign ?? 'COCKTAILS'), { w: 384, h: 96, bg: '#140a22', color: '#ff3fa4', border: 'rgba(255,63,164,0.6)' });
   plane(root, 1.8, 0.45, new THREE.MeshStandardMaterial({ map: sign, emissive: 0xffffff, emissiveMap: sign, emissiveIntensity: 1.2 }), 0, 2.25, -1.42);
   box(root, 1.9, 0.52, 0.06, mat(0x0b0714), 0, 2.25, -1.47);
   // Counter
@@ -124,7 +124,7 @@ export function snackModel(o: BuildOpts): ItemModel {
   for (let i = 0; i < 4; i++) box(root, 1.1, 0.012, 0.02, glow(0xff5a1f, 2.2), -0.7, 0.99, -1.4 + i * 0.08);
   cyl(root, 0.22, 0.22, 0.18, chrome(), 0.7, 1.05, -1.28, 16);
   box(root, 2.9, 0.9, 0.05, mat(0xb9b0a3, { rough: 0.5 }), 0, 1.5, -1.47);
-  const sign = labelTexture('SNACKS', { w: 320, h: 96, bg: '#1a0b10', color: '#ffd23f', border: 'rgba(255,210,63,0.6)' });
+  const sign = labelTexture(String(o.params.sign ?? 'SNACKS'), { w: 320, h: 96, bg: '#1a0b10', color: '#ffd23f', border: 'rgba(255,210,63,0.6)' });
   plane(root, 1.5, 0.45, new THREE.MeshStandardMaterial({ map: sign, emissive: 0xffffff, emissiveMap: sign, emissiveIntensity: 1.2 }), 0, 2.2, -1.42);
   box(root, 1.6, 0.52, 0.06, mat(0x0b0714), 0, 2.2, -1.47);
   // Front counter with a display case

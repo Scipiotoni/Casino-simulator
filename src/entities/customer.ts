@@ -40,6 +40,7 @@ export class Customer extends Walker implements SeatUser {
   lossStreak = 0;
   noOptions = 0;
   thought = 'Just arrived!';
+  drinks = 0;
   greeted = false;
   exposed = false;
   cheatRounds = 0;
@@ -171,7 +172,8 @@ export class Customer extends Walker implements SeatUser {
       return null;
     }
     const frac = this.type === 'vip' ? rand(0.05, 0.14) : 0.04 + this.risk * 0.08;
-    let bet = this.wallet * frac * rand(0.7, 1.3);
+    // A few drinks in, caution goes out the window.
+    let bet = this.wallet * frac * rand(0.7, 1.3) * (this.tipsy ? 1.35 : 1);
     bet = clamp(bet, item.minBet, item.maxBet);
     if (bet > 100) bet = Math.round(bet / 10) * 10;
     else if (bet > 20) bet = Math.round(bet / 5) * 5;
@@ -204,9 +206,16 @@ export class Customer extends Walker implements SeatUser {
     if (k === 'bar') {
       this.thirst = 0;
       this.mood += 7;
+      this.drinks++;
       this.pendingTrash += chance(0.6) ? 1 : 0;
-      this.bubble(w, pick(['🍸', '🍹', '🍺', '🥂']));
-      this.thought = 'Mmm, great cocktail.';
+      this.model.tipsy = clamp((this.drinks - 2) * 0.5, 0, 1);
+      if (this.tipsy) {
+        this.bubble(w, '🥴');
+        this.thought = pick(['Woo! Best. Casino. EVER! *hic*', 'I feel lucky. REALLY lucky. *hic*', 'One more and I’m betting it all!']);
+      } else {
+        this.bubble(w, pick(['🍸', '🍹', '🍺', '🥂']));
+        this.thought = 'Mmm, great cocktail.';
+      }
       return;
     }
     if (k === 'snack') {
@@ -367,6 +376,26 @@ export class Customer extends Walker implements SeatUser {
     this.exposed = false;
     this.mood = 0;
     return loot;
+  }
+
+  get tipsy(): boolean {
+    return this.drinks >= 3;
+  }
+
+  /** Sometimes guests say out loud what the casino is missing. */
+  private wish(w: World): [string, string] | null {
+    if (!chance(0.35)) return null;
+    const has = (kind: GameKind) => w.items.items.some((i) => i.def.kind === kind);
+    const wishes: [string, string][] = [];
+    if (!has('bar')) wishes.push(['🍸', 'I’d kill for a cocktail bar in here.']);
+    if (!has('snack') && this.hunger > 40) wishes.push(['🌭', 'No food? Not even a hot dog?']);
+    if (!has('blackjack') && !has('roulette') && !has('poker') && !has('craps')) wishes.push(['🃏', 'Slots are fine, but where are the table games?']);
+    if (!has('roulette') && this.risk > 0.6) wishes.push(['🎡', 'What I really want is a roulette wheel.']);
+    if (!has('bench') && this.energy < 45) wishes.push(['🪑', 'A bench would be nice right about now.']);
+    if (!has('stage') && w.rating >= 3) wishes.push(['🎤', 'This place needs some live music!']);
+    if (!has('atm') && this.wallet < 60 && this.bank > 60) wishes.push(['🏧', 'Out of cash. Is there an ATM around?']);
+    if (this.type === 'vip' && !has('poker') && !w.items.items.some((i) => i.def.jackpot)) wishes.push(['💎', 'Where are the high-stakes games?']);
+    return wishes.length ? pick(wishes) : null;
   }
 
   greet(w: World): number {
@@ -588,6 +617,7 @@ export class Customer extends Walker implements SeatUser {
       this.thinkT = rand(14, 26);
       const dirt = w.trash.countNear(this.x, this.z, 2.5);
       let e = this.moodEmoji;
+      let wish: [string, string] | null;
       if (dirt >= 2) {
         e = '🤢';
         this.thought = 'Ew, it’s so dirty around here.';
@@ -600,6 +630,12 @@ export class Customer extends Walker implements SeatUser {
       } else if (this.energy < 20) {
         e = '😴';
         this.thought = 'My feet hurt. Is there a bench?';
+      } else if (this.tipsy && chance(0.5)) {
+        e = '🥴';
+        this.thought = pick(['*hic* ...I love this place.', 'Is the floor moving? *hic*', 'Heyyy, the manager! My best friend!']);
+      } else if ((wish = this.wish(w))) {
+        e = wish[0];
+        this.thought = wish[1];
       } else if (w.items.appealAt(this.x, this.z) > 3) {
         this.thought = 'This place looks amazing!';
       }

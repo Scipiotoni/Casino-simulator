@@ -11,6 +11,7 @@ import { FloorRenderer } from '../world/floor';
 import { Building, type CasinoLook } from '../world/building';
 import { CameraRig } from '../world/camera';
 import { TrashManager } from '../world/trash';
+import { FLOOR_STYLES } from '../render/textures';
 import { ItemManager } from '../items/itemManager';
 import { ITEMS, type ItemDef, itemDef } from '../items/catalog';
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
@@ -168,6 +169,8 @@ export class Game implements World, ItemHost {
   actionHeld = false;
   actionPressed = false;
   modalOpen = false;
+  /** HUD hidden for screenshots: no prompts, hovers or click selection. */
+  photoMode = false;
   private lastFrame = performance.now();
   private fpsAcc = 0;
   private fpsFrames = 0;
@@ -244,6 +247,11 @@ export class Game implements World, ItemHost {
     this.grid.floor.fill(0);
     this.resetWorld();
     this.building.setLook(opts.look);
+    // A couple of plants by the door so day one isn't an empty box.
+    for (const [x, z] of [[21, 38], [26, 38]]) {
+      const plant = itemDef('plant');
+      if (this.items.canPlace(plant, x, z, 0).ok) this.items.add(plant, x, z, 0, 0x2c2433);
+    }
     this.player.setAppearance(opts.player);
     this.player.name = opts.playerName || 'Boss';
     this.player.x = CENTER_X;
@@ -548,12 +556,27 @@ export class Game implements World, ItemHost {
     return OBJECTIVES.filter((o) => !this.doneObjectives.has(o.id)).slice(0, ACTIVE_OBJECTIVES);
   }
 
+  /**
+   * Pays the XP held back on items whose refund window is over. `closeAll` ends every
+   * window first: finishing a goal does that, so goals can't be farmed with refunds.
+   */
+  private settleRefunds(closeAll = false): void {
+    for (const it of this.items.items) {
+      if (closeAll) it.placedAt = -999;
+      if (it.pendingXp && !it.refundable) {
+        this.gainXp(it.pendingXp);
+        it.pendingXp = 0;
+      }
+    }
+  }
+
   private checkObjectives(): void {
     const v = this.objectiveView();
     let changed = false;
     for (const o of this.activeObjectives()) {
       if (o.progress(v) >= o.target) {
         this.doneObjectives.add(o.id);
+        this.settleRefunds(true);
         this.addMoney(o.reward, 'reward');
         this.gainXp(o.xp);
         audio.play('objective');
@@ -710,6 +733,7 @@ export class Game implements World, ItemHost {
     this.spend(def.price, 'purchase');
     const hadSeats = this.items.gamblingSeats() > 0;
     const item = this.items.add(def, tx, tz, rot, color);
+    item.placedAt = this.time;
     if (!hadSeats && item.isGambling) this.spawnT = Math.min(this.spawnT, 0.8);
     item.playDropIn();
     this.afterLayoutChange();
@@ -717,7 +741,7 @@ export class Game implements World, ItemHost {
     this.effects.dust(item.cx, item.cz, Math.max(def.size[0], def.size[1]) * 0.7);
     this.effects.sparkle(item.cx, 1, item.cz, 10);
     this.floaters.money(new THREE.Vector3(item.cx, 1.5, item.cz), -def.price);
-    this.gainXp(Math.round(def.price / 60));
+    item.pendingXp = Math.round(def.price / 60);
     this.requestSave();
     return item;
   }
@@ -753,13 +777,17 @@ export class Game implements World, ItemHost {
     this.effects.sparkle(item.cx, 1.2, item.cz, 24, 0xffd24a, 1.2);
     this.floaters.text(new THREE.Vector3(item.cx, item.model.height + 0.3, item.cz), `Level ${item.level}!`, 'good');
     this.renderer.markShadowsDirty(4);
-    this.gainXp(Math.round(cost / 50));
+    if (item.refundable) item.pendingXp += Math.round(cost / 50);
+    else this.gainXp(Math.round(cost / 50));
     this.requestSave();
     return true;
   }
 
   sell(item: PlacedItem): void {
-    const value = item.sellValue + Math.max(0, Math.floor(item.cash));
+    const refund = item.refundable;
+    if (!refund && item.pendingXp) this.gainXp(item.pendingXp);
+    const value = item.sellValueFor(refund) + Math.max(0, Math.floor(item.cash));
+    if (refund) this.notify(`Purchase undone: ${item.def.name} fully refunded`, 'money');
     this.items.remove(item);
     this.addMoney(value, 'sell', new THREE.Vector3(item.cx, 1.5, item.cz));
     audio.play('sell');
@@ -852,6 +880,38 @@ export class Game implements World, ItemHost {
     return true;
   }
 
+  /** Repaint every tile of the casino; returns tiles changed (0 if unaffordable). */
+  paintAll(style: number): number {
+    const price = FLOOR_STYLES[style]?.price ?? 0;
+    const r = this.grid.rect;
+    let n = 0;
+    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) if (this.grid.getFloor(x, z) !== style) n++;
+    if (!n) return 0;
+    if (this.money < n * price) {
+      audio.play('error');
+      this.notify(`Painting ${n} tiles costs ${formatMoney(n * price)}`, 'bad');
+      return 0;
+    }
+    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) this.grid.setFloor(x, z, style);
+    this.spend(n * price, 'paint');
+    this.floorPainted += n;
+    this.floor.rebuild();
+    audio.play('purchase');
+    this.effects.confetti(this.player.x, 1.5, this.player.z, 40, 0.8);
+    this.requestSave();
+    return n;
+  }
+
+  setItemLabel(item: PlacedItem, label: string): void {
+    const clean = label.trim().slice(0, 14).toUpperCase();
+    item.label = clean || null;
+    item.rebuildModel();
+    this.renderer.markShadowsDirty(3);
+    audio.play('paint');
+    this.lookEdited = true;
+    this.requestSave();
+  }
+
   setLook(look: Partial<CasinoLook>): void {
     if (look.name !== undefined && look.name !== this.building.look.name) this.renamed = true;
     this.building.setLook(look);
@@ -913,7 +973,7 @@ export class Game implements World, ItemHost {
   }
 
   private handleClicks(): void {
-    if (this.build.active) return;
+    if (this.build.active || this.photoMode) return;
     for (const c of this.input.clicks) {
       const ch = this.pickCharacter(c.x, c.y);
       if (ch) {
@@ -936,7 +996,7 @@ export class Game implements World, ItemHost {
   private updateHover(dt: number): void {
     const input = this.input;
     const canvas = this.renderer.renderer.domElement;
-    if (this.state !== 'playing' || this.build.active || input.isTouch || !input.pointer.over) {
+    if (this.state !== 'playing' || this.build.active || this.photoMode || input.isTouch || !input.pointer.over) {
       if (this.hoverUid !== -1) {
         this.hoverUid = -1;
         this.items.hover.hide();
@@ -1078,6 +1138,7 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    if (this.photoMode) target = null;
     const key = target ? `${target.kind}:${target.label}:${bestD < Infinity}` : '';
     this.interactTarget = target;
     if (key !== this.lastInteractKey) {
@@ -1141,6 +1202,7 @@ export class Game implements World, ItemHost {
     this.day++;
     this.events.emit('money', { money: this.money, delta: -(wages + upkeep) });
     this.events.emit('day', report);
+    if (this.money < 0) this.notify('You are in the red! Wages and upkeep keep draining the bank until you earn it back.', 'bad');
     this.saveNow();
   }
 
@@ -1276,6 +1338,7 @@ export class Game implements World, ItemHost {
         this.objectiveT -= sim;
         if (this.objectiveT <= 0) {
           this.objectiveT = 0.5;
+          this.settleRefunds();
           this.checkObjectives();
         }
         this.moneyHistoryT -= sim;

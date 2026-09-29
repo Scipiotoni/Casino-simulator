@@ -809,6 +809,8 @@ export class CharacterModel {
   private blinking = 0;
   private spin = 0;
   private t = Math.random() * 10;
+  /** 0..1 — a few cocktails in, the whole body sways and the head lolls. */
+  tipsy = 0;
 
   constructor(appearance: Appearance, private opts: CharacterOpts = {}) {
     this.root.add(this.body);
@@ -1067,6 +1069,12 @@ export class CharacterModel {
     this.body.rotation.x = j.bodyRx;
     this.body.rotation.z = j.bodyRz;
     this.headPivot.rotation.set(j.headRx, j.headRy, j.headRz);
+    if (this.tipsy > 0) {
+      const w = this.tipsy;
+      this.body.rotation.z += Math.sin(this.t * 2.1) * 0.13 * w;
+      this.body.position.x = Math.sin(this.t * 1.3 + 0.7) * 0.06 * w;
+      this.headPivot.rotation.z += Math.sin(this.t * 1.6 + 1.2) * 0.2 * w;
+    }
     if (this.pose === 'celebrate') this.spin += dt * 9;
     else this.spin = damp(this.spin, Math.round(this.spin / (Math.PI * 2)) * Math.PI * 2, 6, dt);
     this.body.rotation.y = this.spin;

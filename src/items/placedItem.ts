@@ -8,6 +8,9 @@ import { type Appearance, randomStaffAppearance } from '../entities/appearance';
 import { badgeTexture } from '../render/textures';
 import { easeOutBack } from '../core/math';
 
+
+/** Seconds after buying during which selling refunds the full price. */
+export const REFUND_SECONDS = 15;
 export interface SeatUser {
   readonly uid: number;
   readonly isCheater: boolean;
@@ -72,6 +75,12 @@ export class PlacedItem {
   broken = false;
   level = 1;
   color: number;
+  /** Custom sign text chosen by the player (slot toppers, bar and snack signs). */
+  label: string | null = null;
+  /** Game time when bought: selling right away gives a full refund. */
+  placedAt = -999;
+  /** XP from buying/upgrading, held back until the refund window closes. */
+  pendingXp = 0;
   stats: ItemStats = { plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 };
   staff: CharacterModel | null = null;
   private staffBaseX = 0;
@@ -139,10 +148,31 @@ export class PlacedItem {
     return Math.round(this.def.price * 0.6 * this.level);
   }
 
-  get sellValue(): number {
+  get invested(): number {
     let invested = this.def.price;
     for (let l = 1; l < this.level; l++) invested += Math.round(this.def.price * 0.6 * l);
-    return Math.round(invested * 0.55);
+    return invested;
+  }
+
+  /** Full refund for a quick change of mind, otherwise 55% back. */
+  get sellValue(): number {
+    return this.sellValueFor(this.refundable);
+  }
+
+  sellValueFor(full: boolean): number {
+    return full ? this.invested : Math.round(this.invested * 0.55);
+  }
+
+  get refundable(): boolean {
+    return this.host.time - this.placedAt < REFUND_SECONDS;
+  }
+
+  get refundLeft(): number {
+    return Math.max(0, REFUND_SECONDS - (this.host.time - this.placedAt));
+  }
+
+  get signable(): boolean {
+    return ['slot', 'megaslot', 'bar', 'snack', 'claw'].includes(this.def.model);
   }
 
   get isFull(): boolean {
@@ -158,10 +188,12 @@ export class PlacedItem {
       this.model.root.removeFromParent();
       this.model.dispose();
     }
+    const params = { ...(this.def.params ?? {}) };
+    if (this.label) params.sign = this.label;
     this.model = buildModel(this.def.model, {
       color: this.color,
       level: this.level,
-      params: this.def.params ?? {},
+      params,
       statueLook: this.def.model === 'statue' ? this.host.statueLook() : undefined,
     });
     this.root.add(this.model.root);
@@ -578,7 +610,8 @@ export class PlacedItem {
   serialize(): SavedItem {
     return {
       id: this.def.id, tx: this.tx, tz: this.tz, rot: this.rot, level: this.level, color: this.color,
-      cash: Math.round(this.cash), broken: this.broken, stats: { ...this.stats },
+      cash: Math.round(this.cash), broken: this.broken, stats: { ...this.stats }, label: this.label ?? undefined,
+      pxp: this.pendingXp || undefined,
     };
   }
 }
@@ -593,6 +626,9 @@ export interface SavedItem {
   cash: number;
   broken: boolean;
   stats: ItemStats;
+  label?: string;
+  /** XP still held back by the refund window when saved (paid out on load). */
+  pxp?: number;
 }
 
 function pickOf<T>(arr: T[]): T {

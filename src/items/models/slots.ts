@@ -220,7 +220,7 @@ function slotEvent(cabs: Cabinet[], ev: ModelEvent, now: () => number): void {
 export function slotModel(o: BuildOpts): ItemModel {
   const root = new THREE.Group();
   const dyn = new Dyn();
-  const topper = labelTexture(String(o.params.topper ?? 'SLOTS'), {
+  const topper = labelTexture(String(o.params.sign ?? o.params.topper ?? 'SLOTS'), {
     w: 320, h: 96, bg: '#140a22', color: String(o.params.topColor ?? '#ffd24a'), border: 'rgba(255,210,110,0.7)',
   });
   const cab = buildCabinet(root, dyn, 0, o, topper);
@@ -279,7 +279,7 @@ export function megaSlotModel(o: BuildOpts): ItemModel {
     c2d.fillStyle = g;
     roundRect(c2d, 0, 0, W, H, 24);
     c2d.fill();
-    drawNeonText(c2d, 'MEGA JACKPOT', W / 2, 52, W - 60, 56, 'Bungee, "Arial Black", sans-serif', '#ff3fa4');
+    drawNeonText(c2d, String(o.params.sign ?? 'MEGA JACKPOT'), W / 2, 52, W - 60, 56, 'Bungee, "Arial Black", sans-serif', '#ff3fa4');
     drawNeonText(c2d, formatMoney(pot), W / 2, 136, W - 60, 86, 'Bungee, "Arial Black", sans-serif', '#ffd24a');
     tex.needsUpdate = true;
   };
@@ -338,7 +338,7 @@ export function clawModel(o: BuildOpts): ItemModel {
   side2.rotation.y = -Math.PI / 2;
   box(root, 0.84, 1.1, 0.02, mat(shadeHex(o.color, 0.4)), 0, 1.2, zc - 0.39);
   rbox(root, 0.9, 0.28, 0.84, 0.05, body, 0, 1.9, zc);
-  const sign = labelTexture('CLAW', { w: 256, h: 80, bg: '#1a0b2b', color: '#7ff3ff', border: 'rgba(255,255,255,0.4)' });
+  const sign = labelTexture(String(o.params.sign ?? 'CLAW'), { w: 256, h: 80, bg: '#1a0b2b', color: '#7ff3ff', border: 'rgba(255,255,255,0.4)' });
   plane(root, 0.72, 0.22, new THREE.MeshStandardMaterial({ map: sign, emissive: 0xffffff, emissiveMap: sign, emissiveIntensity: 1.1 }), 0, 1.9, zc + 0.425);
   // Joystick + button
   cyl(root, 0.012, 0.012, 0.12, blackGloss(), -0.15, 0.7, zc + 0.3, 6);

@@ -121,6 +121,38 @@ input:focus-visible {
   display: none !important;
 }
 
+/* Photo mode: everything but the 3D view (and floating text) goes away. */
+.ui.photo > :not(.modal-layer):not(.title-screen):not(.floaters):not(.photo-exit) {
+  display: none !important;
+}
+
+.photo-exit {
+  display: none;
+}
+
+.ui.photo:not(.hud-hidden) .photo-exit {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(12, 6, 22, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.85);
+  font: 800 13px var(--font-body, inherit);
+  backdrop-filter: blur(6px);
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+.ui.photo .photo-exit:hover {
+  opacity: 1;
+}
+
 .floaters {
   position: absolute;
   inset: 0;
@@ -1033,6 +1065,45 @@ input:focus-visible {
 .color-row .muted {
   font-size: 12px;
   margin-right: 4px;
+}
+
+.sign-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sign-row .muted {
+  font-size: 12px;
+  min-width: 34px;
+}
+
+.sign-row .text-input {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  padding: 7px 10px;
+  text-transform: uppercase;
+}
+
+.sign-row .text-input::placeholder {
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+.card-actions .btn.refund {
+  grid-column: 1 / -1;
+  background: rgba(255, 210, 74, 0.16);
+  color: var(--gold);
+  border-color: rgba(255, 210, 74, 0.45);
+}
+
+.card-actions .btn small {
+  font-size: 11px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Buttons & inputs */

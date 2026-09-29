@@ -11,8 +11,8 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 **Build it your way**
 - 31 items across four categories: machines (Lucky 7s, Fruit Frenzy, Diamond Deluxe, the linked **Mega Jackpot**, claw crane, pachinko), tables (blackjack, roulette, big wheel, craps, hold'em poker), services (cocktail bar, snack bar, ATM, lounge bench, show stage) and decor (plants, palms, velvet ropes, neon signs, giant dice, gold pillars, a fountain, an aquarium, a money tree, a giant diamond, and a solid-gold statue of *you*).
 - Place anything anywhere with a live ghost preview. It turns red if the spot is taken, would block the entrance, or would wall guests off from a seat.
-- Click any placed item to **upgrade** it (5 levels: higher bets, bigger cash box, fewer breakdowns), **move** it, **rotate** it, **recolor** it or **sell** it.
-- Paint the floor tile by tile with 12 carpet styles, from Royal Crimson and Vegas Retro to marble, gold tiles and a glowing neon grid.
+- Click any placed item to **upgrade** it (5 levels: higher bets, bigger cash box, fewer breakdowns), **move** it, **rotate** it, **recolor** it or **sell** it. Slot machines, the bars and the claw crane take your own **sign text**. Changed your mind? Selling within 15 seconds of buying is a full refund.
+- Paint the floor tile by tile, or the whole casino in one click, with 12 carpet styles from Royal Crimson and Vegas Retro to marble, gold tiles and a glowing neon grid.
 - Rename your casino and restyle the neon roadside sign (4 lettering styles and 8 colors), the walls and the neon trim. Expand the building five times, from 14×12 up to 46×36 tiles.
 
 **Customize characters**
@@ -20,7 +20,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - You can restyle your staff too. They keep their uniforms.
 
 **A living casino**
-- Every guest has a wallet, a bank balance, a mood, thirst, hunger and energy. They pick games they like, bet by their budget, cheer big wins, get grumpy on losing streaks, buy drinks, rest on benches, hit the ATM, watch the show and drop litter.
+- Every guest has a wallet, a bank balance, a mood, thirst, hunger and energy. They pick games they like, bet by their budget, cheer big wins, get grumpy on losing streaks, buy drinks, rest on benches, hit the ATM, watch the show and drop litter. Three cocktails in, they get **tipsy**: they sway, hiccup and bet bigger. They also tell you what's missing ("Slots are fine, but where are the table games?").
 - Real game rules with a house edge. The slot reels land on the actual result, the roulette ball drops into the winning pocket, blackjack is dealt card by card, dice tumble across the craps table and the big wheel clicks past its pegs.
 - **VIP high rollers** sparkle gold: greet them for a tip. **Cheaters** get a red "?" once they're caught winning too often: bust them to recover the loot. Machines **break down** and smoke until you fix them.
 - Hire janitors, technicians, cashiers and security. Their wages are paid at the end of each day.
@@ -32,6 +32,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 **Juice**
 - Bloom-lit neon, chasing marquee bulbs, confetti, coin showers, floating money, emoji thought bubbles, camera shake on jackpots, and brighter neon after dark.
 - Synthesized sound effects and an optional lounge-jazz music loop.
+- **Photo mode** (`H` or the camera button) hides the HUD so you can admire your casino.
 - Autosaves to your browser, with Continue on the title screen.
 
 ![Character creator](docs/screenshot-creator.jpg)
@@ -48,6 +49,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 | Select | Click a machine, guest or staff member | Tap |
 | Emotes | `1`–`4` (wave, dance, cheer, clap) | |
 | Pause | `P` or the speed buttons | Speed buttons |
+| Photo mode | `H` | Camera button |
 
 ## Getting started
 

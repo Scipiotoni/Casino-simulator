@@ -400,7 +400,9 @@ export class ItemManager {
       }
       const it = this.add(def, s.tx, s.tz, s.rot, s.color);
       it.level = Math.max(1, Math.min(5, s.level || 1));
-      if (it.level > 1) it.rebuildModel();
+      it.label = s.label ? String(s.label).slice(0, 14) : null;
+      it.pendingXp = Math.max(0, Math.min(5000, Number(s.pxp) || 0));
+      if (it.level > 1 || it.label) it.rebuildModel();
       it.cash = s.cash || 0;
       it.stats = Object.assign({ plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 }, s.stats);
       if (s.broken) it.broken = true;

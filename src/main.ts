@@ -105,6 +105,7 @@ async function start(hotData: unknown): Promise<void> {
     hud.renderGoals();
   };
   const showTitle = () => {
+    if (hud.photo) hud.togglePhoto(false);
     hud.modals.closeAll();
     hud.shop.close();
     hud.root.classList.add('hud-hidden');
@@ -154,7 +155,11 @@ async function start(hotData: unknown): Promise<void> {
     if (game.state !== 'playing' || hud.modals.isOpen) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
-    if (e.code === 'KeyB') hud.shop.toggle();
+    if (e.code === 'KeyH') hud.togglePhoto();
+    else if (hud.photo) {
+      if (e.code === 'Escape') hud.togglePhoto(false);
+    }
+    else if (e.code === 'KeyB') hud.shop.toggle();
     else if (e.code === 'KeyP') hud.setSpeed(0);
   });
 

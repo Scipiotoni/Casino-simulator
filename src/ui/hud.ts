@@ -130,14 +130,17 @@ export class Hud {
     this.knobEl = h('div', { class: 'knob' });
     this.joyEl = h('div', { class: 'joystick', hidden: true }, this.knobEl);
     const camBtns = h('div', { class: 'cam-btns' },
+      h('button', { class: 'cam-btn', html: icon('camera', 18), 'aria-label': 'Photo mode (H)', title: 'Photo mode (H)', onClick: () => this.togglePhoto(true) }),
       h('button', { class: 'cam-btn', html: icon('rotate', 18), 'aria-label': 'Rotate camera', onClick: () => g.cam.rotate(1) }),
       h('button', { class: 'cam-btn', html: icon('zoomIn', 18), 'aria-label': 'Zoom in', onClick: () => g.cam.zoomBy(0.8) }),
       h('button', { class: 'cam-btn', html: icon('zoomOut', 18), 'aria-label': 'Zoom out', onClick: () => g.cam.zoomBy(1.25) }),
     );
-    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes' });
+    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes · <b>H</b> photo' });
     this.fpsEl = h('div', { class: 'fps', hidden: true });
 
-    this.root.append(top, this.eventChip, this.goalsEl, this.toastsEl, this.bannerEl, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl);
+    const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
+
+    this.root.append(top, this.eventChip, this.goalsEl, this.toastsEl, this.bannerEl, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -278,12 +281,41 @@ export class Hud {
         }, h('span', { class: 'sw-chip', style: `background-image:url(${floorSwatch(i)})` }), h('span', { class: 'sw-name', text: s.name }), h('span', { class: 'sw-price', text: `$${s.price}` }));
         row.appendChild(b);
       });
+      const r = g.grid.rect;
+      let tiles = 0;
+      for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) if (g.grid.getFloor(x, z) !== m.style) tiles++;
+      const style = m.style;
+      const allBtn = h('button', {
+        class: 'btn small', disabled: tiles === 0,
+        html: tiles ? `Paint everything <b>${formatMoney(tiles * FLOOR_STYLES[style].price)}</b>` : 'All painted',
+        onClick: () => {
+          if (g.paintAll(style)) this.renderMode();
+        },
+      });
       this.paintBar.append(
         h('div', { class: 'paint-head' }, h('span', { html: icon('paint', 18) }), h('b', { text: 'Paint the floor' }), h('span', { class: 'muted', text: g.input.isTouch ? 'Drag on the floor' : 'Click or drag on the floor' }),
+          allBtn,
           h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } })),
         row,
       );
     }
+  }
+
+  get photo(): boolean {
+    return this.root.classList.contains('photo');
+  }
+
+  /** Hides the whole HUD so the casino can be admired (and screenshotted). */
+  togglePhoto(on = !this.root.classList.contains('photo')): void {
+    const g = this.game;
+    if (on) {
+      g.select(null);
+      this.shop.close();
+      if (g.build.mode.kind !== 'play') g.build.cancel();
+    }
+    g.photoMode = on;
+    this.root.classList.toggle('photo', on);
+    audio.play(on ? 'whoosh' : 'click');
   }
 
   togglePaint(): void {
@@ -331,8 +363,28 @@ export class Hud {
     }
     actions.appendChild(h('button', { class: 'btn', html: `${icon('move', 16)} Move`, onClick: () => { g.build.startMove(item); } }));
     actions.appendChild(h('button', { class: 'btn', html: `${icon('rotate', 16)} Rotate`, onClick: () => this.quickRotate(item) }));
-    actions.appendChild(h('button', { class: 'btn danger', html: `${icon('sell', 16)} Sell <b>+${formatMoney(item.sellValue)}</b>`, onClick: () => this.confirmSell(item) }));
+    actions.appendChild(h('button', {
+      class: 'btn danger', dataset: { live: 'sell' },
+      // Right after buying, selling is an instant, no-questions-asked undo.
+      onClick: () => (item.refundable ? g.sell(item) : this.confirmSell(item)),
+    }));
     this.cardEl.appendChild(actions);
+    if (item.signable) {
+      const input = h('input', {
+        class: 'text-input', type: 'text', maxLength: 14, value: item.label ?? '', placeholder: String(def.params?.topper ?? (def.jackpot ? 'MEGA JACKPOT' : def.kind === 'bar' ? 'COCKTAILS' : def.kind === 'snack' ? 'SNACKS' : def.kind === 'claw' ? 'CLAW' : 'SLOTS')),
+        'aria-label': 'Sign text',
+      }) as HTMLInputElement;
+      const apply = () => {
+        if ((item.label ?? '') !== input.value.trim().toUpperCase().slice(0, 14)) g.setItemLabel(item, input.value);
+        input.value = item.label ?? '';
+      };
+      input.addEventListener('change', apply);
+      input.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') input.blur();
+      });
+      this.cardEl.appendChild(h('div', { class: 'sign-row' }, h('span', { class: 'muted', text: 'Sign' }), input));
+    }
     if (def.colors.length > 1) {
       const colors = h('div', { class: 'color-row' }, h('span', { class: 'muted', text: 'Color' }));
       for (const c of def.colors) {
@@ -410,6 +462,15 @@ export class Hud {
             : it.seats.length
               ? `<span class="chip good">${busy}/${it.seats.length} in use</span>${it.seats.some((s) => !s.reachable) ? '<span class="chip warn">Some seats blocked</span>' : ''}`
               : '<span class="chip">Decoration</span>';
+      }
+      const sell = q('sell');
+      if (sell) {
+        const full = it.refundable;
+        const html = full
+          ? `${icon('undo', 16)} Undo purchase <b>+${formatMoney(it.sellValue)}</b> <small>${Math.ceil(it.refundLeft)}s</small>`
+          : `${icon('sell', 16)} Sell <b>+${formatMoney(it.sellValue)}</b>`;
+        if (sell.innerHTML !== html) sell.innerHTML = html;
+        sell.classList.toggle('refund', full);
       }
       const s = q('itemstats');
       if (s) {

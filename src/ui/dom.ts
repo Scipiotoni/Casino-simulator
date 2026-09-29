@@ -92,6 +92,7 @@ const PATHS: Record<string, string> = {
   close: '<path d="M6 6l12 12"/><path d="M18 6L6 18"/>',
   move: '<path d="M12 3v18"/><path d="M3 12h18"/><path d="M12 3l-3 3"/><path d="M12 3l3 3"/><path d="M12 21l-3-3"/><path d="M12 21l3-3"/><path d="M3 12l3-3"/><path d="M3 12l3 3"/><path d="M21 12l-3-3"/><path d="M21 12l-3 3"/>',
   upgrade: '<path d="M12 20V5"/><path d="M5 12l7-7 7 7"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
   sell: '<circle cx="12" cy="12" r="8.5"/><path d="M15 9.2c-.6-1-1.7-1.5-3-1.5-1.8 0-3 .9-3 2.2 0 3.2 6.2 1.6 6.2 4.8 0 1.3-1.3 2.3-3.2 2.3-1.4 0-2.6-.6-3.2-1.6"/><path d="M12 6v12"/>',
   paint: '<path d="M18.5 3.5l2 2L10 16l-3 1 1-3z"/><path d="M4 20c1.5 0 3-.7 3-2.5"/>',
   goal: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/>',
