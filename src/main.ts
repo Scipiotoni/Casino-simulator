@@ -7,6 +7,8 @@ import '@fontsource/pacifico/latin-400.css';
 import '@fontsource/monoton/latin-400.css';
 import './styles/main.css';
 import { Game, type SaveData, type Settings } from './game/game';
+import { emptyNet, migrateSave, type NetState } from './game/save';
+import { Net } from './net/net';
 import { Hud } from './ui/hud';
 import { TitleScreen } from './ui/title';
 import { audio } from './core/audio';
@@ -15,6 +17,7 @@ import { formatMoney } from './core/math';
 
 const SAVE_KEY = 'jackpot-tycoon:save:v1';
 const SETTINGS_KEY = 'jackpot-tycoon:settings:v1';
+const NET_KEY = 'jackpot-tycoon:net:v1';
 
 const DEFAULT_SETTINGS: Settings = {
   master: 0.8,
@@ -77,15 +80,20 @@ async function start(hotData: unknown): Promise<void> {
   app.appendChild(stage);
   const game = new Game(stage, settings);
   const hud = new Hud(app, game);
-  const readSave = () => loadJSON<SaveData>(SAVE_KEY);
+  const readSave = () => migrateSave(loadJSON<unknown>(SAVE_KEY));
   const title = new TitleScreen(hud.root, game, readSave);
 
+  game.net = { ...emptyNet(), ...(loadJSON<NetState>(NET_KEY) ?? {}) };
+  const net = new Net(game, hud);
+  void net.start();
   let lastSave: SaveData | null = null;
   game.onSave = (d) => {
     lastSave = d;
     saveJSON(SAVE_KEY, d);
+    saveJSON(NET_KEY, game.net);
   };
   hotApi()?.snapshot?.(() => (game.state === 'playing' ? game.serialize() : lastSave));
+  game.settings = settings;
 
   const applyAudio = () => {
     audio.applySettings({ master: settings.master, sfx: settings.sfx, music: settings.music });
@@ -117,7 +125,8 @@ async function start(hotData: unknown): Promise<void> {
     game.newGame(opts);
     enterGame();
     hud.banner(`Welcome to ${opts.name}!`, 'Tap Build to buy your first slot machine.', 'level');
-    window.setTimeout(() => game.notify('Tip: guests arrive once you have a machine. Walk past machines to collect their cash.', 'info'), 4200);
+    window.setTimeout(() => game.notify('Tip: every bet lands straight in your bank, and every guest win comes out of it. The house edge does the rest.', 'info'), 4200);
+    window.setTimeout(() => game.notify('Tip: walk out the front door to visit the rival casino down the street.', 'info'), 12000);
   };
   title.onContinue = () => {
     const s = readSave();
@@ -139,6 +148,7 @@ async function start(hotData: unknown): Promise<void> {
     removeKey(SAVE_KEY);
     showTitle();
   };
+  game.events.on('camera', () => saveJSON(SETTINGS_KEY, settings));
   hud.modals.onSettingsChanged = () => {
     applyAudio();
     saveJSON(SETTINGS_KEY, settings);
@@ -170,6 +180,7 @@ async function start(hotData: unknown): Promise<void> {
     try {
       game.frame(now);
       hud.update(uiDt);
+      net.update(uiDt);
     } catch (err) {
       console.error(err);
     }
@@ -178,15 +189,16 @@ async function start(hotData: unknown): Promise<void> {
   requestAnimationFrame(loop);
 
   // Resume straight into the game after a live update in the artifact viewer.
-  const hot = hotData as SaveData | null | undefined;
-  if (hot && typeof hot === 'object' && (hot as SaveData).v === 1) {
+  const hot = migrateSave(hotData);
+  if (hot) {
     game.load(hot);
     hud.root.classList.remove('hud-hidden');
     title.el.hidden = true;
   } else {
     showTitle();
   }
-  (window as unknown as { __game?: Game }).__game = game;
+  (window as unknown as { __game?: Game; __net?: Net }).__game = game;
+  (window as unknown as { __net?: Net }).__net = net;
   void formatMoney;
 }
 

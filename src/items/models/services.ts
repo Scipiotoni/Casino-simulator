@@ -259,3 +259,64 @@ export function stageModel(o: BuildOpts): ItemModel {
     },
   };
 }
+
+/** Glass elevator linking the floors. Its doors open onto the +x side (the portal tile). */
+export function elevatorModel(o: BuildOpts): ItemModel {
+  const root = new THREE.Group();
+  const dyn = new Dyn();
+  const g = gold();
+  const H = 2.45;
+  // Marble plinth covering the 2×3 footprint
+  rbox(root, 1.96, 0.1, 2.96, 0.03, mat(0xe9e1d3, { rough: 0.3 }), 0, 0.05, 0);
+  box(root, 1.98, 0.03, 2.98, g, 0, 0.1, 0);
+  // Shaft: gold posts, glass panels and a crown
+  const glass = new THREE.MeshStandardMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.22, roughness: 0.05, metalness: 0.2, depthWrite: false });
+  const R = 0.82;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    cyl(root, 0.035, 0.035, H, g, Math.sin(a) * R, 0.1 + H / 2, Math.cos(a) * R, 8);
+  }
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(R, R, H, 24, 1, true, Math.PI / 2 + 0.55, Math.PI * 2 - 1.1), glass);
+  shaft.position.set(0, 0.1 + H / 2, 0);
+  root.add(shaft);
+  dyn.keep(shaft);
+  cyl(root, R + 0.08, R + 0.08, 0.14, g, 0, 0.1 + H + 0.07, 0, 28);
+  cyl(root, R + 0.02, R + 0.1, 0.12, mat(o.color, { rough: 0.4 }), 0, 0.1 + H + 0.2, 0, 28);
+  // Car floor and a velvet bench inside
+  cyl(root, R - 0.05, R - 0.05, 0.06, mat(0x8a1030, { rough: 0.9 }), 0, 0.13, 0, 24);
+  rbox(root, 0.8, 0.12, 0.28, 0.04, mat(0x8a1030, { rough: 0.8 }), -0.35, 0.45, 0).rotation.y = Math.PI / 2;
+  // Door frame on +x with the floor indicator
+  box(root, 0.08, H - 0.1, 0.12, g, R + 0.02, 0.1 + (H - 0.1) / 2, -0.58);
+  box(root, 0.08, H - 0.1, 0.12, g, R + 0.02, 0.1 + (H - 0.1) / 2, 0.58);
+  box(root, 0.1, 0.12, 1.28, g, R + 0.02, 0.1 + H - 0.14, 0);
+  const sign = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.9, 0.26),
+    new THREE.MeshStandardMaterial({ map: labelTexture('▲ ELEVATOR ▼', { w: 256, h: 72, bg: '#1a0b2b', color: '#ffd24a', border: 'rgba(255,210,74,0.6)' }), emissive: 0xffffff, emissiveIntensity: 0.9, emissiveMap: labelTexture('▲ ELEVATOR ▼', { w: 256, h: 72, bg: '#1a0b2b', color: '#ffd24a', border: 'rgba(255,210,74,0.6)' }) }),
+  );
+  sign.rotation.y = Math.PI / 2;
+  sign.position.set(R + 0.09, 0.1 + H + 0.12, 0);
+  root.add(sign);
+  // Call button panel
+  box(root, 0.04, 0.3, 0.14, chrome(), R + 0.16, 1.05, 0.8);
+  const lamp = sph(root, 0.035, glow(0x39ff88, 2.2), R + 0.19, 1.12, 0.8, 8, 6);
+  dyn.keep(lamp);
+  // Potted palms in the corners of the plinth
+  for (const z of [-1.2, 1.2]) {
+    cyl(root, 0.16, 0.12, 0.3, mat(0x2c2433, { rough: 0.6 }), -0.72, 0.25, z, 12);
+    sph(root, 0.2, mat(0x2f7a3a, { rough: 0.9 }), -0.72, 0.52, z, 10, 8);
+  }
+  bake(root, dyn);
+  let t = 0;
+  return {
+    root,
+    height: H + 0.4,
+    update(dt) {
+      t += dt;
+      lamp.visible = Math.sin(t * 3) > -0.2;
+    },
+    event() {},
+    dispose() {
+      disposeTree(root);
+    },
+  };
+}

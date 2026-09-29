@@ -1,7 +1,7 @@
 export type Category = 'slots' | 'tables' | 'services' | 'decor';
 export type GameKind =
   | 'slot' | 'claw' | 'pachinko' | 'roulette' | 'blackjack' | 'poker' | 'craps' | 'wheel'
-  | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor';
+  | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor' | 'elevator';
 
 export interface SeatDef {
   /** Tile inside the footprint the occupant paths to (rotation 0). */
@@ -41,6 +41,8 @@ export interface ItemDef {
   shared?: boolean;
   jackpot?: boolean;
   litterReduce?: number;
+  /** Built by the game itself (the elevator): never in the shop, can't be moved or sold. */
+  fixed?: boolean;
   /** Extra per-item look parameters handed to the model builder. */
   params?: Record<string, string | number>;
 }
@@ -296,6 +298,12 @@ export const ITEMS: ItemDef[] = [
     ...base, id: 'diamond', name: 'Giant Diamond', category: 'decor', kind: 'decor', price: 30000, unlock: 10, size: [2, 2],
     appeal: 8, appealRadius: 7, description: 'A spinning, glittering diamond the size of a car. The ultimate flex.',
     colors: [0x7ff3ff, 0xff9fcf, 0xfff4b0, 0xb9a0ff], model: 'giantdiamond',
+  },
+  {
+    ...base, id: 'elevator', name: 'Elevator', category: 'services', kind: 'elevator', price: 0, unlock: 99, size: [2, 3],
+    appeal: 0.5, appealRadius: 2.5, fixed: true,
+    description: 'Takes guests and staff between floors.',
+    colors: [0x3a1d4d], model: 'elevator',
   },
 ];
 

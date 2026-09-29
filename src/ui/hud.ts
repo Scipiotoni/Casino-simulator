@@ -1,4 +1,4 @@
-import type { Game, Selection, DayReport } from '../game/game';
+import { type Game, type Selection, type DayReport, floorName } from '../game/game';
 import { h, icon, stars, clear, swatch } from './dom';
 import { formatClock, formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
@@ -11,7 +11,7 @@ import { FLOOR_STYLES } from '../render/textures';
 import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
-import { SlotMiniGame } from './minigame';
+import { openTableGame } from './games';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
 export class Hud {
@@ -44,14 +44,17 @@ export class Hud {
   private bannerQueue: { title: string; text: string; kind: string }[] = [];
   private bannerBusy = false;
   private goalsCollapsed = false;
-  private minigame: SlotMiniGame;
+  private visitBar!: HTMLElement;
+  private floorBar!: HTMLElement;
+  private camBtn!: HTMLButtonElement;
+  /** Extra card for another player you clicked (filled in by the multiplayer layer). */
+  remoteCard: ((pid: string, el: HTMLElement) => void) | null = null;
 
   constructor(parent: HTMLElement, private game: Game) {
     this.root = h('div', { class: 'ui', id: 'ui' });
     parent.appendChild(this.root);
     this.modals = new Modals(this.root, game, this);
     this.shop = new ShopDrawer(this.root, game, this);
-    this.minigame = new SlotMiniGame(this.modals, game);
     this.build();
     this.bind();
     this.goalsCollapsed = window.innerWidth < 700;
@@ -99,7 +102,6 @@ export class Hud {
     // Toolbar
     const tools: [string, string, () => void][] = [
       ['shop', 'Build', () => this.shop.toggle()],
-      ['floor', 'Floor', () => this.togglePaint()],
       ['staff', 'Staff', () => this.modals.openStaff()],
       ['casino', 'Casino', () => this.modals.openCasino()],
       ['you', 'You', () => this.modals.openCreator('player')],
@@ -130,17 +132,23 @@ export class Hud {
     this.knobEl = h('div', { class: 'knob' });
     this.joyEl = h('div', { class: 'joystick', hidden: true }, this.knobEl);
     const camBtns = h('div', { class: 'cam-btns' },
+      (this.camBtn = h('button', { class: 'cam-btn cam-mode', html: icon('you', 18), 'aria-label': 'Third-person camera (V)', title: 'Third-person camera (V)', onClick: () => { g.setCameraMode(g.cam.mode === 'third' ? 'top' : 'third'); audio.play('click'); } }) as HTMLButtonElement),
       h('button', { class: 'cam-btn', html: icon('camera', 18), 'aria-label': 'Photo mode (H)', title: 'Photo mode (H)', onClick: () => this.togglePhoto(true) }),
       h('button', { class: 'cam-btn', html: icon('rotate', 18), 'aria-label': 'Rotate camera', onClick: () => g.cam.rotate(1) }),
       h('button', { class: 'cam-btn', html: icon('zoomIn', 18), 'aria-label': 'Zoom in', onClick: () => g.cam.zoomBy(0.8) }),
       h('button', { class: 'cam-btn', html: icon('zoomOut', 18), 'aria-label': 'Zoom out', onClick: () => g.cam.zoomBy(1.25) }),
     );
-    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes · <b>H</b> photo' });
+    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes · <b>V</b> camera · <b>H</b> photo' });
     this.fpsEl = h('div', { class: 'fps', hidden: true });
+
+    // Visiting another casino
+    this.visitBar = h('div', { class: 'visitbar', hidden: true });
+    // Floor picker (several floors)
+    this.floorBar = h('div', { class: 'floorbar', hidden: true, role: 'group', 'aria-label': 'Floors' });
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(top, this.eventChip, this.goalsEl, this.toastsEl, this.bannerEl, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.toastsEl, this.bannerEl, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -167,8 +175,12 @@ export class Hud {
     g.events.on('look', () => (this.nameEl.textContent = g.building.look.name));
     g.events.on('day', (r) => this.dayReport(r));
     g.events.on('minigame', (item) => {
-      if (!this.modals.isOpen) this.minigame.open(item);
+      if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });
     });
+    g.events.on('visit', () => this.renderVisit());
+    g.events.on('floor', () => this.renderFloors());
+    g.events.on('expansion', () => this.renderFloors());
+    g.events.on('camera', () => this.renderCamBtn());
     g.events.on('interact', (i) => {
       if (i && g.input.isTouch) {
         this.actionBtn.hidden = false;
@@ -321,6 +333,7 @@ export class Hud {
   togglePaint(): void {
     const g = this.game;
     if (g.build.mode.kind === 'paint') g.build.cancel();
+    else if (g.visiting || !g.inside) g.notify('Step inside your own casino to paint the floor.', 'bad');
     else {
       this.shop.close();
       g.build.startPaint(0);
@@ -337,7 +350,8 @@ export class Hud {
     this.cardEl.appendChild(close);
     if (sel.kind === 'item') this.itemCard(sel.item);
     else if (sel.kind === 'customer') this.customerCard(sel.c);
-    else this.workerCard(sel.w);
+    else if (sel.kind === 'worker') this.workerCard(sel.w);
+    else this.remoteCard?.(sel.pid, this.cardEl);
     this.refreshCard();
   }
 
@@ -358,6 +372,10 @@ export class Hud {
       this.cardEl.appendChild(h('div', { class: 'card-stats', dataset: { live: 'itemstats' } }));
     }
     const actions = h('div', { class: 'card-actions' });
+    if (def.fixed) {
+      this.cardEl.appendChild(h('p', { class: 'muted small', text: g.floors > 1 ? `Walk to its door and press Space, or use the floor buttons, to ride between ${g.floors} floors.` : def.description }));
+      return;
+    }
     if (item.upgradable && item.level < MAX_LEVEL) {
       actions.appendChild(h('button', { class: 'btn gold', html: `${icon('upgrade', 16)} Upgrade <b>${formatMoney(item.upgradeCost)}</b>`, onClick: () => { if (g.upgrade(item)) this.renderCard({ kind: 'item', item }); } }));
     }
@@ -401,7 +419,7 @@ export class Hud {
     const g = this.game;
     for (let k = 1; k <= 3; k++) {
       const rot = (item.rot + k) % 4;
-      if (g.items.canPlace(item.def, item.tx, item.tz, rot, item).ok) {
+      if (g.items.canPlace(item.def, item.floor, item.tx, item.tz, rot, item).ok) {
         g.items.move(item, item.tx, item.tz, rot);
         g.afterLayoutChange();
         audio.play('rotate');
@@ -414,7 +432,7 @@ export class Hud {
   }
 
   private confirmSell(item: PlacedItem): void {
-    this.modals.confirm(`Sell ${item.def.name}?`, `You get ${formatMoney(item.sellValue)} back${item.cash >= 1 ? ` plus ${formatMoney(item.cash)} left in its cash box` : ''}.`, 'Sell', () => this.game.sell(item));
+    this.modals.confirm(`Sell ${item.def.name}?`, `You get ${formatMoney(item.sellValue)} back.`, 'Sell', () => this.game.sell(item));
   }
 
   private customerCard(c: Customer): void {
@@ -457,9 +475,7 @@ export class Hud {
         const busy = it.occupiedCount();
         st.innerHTML = it.broken
           ? '<span class="chip bad">Broken</span>'
-          : it.isFull
-            ? '<span class="chip warn">Cash box full</span>'
-            : it.seats.length
+          : it.seats.length
               ? `<span class="chip good">${busy}/${it.seats.length} in use</span>${it.seats.some((s) => !s.reachable) ? '<span class="chip warn">Some seats blocked</span>' : ''}`
               : '<span class="chip">Decoration</span>';
       }
@@ -475,7 +491,6 @@ export class Hud {
       const s = q('itemstats');
       if (s) {
         const rows: [string, string][] = [];
-        if (it.def.cashCap > 0) rows.push(['Cash box', `${formatMoney(it.cash)} / ${formatMoney(it.cashCap, true)}`]);
         if (it.isGambling) {
           rows.push(['Bets', `${formatMoney(it.minBet)}–${formatMoney(it.maxBet)}`]);
           rows.push(['Rounds played', formatNumber(it.stats.plays)]);
@@ -501,7 +516,7 @@ export class Hud {
       }
       const t = q('thought');
       if (t) t.textContent = `“${c.thought}”`;
-    } else {
+    } else if (sel.kind === 'worker') {
       const w = sel.w;
       const s = q('worker');
       if (s) s.innerHTML = [['Status', escapeHtml(w.statusLine)], ['Jobs done', formatNumber(w.jobsDone)]].map(([a, b]) => `<div class="kv"><span>${a}</span><b>${b}</b></div>`).join('');
@@ -514,8 +529,56 @@ export class Hud {
 
   // ------------------------------------------------------------------ per-frame
 
+  /** Banner shown while you're a guest in someone else's casino. */
+  renderVisit(): void {
+    const g = this.game;
+    const v = g.visit;
+    this.visitBar.hidden = !v;
+    this.root.classList.toggle('visiting', !!v);
+    this.toolbar.querySelectorAll('.tool-shop, .tool-staff, .tool-casino').forEach((b) => ((b as HTMLElement).hidden = !!v));
+    this.shop.close();
+    this.nameEl.textContent = v ? v.lot.info.look.name : g.building.look.name;
+    if (v) {
+      clear(this.visitBar);
+      const home = g.street.get('me');
+      this.visitBar.append(
+        h('div', { class: 'vb-text' },
+          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
+          h('span', { class: 'vb-net', dataset: { live: 'vnet' } }),
+        ),
+        h('button', {
+          class: 'btn small gold', html: `${icon('casino', 14)} Head home`,
+          onClick: () => { g.returnHome(g.street.offsetOf('me')); audio.play('whoosh'); },
+          title: home ? `Back to ${home.info.look.name}` : 'Back home',
+        }),
+      );
+    }
+    this.renderFloors();
+  }
+
+  /** Floor buttons (only with more than one floor). */
+  renderFloors(): void {
+    const g = this.game;
+    this.floorBar.hidden = g.floors < 2 || !g.inside;
+    if (g.floors < 2) return;
+    clear(this.floorBar);
+    for (let f = g.floors - 1; f >= 0; f--) {
+      this.floorBar.appendChild(h('button', {
+        class: `fl-btn${f === g.player.floor ? ' on' : ''}`, text: f === 0 ? 'G' : String(f + 1), title: floorName(f), 'aria-label': floorName(f),
+        onClick: () => { g.goToFloor(f); this.renderFloors(); },
+      }));
+    }
+  }
+
+  private renderCamBtn(): void {
+    const third = this.game.cam.mode === 'third';
+    this.camBtn.classList.toggle('on', third);
+    this.camBtn.title = third ? 'Top-down camera (V)' : 'Third-person camera (V)';
+  }
+
   update(dt: number): void {
     const g = this.game;
+    this.floorBar.hidden = g.floors < 2 || !g.inside;
     // Animated money counter
     const diff = g.money - this.shownMoney;
     this.shownMoney += Math.abs(diff) < 1 ? diff : diff * Math.min(1, dt * 8);
@@ -541,6 +604,14 @@ export class Hud {
       this.eventChip.hidden = !ev;
       if (ev) this.eventChip.textContent = `${ev.title} ${Math.ceil(ev.left)}s`;
       this.refreshCard();
+      if (g.visit) {
+        const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;
+        if (vn) {
+          const n = g.visit.net;
+          vn.textContent = g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
+          vn.className = `vb-net ${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}`;
+        }
+      }
       if (!this.goalsCollapsed) this.updateGoalBars();
       this.fpsEl.hidden = !g.settings.showFps;
       if (g.settings.showFps) this.fpsEl.textContent = `${g.fps.toFixed(0)} fps · ${g.customers.length} guests`;

@@ -155,11 +155,12 @@ export class BuildController {
 
   private evaluate(): void {
     if (this.mode.kind !== 'place' || !this.tile) return;
-    const key = `${this.tile[0]},${this.tile[1]},${this.mode.rot},${this.g.items.version},${this.g.grid.version}`;
+    const grid = this.g.gridAt(this.g.viewFloor);
+    const key = `${this.tile[0]},${this.tile[1]},${this.mode.rot},${this.g.items.version},${grid.version},${this.g.viewFloor}`;
     if (key === this.checkKey) return;
     this.checkKey = key;
     const m = this.mode;
-    const check = this.g.items.canPlace(m.def, this.tile[0], this.tile[1], m.rot, m.moving ?? undefined);
+    const check = this.g.items.canPlace(m.def, m.moving ? m.moving.floor : this.g.viewFloor, this.tile[0], this.tile[1], m.rot, m.moving ?? undefined);
     const affordable = m.moving || this.g.money >= m.def.price;
     this.valid = check.ok && !!affordable;
     this.reason = !check.ok ? check.reason ?? 'Can’t place here' : !affordable ? `Need ${formatMoney(m.def.price)}` : '';
@@ -247,11 +248,12 @@ export class BuildController {
       const p = input.pointer.over || input.isTouch ? this.groundAt(input.pointer.x, input.pointer.y) : null;
       const tx = p ? Math.floor(p.x) : null;
       const tz = p ? Math.floor(p.z) : null;
-      const owned = tx !== null && tz !== null && this.g.grid.isOwned(tx, tz);
+      const grid = this.g.gridAt(this.g.viewFloor);
+      const owned = tx !== null && tz !== null && grid.isOwned(tx, tz);
       this.g.floor.showTileHighlight(owned ? tx : null, owned ? tz : null, 0x9fe8ff);
       const paintAt = (x: number, z: number) => {
         const key = `${x},${z}`;
-        if (!this.g.grid.isOwned(x, z) || this.g.grid.getFloor(x, z) === style) return;
+        if (!grid.isOwned(x, z) || grid.getFloor(x, z) === style) return;
         const price = FLOOR_STYLES[style].price;
         if (this.g.money < price) {
           if (this.lastPaint !== 'broke') this.g.notify('Not enough cash to paint', 'bad');
@@ -259,7 +261,7 @@ export class BuildController {
           return;
         }
         this.lastPaint = key;
-        this.g.grid.setFloor(x, z, style);
+        grid.setFloor(x, z, style);
         this.g.spend(price, 'paint');
         this.g.floorPainted++;
         this.floorDirty = true;

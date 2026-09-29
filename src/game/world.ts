@@ -13,7 +13,9 @@ export type MoneyReason =
 
 /** What NPCs and machines are allowed to see and poke of the running game. */
 export interface World {
-  readonly grid: Grid;
+  /** Number of floors in the casino (1 = ground floor only). */
+  readonly floors: number;
+  gridAt(floor: number): Grid;
   readonly items: ItemManager;
   readonly trash: TrashManager;
   readonly effects: Effects;
@@ -26,8 +28,8 @@ export interface World {
   onCustomerGone(c: Customer): void;
   addMoney(amount: number, reason: MoneyReason, pos?: THREE.Vector3): void;
   sfxAt(name: SfxName, x: number, z: number, volume?: number): void;
-  stageBoostAt(x: number, z: number): number;
-  witness(x: number, z: number, radius: number, mood: number, except?: Customer): void;
+  stageBoostAt(x: number, z: number, floor?: number): number;
+  witness(x: number, z: number, radius: number, mood: number, except?: Customer, floor?: number): void;
   notify(text: string, kind?: 'info' | 'good' | 'bad' | 'money' | 'event'): void;
   staffCount(role: string): number;
   onStaffBust(): void;

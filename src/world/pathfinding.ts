@@ -1,15 +1,28 @@
-import { GRID_D, GRID_W, type Grid } from './grid';
+import type { Grid } from './grid';
 
-const N = GRID_W * GRID_D;
-const gScore = new Float32Array(N);
-const fScore = new Float32Array(N);
-const came = new Int32Array(N);
-const gen = new Int32Array(N);
-const closedGen = new Int32Array(N);
+let N = 0;
+let gScore = new Float32Array(0);
+let fScore = new Float32Array(0);
+let came = new Int32Array(0);
+let gen = new Int32Array(0);
+let closedGen = new Int32Array(0);
+let heap = new Int32Array(0);
 let curGen = 1;
 
+/** Scratch buffers grow with the largest grid seen (depth is unlimited). */
+function ensure(size: number): void {
+  if (size <= N) return;
+  N = size;
+  gScore = new Float32Array(N);
+  fScore = new Float32Array(N);
+  came = new Int32Array(N);
+  gen = new Int32Array(N);
+  closedGen = new Int32Array(N);
+  heap = new Int32Array(N * 8);
+  curGen = 1;
+}
+
 // Binary min-heap of node indices keyed by fScore.
-const heap = new Int32Array(N * 8);
 let heapSize = 0;
 
 function push(i: number): void {
@@ -70,6 +83,7 @@ function heuristic(ax: number, az: number, bx: number, bz: number): number {
 export function findPath(grid: Grid, sx: number, sz: number, gx: number, gz: number): [number, number][] | null {
   if (!grid.inBounds(sx, sz) || !grid.inBounds(gx, gz)) return null;
   if (sx === gx && sz === gz) return [[gx, gz]];
+  ensure(grid.size);
   curGen++;
   if (curGen > 1e9) {
     curGen = 1;
@@ -97,13 +111,13 @@ export function findPath(grid: Grid, sx: number, sz: number, gx: number, gz: num
       const out: [number, number][] = [];
       let k = cur;
       while (k !== -1) {
-        out.push([k % GRID_W, (k / GRID_W) | 0]);
+        out.push([grid.tileX(k), grid.tileZ(k)]);
         k = came[k];
       }
       return out.reverse();
     }
-    const cx = cur % GRID_W;
-    const cz = (cur / GRID_W) | 0;
+    const cx = grid.tileX(cur);
+    const cz = grid.tileZ(cur);
     const leavingBlockedStart = cur === startI && startBlocked;
     for (const [dx, dz, cost] of NB) {
       const diagonal = dx !== 0 && dz !== 0;
@@ -111,7 +125,7 @@ export function findPath(grid: Grid, sx: number, sz: number, gx: number, gz: num
       const nx = cx + dx;
       const nz = cz + dz;
       if (!grid.inBounds(nx, nz)) continue;
-      const ni = nz * GRID_W + nx;
+      const ni = grid.idx(nx, nz);
       const isGoal = ni === goalI;
       if (!isGoal && !passable(nx, nz)) continue;
       if (isGoal && goalBlocked && diagonal) continue;

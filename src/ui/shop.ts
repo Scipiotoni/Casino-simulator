@@ -44,6 +44,14 @@ export class ShopDrawer {
   }
 
   show(cat?: Category): void {
+    if (this.game.visiting) {
+      this.game.notify('You can only build in your own casino.', 'bad');
+      return;
+    }
+    if (!this.game.inside) {
+      this.game.notify('Step inside your casino to build.', 'bad');
+      return;
+    }
     this.game.build.cancel();
     this.game.select(null);
     this.open = true;
@@ -76,7 +84,7 @@ export class ShopDrawer {
   private render(): void {
     clear(this.grid);
     const g = this.game;
-    const list = ITEMS.filter((d) => d.category === this.cat);
+    const list = ITEMS.filter((d) => d.category === this.cat && !d.fixed);
     for (const def of list) {
       const locked = def.unlock > g.level;
       const card = h('button', {

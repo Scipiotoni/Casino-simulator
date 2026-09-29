@@ -4,7 +4,7 @@ import { h, clear, icon, swatch, stars } from './dom';
 import { formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
-import { EXPANSIONS } from '../world/grid';
+import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { ROLES } from '../entities/staff';
 import type { Worker } from '../entities/staff';
 import { CharacterCreator } from './creator';
@@ -21,6 +21,8 @@ export class Modals {
   onMainMenu: (() => void) | null = null;
   onNewCasino: (() => void) | null = null;
   onSettingsChanged: (() => void) | null = null;
+  /** One line about multiplayer (set by the net layer). */
+  netStatus: (() => string) | null = null;
 
   constructor(private parent: HTMLElement, private game: Game, private hud: Hud) {
     window.addEventListener('keydown', (e) => {
@@ -103,6 +105,13 @@ export class Modals {
     body.appendChild(this.colorField('Sign color', NEON_COLORS, () => g.building.look.signColor, (c) => g.setLook({ signColor: c })));
     body.appendChild(this.colorField('Wall color', WALL_COLORS, () => g.building.look.wallColor, (c) => g.setLook({ wallColor: c })));
     body.appendChild(this.colorField('Neon trim', NEON_COLORS, () => g.building.look.trimColor, (c) => g.setLook({ trimColor: c })));
+    body.appendChild(h('div', { class: 'field' },
+      h('span', { class: 'field-label', text: g.floors > 1 ? `Carpet (${g.player.floor === 0 ? 'ground floor' : `floor ${g.player.floor + 1}`})` : 'Carpet' }),
+      h('button', {
+        class: 'btn paint-open', html: `${icon('paint', 16)} Paint the floor`,
+        onClick: () => { this.close(); this.hud.togglePaint(); },
+      }),
+    ));
 
     // Rating breakdown
     const rb = g.ratingBreakdown();
@@ -119,23 +128,22 @@ export class Modals {
       ),
     ));
 
-    // Expansion
-    const cur = EXPANSIONS[g.expansion];
-    const next = EXPANSIONS[g.expansion + 1];
-    const exp = h('div', { class: 'expand-box' },
-      h('div', { class: 'expand-info' },
-        h('div', { class: 'field-label', text: 'Floor space' }),
-        h('div', { class: 'big-num', text: `${cur.w} × ${cur.d}` }),
-        next ? h('div', { class: 'muted', text: `Next: ${next.w} × ${next.d} · needs level ${next.level}` }) : h('div', { class: 'muted', text: 'Maximum size reached' }),
-      ),
-      next
-        ? h('button', {
-          class: 'btn gold', html: `${icon('expand', 16)} Expand <b>${formatMoney(next.cost)}</b>`, disabled: g.level < next.level,
-          onClick: () => { if (g.expand()) { this.close(); } },
-        })
-        : null,
+    // Growing the building: width is capped for every lot on the street; depth and floors are not.
+    const r = g.grid.rect;
+    const w = r.x1 - r.x0 + 1;
+    const d = r.z1 - r.z0 + 1;
+    const nw = g.nextWidth;
+    const growRow = (title: string, value: string, note: string, btn: HTMLElement | null) =>
+      h('div', { class: 'expand-box' }, h('div', { class: 'expand-info' }, h('div', { class: 'field-label', text: title }), h('div', { class: 'big-num', text: value }), h('div', { class: 'muted', text: note })), btn);
+    const exp = h('div', { class: 'stack grow' },
+      growRow('Width', `${w} tiles`, nw ? `Next: ${nw.w} wide · needs level ${nw.level}` : `Street limit (${MAX_WIDTH}) reached`,
+        nw ? h('button', { class: 'btn gold', html: `${icon('expand', 16)} Widen <b>${formatMoney(nw.cost)}</b>`, disabled: g.level < nw.level, onClick: () => { if (g.expandWidth()) this.close(); } }) : null),
+      growRow('Depth', `${d} tiles`, `+${DEPTH_STEP} rows · needs level ${g.nextDepthLevel} · no limit`,
+        h('button', { class: 'btn gold', html: `${icon('expand', 16)} Build deeper <b>${formatMoney(g.nextDepthCost)}</b>`, disabled: g.level < g.nextDepthLevel, onClick: () => { if (g.expandDepth()) this.close(); } })),
+      growRow('Floors', `${g.floors}`, `${g.floors === 1 ? 'An elevator appears by the entrance' : 'Every floor is as big as the ground floor'} · needs level ${g.nextFloorLevel} · no limit`,
+        h('button', { class: 'btn gold', html: `${icon('upgrade', 16)} Add a floor <b>${formatMoney(g.nextFloorCost)}</b>`, disabled: g.level < g.nextFloorLevel, onClick: () => { if (g.addFloor()) this.close(); } })),
     );
-    body.appendChild(exp);
+    body.appendChild(h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Grow your casino' }), exp));
     this.open('Your casino', body, { wide: false });
   }
 
@@ -282,6 +290,15 @@ export class Modals {
       }));
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Graphics' }), q));
+    const cam = h('div', { class: 'seg' });
+    for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person']] as const) {
+      cam.appendChild(h('button', {
+        class: `seg-btn${g.cam.mode === id ? ' on' : ''}`, text: label,
+        onClick: () => { g.setCameraMode(id); cam.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.textContent === label)); },
+      }));
+    }
+    body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Camera' }), cam));
+    if (this.netStatus) body.appendChild(h('div', { class: 'net-status' }, h('span', { class: 'field-label', text: 'Multiplayer' }), h('p', { class: 'muted small', text: this.netStatus() })));
     body.appendChild(h('div', { class: 'btn-row wrap sep' },
       h('button', { class: 'btn', html: `${icon('home', 16)} Title screen`, onClick: () => { g.saveNow(); this.closeAll(); this.onMainMenu?.(); } }),
       h('button', { class: 'btn danger', text: 'Start a new casino', onClick: () => this.confirm('Start over?', 'This replaces your current casino and its save.', 'Start over', () => { this.closeAll(); this.onNewCasino?.(); }) }),
@@ -293,14 +310,18 @@ export class Modals {
     const tips: [string, string][] = [
       ['Move', 'WASD or arrow keys (Shift to run). On touch, drag the left side of the screen.'],
       ['Build', 'Open Build, pick an item and click the floor to place it. R rotates. Green means it fits.'],
-      ['Collect', 'Machines fill up with cash (floating coin). Walk next to them to scoop it up. Full machines stop paying.'],
       ['Act', 'Space or F: hold to fix broken machines, bust cheaters (red ?), greet VIPs (gold star), comp grumpy guests.'],
-      ['Camera', 'Q / E rotates, mouse wheel or pinch zooms. H (or the camera button) hides the HUD for screenshots.'],
-      ['Edit', 'Click any machine to upgrade, move, rotate, recolor, rename its sign or sell it. Changed your mind? Selling within 15 seconds of buying refunds everything. Use Floor to paint carpets.'],
-      ['Play', 'Walk up to a free slot machine and press Space to take a spin yourself. The first spin each day is free.'],
+      ['View', 'Q / E rotates, mouse wheel or pinch zooms. H (or the camera button) hides the HUD for screenshots.'],
+      ['Edit', 'Click any machine to upgrade, move, rotate, recolor, rename its sign or sell it. Changed your mind? Selling within 15 seconds of buying refunds everything. Casino → Paint the floor for carpets.'],
       ['Rating', 'Happy guests, decorations, game variety and a clean floor raise your stars. More stars bring more guests and VIPs.'],
-      ['Staff', 'Janitors sweep, technicians repair, cashiers collect cash, security catches cheaters. Wages are paid daily.'],
+      ['Staff', 'Janitors sweep, technicians repair, door guards screen the entrance, security catches cheaters inside. Wages are paid daily.'],
       ['Emotes', 'Press 1–4 to wave, dance, cheer or clap.'],
+      ['Money', 'Every bet settles the moment a round ends: when a guest loses, the chips land in your bank; when a guest wins, you pay them. The house edge wins over time.'],
+      ['The street', 'Walk out the front door. The Golden Viper, a rival AI casino, is next door, and every other player’s casino lines the street too. You can’t gamble in your own casino, so go play theirs: blackjack, Casino Hold’em, roulette, craps, the big wheel and slots.'],
+      ['Floors', 'Your lot has a width limit like every lot on the street, but you can build deeper and add as many floors as you can afford. The elevator links them.'],
+      ['Door guards', 'Hire a Door Guard (Staff) to stand at the entrance and turn most cheaters away.'],
+      ['Blacklist', 'Click another player in your casino to blacklist them for 10 minutes (then a 30-minute cooldown).'],
+      ['Camera', 'V switches between the top-down view and a third-person camera behind you (A/D turn, W/S walk).'],
     ];
     const body = h('div', { class: 'help' }, ...tips.map(([k, v]) => h('div', { class: 'help-row' }, h('b', { text: k }), h('span', { text: v }))));
     this.open('How to play', body, { wide: true });

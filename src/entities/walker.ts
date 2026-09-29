@@ -2,9 +2,15 @@ import * as THREE from 'three';
 import { CharacterModel } from './characterModel';
 import type { Appearance } from './appearance';
 import { findPath, smoothPath } from '../world/pathfinding';
-import type { Grid } from '../world/grid';
+import { PORTAL, type Grid } from '../world/grid';
 import { dampAngle } from '../core/math';
 import { badgeTexture } from '../render/textures';
+
+/** Anything that can hand out the grid of each floor (the game world). */
+export interface FloorSource {
+  readonly floors: number;
+  gridAt(floor: number): Grid;
+}
 
 /** Shared movement for every NPC: A* paths, smooth steering and walk animation. */
 export class Walker {
@@ -23,6 +29,12 @@ export class Walker {
   private badge: THREE.Sprite | null = null;
   private badgeKind = '';
   readonly headPos = new THREE.Vector3();
+  /** Floor this walker is on. */
+  floor = 0;
+  /** Second leg of a trip to another floor, started once the elevator is reached. */
+  private leg: { floor: number; tx: number; tz: number; final: [number, number] | null } | null = null;
+  /** Seconds left riding the elevator (the walker is hidden meanwhile). */
+  protected riding = 0;
 
   constructor(appearance: Appearance, x: number, z: number) {
     this.model = new CharacterModel(appearance);
@@ -32,7 +44,7 @@ export class Walker {
   }
 
   get walking(): boolean {
-    return this.goal !== null;
+    return this.goal !== null || this.riding > 0;
   }
 
   /** Plan a path to a tile; `final` is an exact point to slide into at the end (seats). */
@@ -61,6 +73,64 @@ export class Walker {
   stop(): void {
     this.goal = null;
     this.path = [];
+  }
+
+  /** Abandon any trip, including a pending elevator leg. */
+  cancelTrip(): void {
+    this.stop();
+    this.leg = null;
+    this.riding = 0;
+  }
+
+  /** Walk to a tile on any floor, taking the elevator when it's on another one. */
+  travel(floors: (f: number) => Grid, floorCount: number, floor: number, tx: number, tz: number, final: [number, number] | null = null): boolean {
+    this.leg = null;
+    if (floor === this.floor || floorCount < 2) return this.walkTo(floors(this.floor), tx, tz, final);
+    if (!this.walkTo(floors(this.floor), PORTAL[0], PORTAL[1], [PORTAL[0] + 0.5, PORTAL[1] + 0.5])) return false;
+    this.leg = { floor, tx, tz, final };
+    return true;
+  }
+
+  /** travel() for a world. */
+  go(w: FloorSource, floor: number, tx: number, tz: number, final: [number, number] | null = null): boolean {
+    return this.travel((f) => w.gridAt(f), w.floors, floor, tx, tz, final);
+  }
+
+  /** stepTrip() for a world. */
+  protected step(dt: number, w: FloorSource): 'moving' | 'arrived' | 'blocked' | 'idle' {
+    return this.stepTrip(dt, (f) => w.gridAt(f));
+  }
+
+  /** The grid of the floor this walker is on. */
+  protected here(w: FloorSource): Grid {
+    return w.gridAt(this.floor);
+  }
+
+  /** stepPath across floors: arriving at the elevator mid-trip rides it and plans the next leg. */
+  protected stepTrip(dt: number, floors: (f: number) => Grid): 'moving' | 'arrived' | 'blocked' | 'idle' {
+    if (this.riding > 0) {
+      this.riding -= dt;
+      if (this.riding > 0) return 'moving';
+      const leg = this.leg;
+      this.leg = null;
+      if (!leg) return 'arrived';
+      this.floor = leg.floor;
+      this.x = PORTAL[0] + 0.5;
+      this.z = PORTAL[1] + 0.5;
+      this.yaw = Math.PI / 2;
+      if (!this.walkTo(floors(this.floor), leg.tx, leg.tz, leg.final)) return 'blocked';
+      return 'moving';
+    }
+    const r = this.stepPath(dt, floors(this.floor));
+    if (r === 'arrived' && this.leg) {
+      this.riding = 1.2 + Math.abs(this.leg.floor - this.floor) * 0.6;
+      return 'moving';
+    }
+    return r;
+  }
+
+  get inElevator(): boolean {
+    return this.riding > 0;
   }
 
   /** Advance along the path. Returns 'arrived' once, 'blocked' if the route vanished. */

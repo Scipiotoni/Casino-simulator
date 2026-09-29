@@ -5,6 +5,7 @@ export interface Trash {
   id: number;
   x: number;
   z: number;
+  floor: number;
   mesh: THREE.Object3D;
   claimedBy: number | null;
 }
@@ -23,7 +24,9 @@ export class TrashManager {
   private nextId = 1;
   readonly max = 70;
 
-  add(x: number, z: number): Trash | null {
+  private viewFloor = 0;
+
+  add(x: number, z: number, floor = 0): Trash | null {
     if (this.list.length >= this.max) return null;
     const kind = Math.floor(Math.random() * 3);
     let mesh: THREE.Mesh;
@@ -44,8 +47,9 @@ export class TrashManager {
     holder.add(mesh);
     holder.position.set(x, 0, z);
     holder.rotation.y = Math.random() * Math.PI * 2;
+    holder.visible = floor === this.viewFloor;
     this.group.add(holder);
-    const t: Trash = { id: this.nextId++, x, z, mesh: holder, claimedBy: null };
+    const t: Trash = { id: this.nextId++, x, z, floor, mesh: holder, claimedBy: null };
     this.list.push(t);
     return t;
   }
@@ -55,16 +59,23 @@ export class TrashManager {
     this.list = this.list.filter((o) => o !== t);
   }
 
-  near(x: number, z: number, r: number): Trash[] {
+  near(x: number, z: number, r: number, floor = 0): Trash[] {
     const r2 = r * r;
-    return this.list.filter((t) => (t.x - x) ** 2 + (t.z - z) ** 2 <= r2);
+    return this.list.filter((t) => t.floor === floor && (t.x - x) ** 2 + (t.z - z) ** 2 <= r2);
   }
 
-  countNear(x: number, z: number, r: number): number {
+  countNear(x: number, z: number, r: number, floor = 0): number {
     const r2 = r * r;
     let n = 0;
-    for (const t of this.list) if ((t.x - x) ** 2 + (t.z - z) ** 2 <= r2) n++;
+    for (const t of this.list) if (t.floor === floor && (t.x - x) ** 2 + (t.z - z) ** 2 <= r2) n++;
     return n;
+  }
+
+  /** Only litter on the floor being looked at is drawn. */
+  setViewFloor(floor: number): void {
+    if (floor === this.viewFloor) return;
+    this.viewFloor = floor;
+    for (const t of this.list) t.mesh.visible = t.floor === floor;
   }
 
   clear(): void {
@@ -72,7 +83,7 @@ export class TrashManager {
     this.list = [];
   }
 
-  serialize(): [number, number][] {
-    return this.list.map((t) => [Math.round(t.x * 100) / 100, Math.round(t.z * 100) / 100]);
+  serialize(): [number, number, number][] {
+    return this.list.map((t) => [Math.round(t.x * 100) / 100, Math.round(t.z * 100) / 100, t.floor]);
   }
 }

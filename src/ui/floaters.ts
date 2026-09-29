@@ -71,7 +71,11 @@ export class Floaters {
     this.list.splice(i, 1);
   }
 
+  /** Set while simulating something the camera can't see (another floor, a hidden interior). */
+  muted = false;
+
   money(pos: THREE.Vector3, amount: number, big = false): void {
+    if (this.muted) return;
     const cls = amount >= 0 ? 'pos' : 'neg';
     const text = `${amount >= 0 ? '+' : ''}${formatMoney(amount)}`;
     const el = this.add('money', pos.clone(), `<span class="${cls}${big ? ' big' : ''}">${text}</span>`, big ? 2.2 : 1.4, big ? 1.6 : 1.1, 0);
@@ -79,11 +83,13 @@ export class Floaters {
   }
 
   text(pos: Anchor, text: string, cls = '', life = 1.8, rise = 0.9): void {
+    if (this.muted) return;
     const anchor = typeof pos === 'function' ? pos : pos.clone();
     this.add('text', anchor, `<span class="${cls}">${escapeHtml(text)}</span>`, life, rise, 0);
   }
 
   bubble(anchor: Anchor, content: string, life = 2.2): void {
+    if (this.muted) return;
     this.add('bubble', anchor, `<span>${escapeHtml(content)}</span>`, life, 0.15, 0);
   }
 

@@ -210,7 +210,7 @@ export function touristAppearance(): Appearance {
   return a;
 }
 
-export type StaffRole = 'janitor' | 'technician' | 'security' | 'cashier' | 'dealer' | 'bartender' | 'performer';
+export type StaffRole = 'janitor' | 'technician' | 'security' | 'doorman' | 'dealer' | 'bartender' | 'performer';
 
 /** Uniform pieces forced onto a staff member's personal look. */
 export function applyUniform(a: Appearance, role: StaffRole): Appearance {
@@ -225,8 +225,8 @@ export function applyUniform(a: Appearance, role: StaffRole): Appearance {
     case 'security':
       Object.assign(u, { top: 'suit', topColor: 0x17151f, accentColor: 0xf4f1ea, bottom: 'pants', bottomColor: 0x17151f, hat: 'none', eyewear: 'shades', neck: 'tie', neckColor: 0x17151f, prop: 'radio' });
       break;
-    case 'cashier':
-      Object.assign(u, { top: 'vest', topColor: 0x1e7a46, accentColor: 0xf4f1ea, bottom: 'pants', bottomColor: 0x17151f, hat: 'visor', hatColor: 0x1e7a46, neck: 'bowtie', neckColor: 0xf2b632, prop: 'cashbag' });
+    case 'doorman':
+      Object.assign(u, { top: 'suit', topColor: 0x5a0f24, accentColor: 0xf2b632, bottom: 'pants', bottomColor: 0x17151f, hat: 'none', eyewear: 'shades', neck: 'bowtie', neckColor: 0xf2b632, prop: 'radio', body: 'round' });
       break;
     case 'dealer':
       Object.assign(u, { top: 'vest', topColor: 0x17151f, accentColor: 0xf4f1ea, bottom: 'pants', bottomColor: 0x17151f, hat: 'none', neck: 'bowtie', neckColor: 0xc8102e, prop: 'none', eyewear: 'none' });
@@ -257,4 +257,36 @@ export function randomPlayerAppearance(): Appearance {
   a.neck = chance(0.6) ? pick(NECKWEAR).id : 'none';
   a.prop = chance(0.4) ? pick(PROPS).id : 'none';
   return a;
+}
+
+const STRING_OPTIONS: Partial<Record<keyof Appearance, readonly string[]>> = {
+  body: ['slim', 'regular', 'round', 'tall'],
+  hair: ['bald', 'buzz', 'short', 'spiky', 'long', 'ponytail', 'afro', 'mohawk', 'bun', 'slick', 'curly', 'bob'],
+  hat: ['none', 'tophat', 'fedora', 'cowboy', 'cap', 'crown', 'beanie', 'party', 'hardhat', 'visor', 'chef', 'beret', 'halo', 'horns'],
+  top: ['suit', 'tux', 'tshirt', 'hawaiian', 'hoodie', 'dress', 'vest', 'sequin', 'overalls', 'tank', 'jacket', 'trench'],
+  bottom: ['pants', 'shorts', 'skirt'],
+  eyes: ['dots', 'lashes', 'sleepy', 'wide', 'cool'],
+  facialHair: ['none', 'mustache', 'handlebar', 'beard', 'goatee'],
+  eyewear: ['none', 'shades', 'glasses', 'aviators', 'monocle', 'hearts', 'stars'],
+  neck: ['none', 'tie', 'bowtie', 'chain', 'scarf', 'pearls', 'camera'],
+  prop: ['none', 'broom', 'wrench', 'radio', 'cashbag', 'shaker', 'mic', 'cane', 'phone', 'cocktail'],
+};
+
+/** Rebuild an appearance received from somewhere untrusted (another player), field by field. */
+export function sanitizeAppearance(raw: unknown): Appearance {
+  const out = defaultAppearance();
+  if (!raw || typeof raw !== 'object') return out;
+  const src = raw as Record<string, unknown>;
+  for (const key of Object.keys(out) as (keyof Appearance)[]) {
+    const v = src[key];
+    const cur = out[key];
+    if (typeof cur === 'number' && typeof v === 'number' && Number.isFinite(v)) {
+      (out as unknown as Record<string, unknown>)[key] = Math.max(0, Math.min(0xffffff, Math.round(v)));
+    } else if (typeof cur === 'boolean' && typeof v === 'boolean') {
+      (out as unknown as Record<string, unknown>)[key] = v;
+    } else if (typeof cur === 'string' && typeof v === 'string' && STRING_OPTIONS[key]?.includes(v)) {
+      (out as unknown as Record<string, unknown>)[key] = v;
+    }
+  }
+  return out;
 }

@@ -41,6 +41,8 @@ export class Customer extends Walker implements SeatUser {
   noOptions = 0;
   thought = 'Just arrived!';
   drinks = 0;
+  /** A door guard has spotted this cheater and will stop them at the entrance. */
+  turnAway = false;
   greeted = false;
   exposed = false;
   cheatRounds = 0;
@@ -103,7 +105,7 @@ export class Customer extends Walker implements SeatUser {
   }
 
   get inside(): boolean {
-    return this.z < DOOR_TILES[0][1];
+    return this.floor > 0 || this.z < DOOR_TILES[0][1];
   }
 
   get moodEmoji(): string {
@@ -261,7 +263,7 @@ export class Customer extends Walker implements SeatUser {
         this.react('celebrate', 3.2);
         this.bubble(w, '🤑', 3);
         this.thought = 'I CAN’T BELIEVE IT! JACKPOT!';
-        w.witness(this.x, this.z, 7, 8, this);
+        w.witness(this.x, this.z, 7, 8, this, this.floor);
         this.lossStreak = 0;
         break;
       case 'big':
@@ -270,7 +272,7 @@ export class Customer extends Walker implements SeatUser {
         this.react('cheer', 2.4);
         this.bubble(w, pick(['🤩', '💰', '🔥']));
         this.thought = 'Huge win! I love this place!';
-        w.witness(this.x, this.z, 4, 4, this);
+        w.witness(this.x, this.z, 4, 4, this, this.floor);
         this.lossStreak = 0;
         break;
       case 'win':
@@ -345,7 +347,7 @@ export class Customer extends Walker implements SeatUser {
     for (const [dx, dz] of [[0, 1], [1, 0], [-1, 0], [0, -1]]) {
       const nx = s.tileX + dx;
       const nz = s.tileZ + dz;
-      if (w.grid.isWalkable(nx, nz)) {
+      if (this.here(w).isWalkable(nx, nz)) {
         this.x = (this.x + nx + 0.5) / 2;
         this.z = (this.z + nz + 0.5) / 2;
         return;
@@ -360,7 +362,7 @@ export class Customer extends Walker implements SeatUser {
     this.state = 'leave';
     if (!w) return;
     const [ex, ez] = this.exitPoint;
-    if (!this.walkTo(w.grid, Math.floor(ex), Math.floor(ez), [ex, ez])) {
+    if (!this.go(w, 0, Math.floor(ex), Math.floor(ez), [ex, ez])) {
       this.gone = true;
     }
   }
@@ -445,18 +447,18 @@ export class Customer extends Walker implements SeatUser {
       if (stage && chance(0.12)) {
         this.watchTarget = stage;
         const spot = this.findWatchSpot(w, stage);
-        if (spot && this.walkTo(w.grid, spot[0], spot[1])) {
+        if (spot && this.go(w, stage.floor, spot[0], spot[1])) {
           this.state = 'toWatch';
           this.thought = 'Ooh, a live show!';
           return;
         }
       }
       target = pickWeighted(
-        items.filter((i) => i.isGambling && !i.broken && !i.isFull && i.minBet <= this.wallet && i.freeSeat()),
+        items.filter((i) => i.isGambling && !i.broken && i.minBet <= this.wallet && i.freeSeat()),
         (i) => {
           const pref = this.prefs[i.def.kind] ?? 1;
           const d = dist(i.cx, i.cz, this.x, this.z);
-          let s = i.fun * pref * (1 + w.items.appealAt(i.cx, i.cz) * 0.08) / (1 + d * 0.04);
+          let s = i.fun * pref * (1 + w.items.appealAt(i.cx, i.cz, i.floor) * 0.08) / (1 + (d + Math.abs(i.floor - this.floor) * 28) * 0.04);
           if (this.type === 'vip') s *= 1 + i.maxBet / 150;
           if (i.minBet > this.wallet * 0.15) s *= 0.35;
           if (i === this.lastItem) s *= 0.35;
@@ -488,7 +490,7 @@ export class Customer extends Walker implements SeatUser {
       return;
     }
     target.reserve(seat, this);
-    if (!this.walkTo(w.grid, seat.tileX, seat.tileZ, [seat.x, seat.z])) {
+    if (!this.go(w, target.floor, seat.tileX, seat.tileZ, [seat.x, seat.z])) {
       target.release(this);
       this.tries++;
       if (this.tries > 3) this.leave('I can’t get anywhere in here!');
@@ -513,7 +515,8 @@ export class Customer extends Walker implements SeatUser {
       const r = rand(2.2, 4.5);
       const x = Math.floor(stage.cx + Math.sin(a) * r);
       const z = Math.floor(stage.cz + Math.cos(a) * r);
-      if (w.grid.isWalkable(x, z) && w.grid.isOwned(x, z)) return [x, z];
+      const g = w.gridAt(stage.floor);
+      if (g.isWalkable(x, z) && g.isOwned(x, z)) return [x, z];
     }
     return null;
   }
@@ -524,8 +527,9 @@ export class Customer extends Walker implements SeatUser {
     for (let tries = 0; tries < 12; tries++) {
       const x = Math.floor(rand(b.x0 - 1.5, b.x1 + 1.5));
       const z = Math.floor(rand(b.z0 - 1.5, b.z1 + 1.5));
-      if (!w.grid.isOwned(x, z) || !w.grid.isWalkable(x, z)) continue;
-      if (this.walkTo(w.grid, x, z, [x + rand(0.25, 0.75), z + rand(0.25, 0.75)])) {
+      const g = w.gridAt(item.floor);
+      if (!g.isOwned(x, z) || !g.isWalkable(x, z)) continue;
+      if (this.go(w, item.floor, x, z, [x + rand(0.25, 0.75), z + rand(0.25, 0.75)])) {
         this.watchTarget = item;
         this.state = 'toWatch';
         return true;
@@ -535,11 +539,14 @@ export class Customer extends Walker implements SeatUser {
   }
 
   private wander(w: World): void {
-    const r = w.grid.rect;
+    // Mostly browse the current floor; now and then check out another one.
+    const floor = w.floors > 1 && chance(0.15) ? randInt(0, w.floors - 1) : this.floor;
+    const g = w.gridAt(floor);
+    const r = g.rect;
     for (let i = 0; i < 12; i++) {
       const x = Math.floor(rand(r.x0, r.x1 + 1));
-      const z = Math.floor(rand(Math.max(r.z0, r.z1 - 8), r.z1 + 1));
-      if (w.grid.isWalkable(x, z) && this.walkTo(w.grid, x, z, [x + rand(0.2, 0.8), z + rand(0.2, 0.8)])) {
+      const z = Math.floor(rand(floor === 0 ? Math.max(r.z0, r.z1 - 8) : r.z0, r.z1 + 1));
+      if (g.isWalkable(x, z) && g.isOwned(x, z) && this.go(w, floor, x, z, [x + rand(0.2, 0.8), z + rand(0.2, 0.8)])) {
         this.state = 'wander';
         return;
       }
@@ -565,11 +572,11 @@ export class Customer extends Walker implements SeatUser {
     if (this.inside) {
       this.visitLeft -= dt;
       // Mood drifts toward what the surroundings deserve: decor lifts it, litter drags it down.
-      const appeal = Math.min(w.items.appealAt(this.x, this.z), 6);
-      const dirt = w.trash.countNear(this.x, this.z, 2.5);
+      const appeal = Math.min(w.items.appealAt(this.x, this.z, this.floor), 6);
+      const dirt = w.trash.countNear(this.x, this.z, 2.5, this.floor);
       const target = clamp(48 + appeal * 7 - dirt * 6, 5, 95);
       this.mood += (target - this.mood) * 0.012 * dt;
-      this.mood += w.stageBoostAt(this.x, this.z) * dt;
+      this.mood += w.stageBoostAt(this.x, this.z, this.floor) * dt;
       if (this.thirst > 85) this.mood -= 0.25 * dt;
       if (this.hunger > 90) this.mood -= 0.2 * dt;
       if (this.energy < 10) this.mood -= 0.2 * dt;
@@ -587,13 +594,14 @@ export class Customer extends Walker implements SeatUser {
 
     // Littering while walking
     if (this.walking && this.inside) {
-      const guard = w.items.litterGuardAt(this.x, this.z);
+      const guard = w.items.litterGuardAt(this.x, this.z, this.floor);
       const p = (0.003 + this.pendingTrash * 0.09) * (1 - guard * 0.9);
       if (Math.random() < p * dt * 4) {
         const tx = Math.floor(this.x);
         const tz = Math.floor(this.z);
-        if (w.grid.isOwned(tx, tz) && w.grid.isWalkable(tx, tz)) {
-          w.trash.add(this.x + rand(-0.2, 0.2), this.z + rand(-0.2, 0.2));
+        const g = this.here(w);
+        if (g.isOwned(tx, tz) && g.isWalkable(tx, tz)) {
+          w.trash.add(this.x + rand(-0.2, 0.2), this.z + rand(-0.2, 0.2), this.floor);
           this.pendingTrash = Math.max(0, this.pendingTrash - 1);
         }
       }
@@ -615,7 +623,7 @@ export class Customer extends Walker implements SeatUser {
     this.thinkT -= dt;
     if (this.thinkT <= 0 && this.inside && this.state !== 'leave') {
       this.thinkT = rand(14, 26);
-      const dirt = w.trash.countNear(this.x, this.z, 2.5);
+      const dirt = w.trash.countNear(this.x, this.z, 2.5, this.floor);
       let e = this.moodEmoji;
       let wish: [string, string] | null;
       if (dirt >= 2) {
@@ -636,7 +644,7 @@ export class Customer extends Walker implements SeatUser {
       } else if ((wish = this.wish(w))) {
         e = wish[0];
         this.thought = wish[1];
-      } else if (w.items.appealAt(this.x, this.z) > 3) {
+      } else if (w.items.appealAt(this.x, this.z, this.floor) > 3) {
         this.thought = 'This place looks amazing!';
       }
       if (chance(0.55)) this.bubble(w, e, 2);
@@ -657,7 +665,7 @@ export class Customer extends Walker implements SeatUser {
         this.syncModel(dt);
         break;
       case 'toSeat': {
-        const r = this.stepPath(dt, w.grid);
+        const r = this.step(dt, w);
         if (r === 'arrived' && this.seatItem && this.seat) {
           if (this.seat.reserved !== this || this.seatItem.broken) {
             this.seatItem.release(this);
@@ -686,7 +694,7 @@ export class Customer extends Walker implements SeatUser {
         this.syncSeated(dt, false);
         break;
       case 'wander': {
-        const r = this.stepPath(dt, w.grid);
+        const r = this.step(dt, w);
         if (r === 'arrived' || r === 'blocked') {
           this.state = 'idle';
           this.timer = rand(1.5, 3.5);
@@ -703,7 +711,7 @@ export class Customer extends Walker implements SeatUser {
         this.syncModel(dt, this.mood < 30 ? 'angry' : this.energy < 20 ? 'sad' : 'idle');
         break;
       case 'toWatch': {
-        const r = this.stepPath(dt, w.grid);
+        const r = this.step(dt, w);
         if (r === 'arrived') {
           this.state = 'watch';
           this.timer = this.watchTarget?.def.kind === 'stage' ? rand(12, 24) : rand(6, 12);
@@ -729,7 +737,7 @@ export class Customer extends Walker implements SeatUser {
           this.exited = true;
           w.onCustomerExited(this);
         }
-        const r = this.stepPath(dt, w.grid);
+        const r = this.step(dt, w);
         if ((r === 'arrived' || r === 'blocked' || r === 'idle') && (this.appear <= 0.02 || !this.exited)) {
           if (!this.exited) {
             this.exited = true;

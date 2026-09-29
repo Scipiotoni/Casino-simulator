@@ -1,10 +1,12 @@
 /**
- * Tile grid for the whole lot. The building grows north and sideways from a fixed
- * south facade (row FACADE_Z) that holds the entrance; south of it is the sidewalk.
+ * Tile grid for one floor of the casino lot. The building has a fixed maximum width and
+ * grows backwards (towards -z) from a fixed south facade (row FACADE_Z) that holds the
+ * entrance; south of it is the sidewalk. Depth is unlimited: the grid reallocates as it
+ * grows, so world z may go negative. Every floor has its own Grid; floors are linked by a
+ * stairwell at a fixed spot near the entrance.
  */
 
 export const GRID_W = 48;
-export const GRID_D = 46;
 export const CENTER_X = 24;
 export const FACADE_Z = 40;
 export const SIDEWALK_Z0 = 41;
@@ -14,21 +16,45 @@ export const DOOR_TILES: [number, number][] = [
   [24, FACADE_Z],
 ];
 
-export interface Expansion {
-  w: number;
-  d: number;
-  cost: number;
-  level: number;
+/** The street is a row of lots this far apart (building width limit + a gap). */
+export const LOT_STRIDE = 30;
+
+/** Width steps. The last one is the width limit of every lot on the street. */
+export const WIDTHS: { w: number; cost: number; level: number }[] = [
+  { w: 14, cost: 0, level: 1 },
+  { w: 18, cost: 6000, level: 3 },
+  { w: 22, cost: 18000, level: 5 },
+];
+export const MAX_WIDTH = WIDTHS[WIDTHS.length - 1].w;
+export const START_DEPTH = 12;
+export const DEPTH_STEP = 4;
+
+/** Cost to add depth step number `n` (0-based), growing but never capped. */
+export function depthCost(n: number): number {
+  return Math.round((2500 * Math.pow(1.32, n)) / 100) * 100;
 }
 
-export const EXPANSIONS: Expansion[] = [
-  { w: 14, d: 12, cost: 0, level: 1 },
-  { w: 18, d: 15, cost: 6000, level: 3 },
-  { w: 24, d: 19, cost: 18000, level: 5 },
-  { w: 30, d: 24, cost: 45000, level: 7 },
-  { w: 38, d: 30, cost: 110000, level: 9 },
-  { w: 46, d: 36, cost: 260000, level: 11 },
-];
+export function depthLevel(n: number): number {
+  return Math.min(2 + Math.floor(n / 2), 14);
+}
+
+/** Cost to build floor number `k` (1 = the first upper floor). */
+export function floorCost(k: number): number {
+  return Math.round((20000 * Math.pow(2.1, k - 1)) / 1000) * 1000;
+}
+
+export function floorLevel(k: number): number {
+  return 4 + (k - 1) * 2;
+}
+
+/** Stairwell footprint (2×3 tiles) and the tile where walkers change floors. */
+export const STAIR_TILE: [number, number] = [CENTER_X - 7, FACADE_Z - 4];
+export const PORTAL: [number, number] = [CENTER_X - 5, FACADE_Z - 3];
+
+export interface Layout {
+  width: number; // index into WIDTHS
+  depth: number; // number of depth steps bought
+}
 
 export interface Rect {
   x0: number;
@@ -37,14 +63,10 @@ export interface Rect {
   z1: number; // inclusive
 }
 
-export function expansionRect(level: number): Rect {
-  const e = EXPANSIONS[Math.max(0, Math.min(EXPANSIONS.length - 1, level))];
-  return {
-    x0: CENTER_X - e.w / 2,
-    x1: CENTER_X + e.w / 2 - 1,
-    z0: FACADE_Z - e.d,
-    z1: FACADE_Z - 1,
-  };
+export function layoutRect(l: Layout): Rect {
+  const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, l.width))].w;
+  const d = START_DEPTH + Math.max(0, l.depth) * DEPTH_STEP;
+  return { x0: CENTER_X - w / 2, x1: CENTER_X + w / 2 - 1, z0: FACADE_Z - d, z1: FACADE_Z - 1 };
 }
 
 const F_OWNED = 1;
@@ -53,41 +75,85 @@ const F_DOOR = 4;
 
 export class Grid {
   readonly w = GRID_W;
-  readonly d = GRID_D;
-  readonly flags = new Uint8Array(GRID_W * GRID_D);
+  /** Lowest allocated world row. */
+  zMin = 0;
+  /** Allocated rows. */
+  d = 0;
+  flags = new Uint8Array(0);
   /** uid of the object-layer item occupying the tile (0 = free). */
-  readonly occ = new Int32Array(GRID_W * GRID_D);
+  occ = new Int32Array(0);
   /** uid of the floor-layer item (rugs) on the tile. */
-  readonly floorOcc = new Int32Array(GRID_W * GRID_D);
+  floorOcc = new Int32Array(0);
   /** Carpet style index per tile. */
-  readonly floor = new Uint8Array(GRID_W * GRID_D);
+  floor = new Uint8Array(0);
   /** Bumped whenever walkability changes so cached paths can be invalidated. */
   version = 0;
-  rect: Rect = expansionRect(0);
+  rect: Rect = layoutRect({ width: 0, depth: 0 });
+  /** Where walkers enter this floor: the front door on the ground floor, the stairs above. */
+  entries: [number, number][] = DOOR_TILES;
 
-  constructor(expansion = 0) {
-    this.setExpansion(expansion);
+  constructor(readonly level: number, layout: Layout = { width: 0, depth: 0 }) {
+    this.entries = level === 0 ? DOOR_TILES : [PORTAL];
+    this.setLayout(layout);
+  }
+
+  get size(): number {
+    return this.w * this.d;
   }
 
   idx(x: number, z: number): number {
-    return z * GRID_W + x;
+    return (z - this.zMin) * GRID_W + x;
+  }
+
+  tileX(i: number): number {
+    return i % GRID_W;
+  }
+
+  tileZ(i: number): number {
+    return ((i / GRID_W) | 0) + this.zMin;
   }
 
   inBounds(x: number, z: number): boolean {
-    return x >= 0 && z >= 0 && x < GRID_W && z < GRID_D;
+    return x >= 0 && x < GRID_W && z >= this.zMin && z < this.zMin + this.d;
   }
 
-  setExpansion(level: number): void {
-    this.rect = expansionRect(level);
+  /** Grow the arrays (keeping contents) so the rect fits. */
+  private ensure(rect: Rect): void {
+    const zMin = Math.min(0, rect.z0 - 2);
+    const zMax = SIDEWALK_Z1 + 2;
+    const d = zMax - zMin;
+    if (zMin === this.zMin && d === this.d) return;
+    const old = { zMin: this.zMin, d: this.d, occ: this.occ, floorOcc: this.floorOcc, floor: this.floor };
+    this.zMin = zMin;
+    this.d = d;
+    this.flags = new Uint8Array(GRID_W * d);
+    this.occ = new Int32Array(GRID_W * d);
+    this.floorOcc = new Int32Array(GRID_W * d);
+    this.floor = new Uint8Array(GRID_W * d);
+    for (let r = 0; r < old.d; r++) {
+      const z = old.zMin + r;
+      if (z < zMin || z >= zMin + d) continue;
+      const src = r * GRID_W;
+      const dst = (z - zMin) * GRID_W;
+      this.occ.set(old.occ.subarray(src, src + GRID_W), dst);
+      this.floorOcc.set(old.floorOcc.subarray(src, src + GRID_W), dst);
+      this.floor.set(old.floor.subarray(src, src + GRID_W), dst);
+    }
+  }
+
+  setLayout(layout: Layout): void {
+    this.rect = layoutRect(layout);
+    this.ensure(this.rect);
     this.flags.fill(0);
-    for (let z = 0; z < GRID_D; z++) {
+    const r = this.rect;
+    for (let z = this.zMin; z < this.zMin + this.d; z++) {
       for (let x = 0; x < GRID_W; x++) {
         const i = this.idx(x, z);
-        if (x >= this.rect.x0 && x <= this.rect.x1 && z >= this.rect.z0 && z <= this.rect.z1) this.flags[i] |= F_OWNED;
-        if (z >= SIDEWALK_Z0 && z <= SIDEWALK_Z1) this.flags[i] |= F_SIDEWALK;
+        if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) this.flags[i] |= F_OWNED;
+        if (this.level === 0 && z >= SIDEWALK_Z0 && z <= SIDEWALK_Z1) this.flags[i] |= F_SIDEWALK;
       }
     }
-    for (const [x, z] of DOOR_TILES) this.flags[this.idx(x, z)] |= F_DOOR;
+    if (this.level === 0) for (const [x, z] of DOOR_TILES) this.flags[this.idx(x, z)] |= F_DOOR;
     this.version++;
   }
 
@@ -140,11 +206,17 @@ export class Grid {
     if (this.inBounds(x, z)) this.floor[this.idx(x, z)] = style;
   }
 
-  /** Breadth-first flood from the entrance; returns a mask of reachable walkable tiles. */
+  /** Breadth-first flood from this floor's entries; returns a mask of reachable walkable tiles. */
   reachableFromDoor(extraBlocked?: (x: number, z: number) => boolean): Uint8Array {
-    const seen = new Uint8Array(GRID_W * GRID_D);
+    return this.flood((x, z) => this.isWalkable(x, z) && !(extraBlocked && extraBlocked(x, z)));
+  }
+
+  /** Flood fill from the entries through tiles where `walk` is true. */
+  flood(walk: (x: number, z: number) => boolean): Uint8Array {
+    const seen = new Uint8Array(this.size);
     const queue: number[] = [];
-    for (const [x, z] of DOOR_TILES) {
+    for (const [x, z] of this.entries) {
+      if (!this.inBounds(x, z)) continue;
       const i = this.idx(x, z);
       seen[i] = 1;
       queue.push(i);
@@ -152,16 +224,15 @@ export class Grid {
     let head = 0;
     while (head < queue.length) {
       const i = queue[head++];
-      const x = i % GRID_W;
-      const z = (i / GRID_W) | 0;
+      const x = this.tileX(i);
+      const z = this.tileZ(i);
       for (const [dx, dz] of DIRS4) {
         const nx = x + dx;
         const nz = z + dz;
         if (!this.inBounds(nx, nz)) continue;
         const ni = this.idx(nx, nz);
         if (seen[ni]) continue;
-        if (!this.isWalkable(nx, nz)) continue;
-        if (extraBlocked && extraBlocked(nx, nz)) continue;
+        if (!walk(nx, nz)) continue;
         seen[ni] = 1;
         queue.push(ni);
       }
@@ -173,7 +244,7 @@ export class Grid {
   nearestWalkable(x: number, z: number, insideOnly = false): [number, number] | null {
     const ok = (tx: number, tz: number) => this.isWalkable(tx, tz) && (!insideOnly || this.isOwned(tx, tz));
     if (ok(x, z)) return [x, z];
-    for (let r = 1; r < 20; r++) {
+    for (let r = 1; r < 24; r++) {
       let best: [number, number] | null = null;
       let bestD = Infinity;
       for (let dz = -r; dz <= r; dz++) {
@@ -202,6 +273,40 @@ export class Grid {
       if (this.isWalkable(x, z)) return [x, z];
     }
     return null;
+  }
+
+  /** Floor paint as run-length text ("style:count,…") over the owned rect, row by row. */
+  encodeFloor(): string {
+    const r = this.rect;
+    const out: string[] = [];
+    let cur = -1;
+    let n = 0;
+    for (let z = r.z0; z <= r.z1; z++) {
+      for (let x = r.x0; x <= r.x1; x++) {
+        const v = this.getFloor(x, z);
+        if (v === cur) n++;
+        else {
+          if (n) out.push(`${cur}:${n}`);
+          cur = v;
+          n = 1;
+        }
+      }
+    }
+    if (n) out.push(`${cur}:${n}`);
+    return out.join(',');
+  }
+
+  decodeFloor(s: string): void {
+    this.floor.fill(0);
+    if (!s) return;
+    const r = this.rect;
+    const w = r.x1 - r.x0 + 1;
+    let i = 0;
+    const total = w * (r.z1 - r.z0 + 1);
+    for (const part of s.split(',')) {
+      const [v, n] = part.split(':').map(Number);
+      for (let k = 0; k < n && i < total; k++, i++) this.setFloor(r.x0 + (i % w), r.z0 + Math.floor(i / w), v || 0);
+    }
   }
 }
 

@@ -1,8 +1,19 @@
 import * as THREE from 'three';
 import { clamp, damp, dampAngle, lerp } from '../core/math';
 
-/** Angled top-down camera that trails the player, with zoom, 90° rotation and shake. */
+export type CamMode = 'top' | 'third';
+
+/**
+ * Angled top-down camera that trails the player, with zoom, 90° rotation and shake, or a
+ * third-person camera that sits behind the player and turns with them.
+ */
 export class CameraRig {
+  mode: CamMode = 'top';
+  /** Third-person distance (zoomed separately from the top-down view). */
+  thirdDist = 5.5;
+  private thirdTarget = 5.5;
+  /** Heading of the followed character (third-person). */
+  followYaw = 0;
   yaw = 0;
   yawTarget = 0;
   dist = 17;
@@ -28,7 +39,22 @@ export class CameraRig {
   }
 
   zoomBy(factor: number): void {
-    this.distTarget = clamp(this.distTarget * factor, this.minDist, this.maxDist);
+    if (this.mode === 'third') this.thirdTarget = clamp(this.thirdTarget * factor, 3, 11);
+    else this.distTarget = clamp(this.distTarget * factor, this.minDist, this.maxDist);
+  }
+
+  setMode(mode: CamMode): void {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    if (mode === 'top') {
+      // Snap back to the nearest 90° view so walls cut away cleanly.
+      this.yawTarget = Math.round(this.yaw / (Math.PI / 2)) * (Math.PI / 2);
+    }
+  }
+
+  /** True while the camera is low behind the player (walls need to cut away earlier). */
+  get low(): boolean {
+    return this.mode === 'third';
   }
 
   shake(amount: number): void {
@@ -48,6 +74,29 @@ export class CameraRig {
   }
 
   update(dt: number, tx: number, tz: number): void {
+    if (this.mode === 'third' && !this.orbit) {
+      this.focus.x = damp(this.focus.x, tx, 12, dt);
+      this.focus.z = damp(this.focus.z, tz, 12, dt);
+      this.yawTarget = this.followYaw + Math.PI;
+      this.yaw = dampAngle(this.yaw, this.yawTarget, 5, dt);
+      this.thirdDist = damp(this.thirdDist, this.thirdTarget, 8, dt);
+      const pitch = lerp(0.28, 0.5, (this.thirdDist - 3) / 8);
+      const horiz = Math.cos(pitch) * this.thirdDist;
+      const cam = this.camera;
+      cam.position.set(
+        this.focus.x + Math.sin(this.yaw) * horiz,
+        1.4 + Math.sin(pitch) * this.thirdDist,
+        this.focus.z + Math.cos(this.yaw) * horiz,
+      );
+      if (this.shakeAmt > 0.001) {
+        this.shakeT += dt * 40;
+        cam.position.x += Math.sin(this.shakeT * 1.3) * this.shakeAmt;
+        cam.position.y += Math.sin(this.shakeT * 1.7) * this.shakeAmt * 0.6;
+        this.shakeAmt = damp(this.shakeAmt, 0, 5, dt);
+      }
+      cam.lookAt(this.focus.x, 1.25, this.focus.z);
+      return;
+    }
     if (this.orbit) {
       this.yawTarget += dt * 0.06;
       this.yaw = this.yawTarget;

@@ -144,7 +144,11 @@ export class Effects {
     this.sparklePool.mesh.renderOrder = 5;
   }
 
+  /** Set while simulating something the camera can't see (another floor, a hidden interior). */
+  muted = false;
+
   confetti(x: number, y: number, z: number, count = 80, power = 1): void {
+    if (this.muted) return;
     const n = this.reducedMotion ? Math.floor(count / 4) : count;
     for (let i = 0; i < n; i++) {
       this.confettiPool.spawn((p) => {
@@ -163,6 +167,7 @@ export class Effects {
   }
 
   sparkle(x: number, y: number, z: number, count = 12, color = 0xffe08a, spread = 0.6): void {
+    if (this.muted) return;
     for (let i = 0; i < count; i++) {
       this.sparklePool.spawn((p) => {
         p.p.set(x + (Math.random() - 0.5) * spread, y + Math.random() * spread * 0.6, z + (Math.random() - 0.5) * spread);
@@ -177,6 +182,7 @@ export class Effects {
   }
 
   smoke(x: number, y: number, z: number, count = 2): void {
+    if (this.muted) return;
     for (let i = 0; i < count; i++) {
       this.smokePool.spawn((p) => {
         p.p.set(x + (Math.random() - 0.5) * 0.3, y, z + (Math.random() - 0.5) * 0.3);
@@ -190,6 +196,7 @@ export class Effects {
   }
 
   dust(x: number, z: number, radius = 0.8): void {
+    if (this.muted) return;
     for (let i = 0; i < 10; i++) {
       this.smokePool.spawn((p) => {
         const a = (i / 10) * Math.PI * 2 + Math.random() * 0.4;
@@ -206,6 +213,7 @@ export class Effects {
 
   /** Coins that fly in an arc toward a (possibly moving) target, e.g. the player. */
   coinFlight(from: THREE.Vector3, to: () => THREE.Vector3, count: number, onEach?: () => void): void {
+    if (this.muted) return;
     const n = Math.min(count, this.reducedMotion ? 3 : 14);
     for (let i = 0; i < n; i++) {
       if (this.coins.length >= 150) break;

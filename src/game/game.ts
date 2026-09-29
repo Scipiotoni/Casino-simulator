@@ -6,10 +6,13 @@ import { audio, type SfxName } from '../core/audio';
 import { Emitter } from '../core/events';
 import { clamp, damp, distToRect, formatMoney } from '../core/math';
 import { pick, rand, randInt } from '../core/rng';
-import { Grid, EXPANSIONS, DOOR_TILES, CENTER_X, FACADE_Z } from '../world/grid';
+import {
+  Grid, CENTER_X, FACADE_Z, DOOR_TILES, PORTAL, WIDTHS, MAX_WIDTH, depthCost, depthLevel, floorCost, floorLevel, type Layout,
+} from '../world/grid';
 import { FloorRenderer } from '../world/floor';
 import { Building, type CasinoLook } from '../world/building';
-import { CameraRig } from '../world/camera';
+import { Street, type StreetLot } from '../world/street';
+import { CameraRig, type CamMode } from '../world/camera';
 import { TrashManager } from '../world/trash';
 import { FLOOR_STYLES } from '../render/textures';
 import { ItemManager } from '../items/itemManager';
@@ -17,21 +20,27 @@ import { ITEMS, type ItemDef, itemDef } from '../items/catalog';
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
 import type { Outcome } from '../items/types';
 import { Customer, type CustomerType, spawnPoint } from '../entities/customer';
-import { Worker, ROLES, type WorkerRole } from '../entities/staff';
+import { Worker, ROLES, DOOR_POSTS, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
 import { Player } from '../entities/player';
 import { type Appearance, defaultAppearance } from '../entities/appearance';
 import { Floaters } from '../ui/floaters';
 import type { MoneyReason, World } from './world';
 import { BuildController } from './build';
 import { ACTIVE_OBJECTIVES, OBJECTIVES, type LifetimeStats, type ObjectiveView, emptyStats, xpForLevel } from './objectives';
-import type { SavedItem } from '../items/placedItem';
+import {
+  type CasinoSnapshot, type NetState, type RivalState, type SaveData, emptyNet, newRival,
+} from './save';
+import { RIVAL_ID, RIVAL_NAME, generateRival, rivalLook, rivalLotInfo, tickRival } from './rival';
+
+export type { SaveData } from './save';
 
 export type ToastKind = 'info' | 'good' | 'bad' | 'money' | 'event';
 
 export type Selection =
   | { kind: 'item'; item: PlacedItem }
   | { kind: 'customer'; c: Customer }
-  | { kind: 'worker'; w: Worker };
+  | { kind: 'worker'; w: Worker }
+  | { kind: 'remote'; pid: string };
 
 export interface DayReport {
   day: number;
@@ -61,6 +70,9 @@ export interface GameEvents {
   event: { title: string; text: string };
   interact: { label: string; hold: boolean } | null;
   minigame: PlacedItem;
+  visit: void;
+  floor: number;
+  camera: CamMode;
 }
 
 export interface Settings {
@@ -70,40 +82,16 @@ export interface Settings {
   musicOn: boolean;
   quality: Quality;
   showFps: boolean;
-}
-
-export interface SaveData {
-  v: 1;
-  name: string;
-  look: CasinoLook;
-  money: number;
-  xp: number;
-  level: number;
-  day: number;
-  dayMinutes: number;
-  rating: number;
-  satAvg: number;
-  expansion: number;
-  floor: string;
-  items: SavedItem[];
-  staff: { role: WorkerRole; name: string; look: Appearance }[];
-  player: { look: Appearance; name: string; x: number; z: number };
-  objectives: string[];
-  stats: LifetimeStats;
-  jackpotPot: number;
-  trash: [number, number][];
-  history: number[];
-  floorPainted: number;
-  lookEdited: boolean;
-  renamed: boolean;
-  speed: number;
-  freeSpinDay?: number;
+  camera?: CamMode;
 }
 
 const DAY_SECONDS = 300;
 const DAY_START = 10 * 60;
 const START_MONEY = 3000;
 const JACKPOT_SEED = 5000;
+/** Win this much in one visit and the rival's security walks you out. */
+const RIVAL_WIN_LIMIT = 15000;
+const RIVAL_BAN_MS = 5 * 60 * 1000;
 
 interface ActiveEvent {
   id: string;
@@ -112,13 +100,42 @@ interface ActiveEvent {
   spawnMult: number;
 }
 
+/** One floor of the casino: its tile grid and carpet. */
+class Level {
+  readonly grid: Grid;
+  readonly floor: FloorRenderer;
+
+  constructor(readonly index: number, layout: Layout) {
+    this.grid = new Grid(index, layout);
+    this.floor = new FloorRenderer(this.grid);
+  }
+}
+
+/** Where you are while away from your own casino. */
+interface Visit {
+  lot: StreetLot;
+  home: SaveData;
+  /** Game seconds spent away (your casino catches up when you return). */
+  away: number;
+  net: number;
+  hands: number;
+}
+
+/** Remote player shown in the world (multiplayer); drawn by the net layer. */
+export interface RemoteView {
+  pid: string;
+  name: string;
+  x: number;
+  z: number;
+}
+
 export class Game implements World, ItemHost {
   readonly events = new Emitter<GameEvents>();
   readonly renderer: Renderer;
   readonly input: Input;
-  readonly grid = new Grid(0);
-  readonly floor: FloorRenderer;
+  levels: Level[] = [];
   readonly building: Building;
+  readonly street = new Street();
   readonly cam: CameraRig;
   readonly effects = new Effects();
   readonly trash = new TrashManager();
@@ -128,6 +145,7 @@ export class Game implements World, ItemHost {
   readonly build: BuildController;
   customers: Customer[] = [];
   workers: Worker[] = [];
+  private floorGroup = new THREE.Group();
 
   state: 'title' | 'playing' = 'title';
   money = START_MONEY;
@@ -138,9 +156,8 @@ export class Game implements World, ItemHost {
   rating = 2;
   private ratingTarget = 2;
   satAvg = 55;
-  expansion = 0;
+  layout: Layout = { width: 0, depth: 0 };
   jackpotPot = JACKPOT_SEED;
-  freeSpinDay = 0;
   time = 0;
   speed = 1;
   paused = false;
@@ -151,6 +168,18 @@ export class Game implements World, ItemHost {
   renamed = false;
   history: number[] = [];
   selection: Selection | null = null;
+  rival: RivalState = newRival();
+  net: NetState = emptyNet();
+  createdAt = Date.now();
+  visit: Visit | null = null;
+  /** Your multiplayer id (set by the net layer; 'me' offline). */
+  pid = 'me';
+  /** Supplies another player's casino when you walk into it (set by the net layer). */
+  playerLot: ((pid: string) => CasinoSnapshot | null) | null = null;
+  /** Is this player keeping you out right now? (set by the net layer) */
+  bannedBy: ((pid: string) => number) | null = null;
+  /** Other players standing in the loaded casino / on the street (set by the net layer). */
+  remotes: RemoteView[] = [];
   private dayAcc = { revenue: 0, payouts: 0, sales: 0, visitors: 0, byItem: new Map<string, number>() };
   private spawnT = 3;
   private eventT = 60;
@@ -158,13 +187,13 @@ export class Game implements World, ItemHost {
   private buzz = 0;
   private autosaveT = 30;
   private objectiveT = 0;
-  private collectT = new Map<number, number>();
   private interactTarget: { kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void } | null = null;
   private holdT = 0;
   private lastInteractKey = '';
   private moneyHistoryT = 0;
   readonly moneyHistory: number[] = [];
   private netLog: [number, number][] = [];
+  private floaterT = new Map<number, number>();
   settings: Settings;
   actionHeld = false;
   actionPressed = false;
@@ -182,24 +211,78 @@ export class Game implements World, ItemHost {
   private hoverT = 0;
   private hoverUid = -1;
   private nightT = 0;
+  /** Is the player inside the loaded casino (not out on the street)? */
+  inside = true;
+  private transitionT = 0;
+  private doorCooldown = 0;
 
   constructor(container: HTMLElement, settings: Settings) {
     this.settings = settings;
     this.renderer = new Renderer(container, settings.quality);
     this.input = new Input(this.renderer.renderer.domElement);
     const scene = this.renderer.scene;
-    this.floor = new FloorRenderer(this.grid);
-    this.building = new Building(this.grid, {
+    this.levels = [new Level(0, this.layout)];
+    this.building = new Building(this.levels[0].grid, {
       name: 'Lucky Star Casino', signFont: 'bungee', signColor: 0xff3fa4, wallColor: 0x3a1d4d, trimColor: 0x2fe6ff,
     });
-    this.items = new ItemManager(this.grid, this, this.effects);
+    this.items = new ItemManager(() => this.levels.map((l) => l.grid), this, this.effects);
     this.floaters = new Floaters(container);
     this.player = new Player(defaultAppearance(), CENTER_X, FACADE_Z - 3);
     this.cam = new CameraRig(this.renderer.camera);
+    this.cam.setMode(settings.camera ?? 'top');
     this.build = new BuildController(this);
-    scene.add(this.floor.group, this.building.group, this.items.group, this.trash.group, this.effects.group, this.player.model.root);
+    this.floorGroup.add(this.levels[0].floor.group);
+    scene.add(this.floorGroup, this.building.group, this.street.group, this.items.group, this.trash.group, this.effects.group, this.player.model.root);
     this.effects.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    this.refreshStreet();
     this.resetWorld();
+  }
+
+  // ------------------------------------------------------------------ floors
+
+  get grid(): Grid {
+    return this.levels[0].grid;
+  }
+
+  get floors(): number {
+    return this.levels.length;
+  }
+
+  gridAt(floor: number): Grid {
+    return (this.levels[floor] ?? this.levels[0]).grid;
+  }
+
+  /** The floor being drawn: the one the player stands on. */
+  get viewFloor(): number {
+    return this.player.floor;
+  }
+
+  /** The floor renderer of the viewed floor (build mode paints and highlights there). */
+  get floor(): FloorRenderer {
+    return (this.levels[this.viewFloor] ?? this.levels[0]).floor;
+  }
+
+  private setFloorCount(n: number): void {
+    n = Math.max(1, n);
+    while (this.levels.length > n) {
+      const l = this.levels.pop()!;
+      l.floor.group.removeFromParent();
+    }
+    while (this.levels.length < n) {
+      const l = new Level(this.levels.length, this.layout);
+      this.levels.push(l);
+      this.floorGroup.add(l.floor.group);
+      l.floor.rebuild();
+    }
+    if (this.player.floor >= n) this.player.floor = 0;
+  }
+
+  private applyLayout(): void {
+    for (const l of this.levels) l.grid.setLayout(this.layout);
+    this.building.rebuild();
+    for (const l of this.levels) l.floor.rebuild();
+    const r = this.grid.rect;
+    this.renderer.fitShadow(r.x0, r.x1 + 1, r.z0, r.z1 + 1);
   }
 
   // ------------------------------------------------------------------ setup
@@ -214,15 +297,13 @@ export class Game implements World, ItemHost {
     this.floaters.clear();
     this.selection = null;
     this.build.cancel(false);
-    this.grid.setExpansion(this.expansion);
-    this.building.rebuild();
-    this.floor.rebuild();
-    const r = this.grid.rect;
-    this.renderer.fitShadow(r.x0, r.x1 + 1, r.z0, r.z1 + 1);
+    this.applyLayout();
+    this.items.syncElevators();
   }
 
   newGame(opts: { name: string; look: CasinoLook; player: Appearance; playerName: string }): void {
     this.state = 'playing';
+    this.visit = null;
     this.money = START_MONEY;
     this.xp = 0;
     this.level = 1;
@@ -231,9 +312,8 @@ export class Game implements World, ItemHost {
     this.rating = 2;
     this.ratingTarget = 2;
     this.satAvg = 55;
-    this.expansion = 0;
+    this.layout = { width: 0, depth: 0 };
     this.jackpotPot = JACKPOT_SEED;
-    this.freeSpinDay = 0;
     this.stats = emptyStats();
     this.doneObjectives = new Set();
     this.floorPainted = 0;
@@ -244,18 +324,22 @@ export class Game implements World, ItemHost {
     this.netLog = [];
     this.speed = 1;
     this.paused = false;
+    this.rival = newRival();
+    this.createdAt = Date.now();
+    this.setFloorCount(1);
     this.grid.floor.fill(0);
     this.resetWorld();
     this.building.setLook(opts.look);
     // A couple of plants by the door so day one isn't an empty box.
     for (const [x, z] of [[21, 38], [26, 38]]) {
       const plant = itemDef('plant');
-      if (this.items.canPlace(plant, x, z, 0).ok) this.items.add(plant, x, z, 0, 0x2c2433);
+      if (this.items.canPlace(plant, 0, x, z, 0).ok) this.items.add(plant, 0, x, z, 0, 0x2c2433);
     }
     this.player.setAppearance(opts.player);
     this.player.name = opts.playerName || 'Boss';
     this.player.x = CENTER_X;
     this.player.z = FACADE_Z - 3;
+    this.player.floor = 0;
     this.player.yaw = Math.PI;
     this.cam.setOrbit(false);
     this.cam.distTarget = 15;
@@ -264,20 +348,25 @@ export class Game implements World, ItemHost {
     this.spawnT = 2;
     this.eventT = 150;
     this.activeEvent = null;
+    this.refreshStreet();
     this.events.emit('money', { money: this.money, delta: 0 });
     this.events.emit('objectives', undefined);
     this.events.emit('look', undefined);
     this.events.emit('staff', undefined);
+    this.events.emit('visit', undefined);
     this.saveNow();
   }
 
   /** Decorated showroom for the title screen. */
   loadDemo(): void {
     this.state = 'title';
-    this.expansion = 2;
+    this.visit = null;
+    this.layout = { width: 2, depth: 2 };
     this.level = 10;
     this.rating = 4.2;
     this.money = 99999;
+    this.setFloorCount(1);
+    this.player.floor = 0;
     this.grid.floor.fill(0);
     this.resetWorld();
     const r = this.grid.rect;
@@ -285,26 +374,26 @@ export class Game implements World, ItemHost {
       if (x >= 21 && x <= 26) this.grid.setFloor(x, z, 5);
       else if (z < r.z0 + 7) this.grid.setFloor(x, z, 3);
     }
-    this.floor.rebuild();
+    this.levels[0].floor.rebuild();
     const put = (id: string, tx: number, tz: number, rot = 0, color?: number) => {
       const def = itemDef(id);
-      if (this.items.canPlace(def, tx, tz, rot).ok) this.items.add(def, tx, tz, rot, color);
+      if (this.items.canPlace(def, 0, tx, tz, rot).ok) this.items.add(def, 0, tx, tz, rot, color);
     };
-    for (let i = 0; i < 5; i++) put(i % 2 ? 'slot_fruit' : 'slot_lucky7', 13 + i, 26, 0, [0xc8102e, 0x1e7a46, 0x1f4fbf, 0x6a2cc2, 0xf2b632][i]);
-    for (let i = 0; i < 5; i++) put('slot_diamond', 29 + i, 26, 0);
-    put('roulette', 14, 30);
-    put('blackjack', 30, 30);
+    for (let i = 0; i < 5; i++) put(i % 2 ? 'slot_fruit' : 'slot_lucky7', 14 + i, 22, 0, [0xc8102e, 0x1e7a46, 0x1f4fbf, 0x6a2cc2, 0xf2b632][i]);
+    for (let i = 0; i < 5; i++) put('slot_diamond', 29 + i, 22, 0);
+    put('roulette', 14, 27);
+    put('blackjack', 30, 27);
     put('bar', 22, 22, 0);
-    put('wheel', 18, 30);
-    put('fountain', 23, 32);
+    put('wheel', 18, 28);
+    put('fountain', 23, 31);
     put('palm', 21, 36);
     put('palm', 26, 36);
     put('plant', 13, 36);
     put('plant', 34, 36);
     put('neon', 13, 24, 0, 0xff3fa4);
     put('neon', 34, 24, 0, 0x2fe6ff);
-    put('craps', 15, 22);
-    put('poker', 29, 22);
+    put('craps', 15, 32);
+    put('poker', 29, 32);
     put('statue', 20, 29);
     put('aquarium', 26, 29);
     put('bench', 17, 37);
@@ -321,6 +410,195 @@ export class Game implements World, ItemHost {
     this.cam.setOrbit(true, CENTER_X, 30);
     this.cam.distTarget = 27;
     this.cam.snap(CENTER_X, 30);
+    this.refreshStreet();
+  }
+
+  // ------------------------------------------------------------------ street
+
+  /** Lots the net layer adds (other players); the street is rival + you + these. */
+  extraLots: StreetLot[] = [];
+
+  refreshStreet(): void {
+    const me: StreetLot = {
+      id: 'me', kind: 'me', owner: this.player.name, order: this.createdAt, online: true,
+      info: { look: this.visit ? this.visit.home.look : { ...this.building.look }, width: this.homeLayout.width, depth: this.homeLayout.depth, floors: this.homeFloors, tagline: 'OPEN 24/7' },
+    };
+    const ri = rivalLotInfo(this.rival);
+    const rival: StreetLot = {
+      id: RIVAL_ID, kind: 'rival', owner: 'The Viper', order: 0, online: true,
+      info: { look: rivalLook(), width: ri.layout.width, depth: ri.layout.depth, floors: ri.floors, tagline: 'HIGH LIMITS · NO MERCY' },
+    };
+    this.street.setLots([rival, me, ...this.extraLots]);
+    if (!this.street.get(this.street.activeId)) this.street.activeId = 'me';
+  }
+
+  get homeLayout(): Layout {
+    return this.visit ? this.visit.home.layout : this.layout;
+  }
+
+  get homeFloors(): number {
+    return this.visit ? this.visit.home.floors : this.floors;
+  }
+
+  get visiting(): boolean {
+    return this.visit !== null;
+  }
+
+  /** Name of the casino whose interior is loaded. */
+  get hereName(): string {
+    return this.visit ? this.visit.lot.info.look.name : this.building.look.name;
+  }
+
+  private lotSnapshot(lot: StreetLot): CasinoSnapshot | null {
+    if (lot.kind === 'rival') return generateRival(this.rival);
+    if (lot.kind === 'player') return this.playerLot?.(lot.id) ?? null;
+    return null;
+  }
+
+  /** Can the player go into this casino right now? Returns a reason when not. */
+  entryBlock(lot: StreetLot): string | null {
+    if (lot.kind === 'rival' && this.rival.banUntil > Date.now()) {
+      return `${RIVAL_NAME}'s security won't let you back in for ${Math.ceil((this.rival.banUntil - Date.now()) / 60000)} min.`;
+    }
+    if (lot.kind === 'player') {
+      const until = this.bannedBy?.(lot.id) ?? 0;
+      if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
+      if (!this.playerLot?.(lot.id)) return `${lot.info.look.name} is closed right now.`;
+    }
+    return null;
+  }
+
+  /** Walk through another casino's door (or back through your own). */
+  enterLot(lot: StreetLot): boolean {
+    if (this.state !== 'playing' || lot.id === this.street.activeId) return false;
+    const offset = this.street.offsetOf(lot.id);
+    if (lot.kind === 'me') {
+      this.returnHome(offset);
+      return true;
+    }
+    const block = this.entryBlock(lot);
+    if (block) {
+      audio.play('error');
+      this.notify(block, 'bad');
+      return false;
+    }
+    const snap = this.lotSnapshot(lot);
+    if (!snap) return false;
+    const home = this.visit ? this.visit.home : this.serialize();
+    const away = this.visit ? this.visit.away : 0;
+    this.visit = { lot, home, away, net: 0, hands: 0 };
+    this.build.cancel(false);
+    this.select(null);
+    this.loadCasino(snap, true);
+    this.street.activeId = lot.id;
+    this.shiftPlayer(-offset, FACADE_Z - 1.5);
+    audio.play('doorbell');
+    this.events.emit('toast', { text: `Welcome to ${snap.name}! Walk up to any game and press Space to play.`, kind: 'event' });
+    this.events.emit('visit', undefined);
+    this.refreshStreet();
+    return true;
+  }
+
+  /** Back to your own casino; it catches up on the time you were out. */
+  returnHome(offset = 0, kicked = false): void {
+    const v = this.visit;
+    if (!v) return;
+    const money = this.money;
+    this.visit = null;
+    this.street.activeId = 'me';
+    this.loadCasino(v.home, false);
+    this.restoreHomeProfile(v.home);
+    this.money = money;
+    if (kicked) {
+      // Escorted out onto the sidewalk in front of the casino that threw you out.
+      this.player.x = CENTER_X - offset;
+      this.player.z = FACADE_Z + 2.4;
+      this.player.floor = 0;
+      this.cam.snap(this.player.x, this.player.z);
+      this.doorCooldown = 2;
+    } else this.shiftPlayer(-offset, FACADE_Z - 1.5);
+    const earned = this.catchUp(v.away);
+    if (Math.abs(earned) >= 1) {
+      this.events.emit('toast', { text: `While you were out your casino made ${earned >= 0 ? '+' : ''}${formatMoney(earned)}.`, kind: earned >= 0 ? 'money' : 'bad' });
+    }
+    this.events.emit('money', { money: this.money, delta: 0 });
+    this.events.emit('visit', undefined);
+    this.events.emit('staff', undefined);
+    this.refreshStreet();
+    this.saveNow();
+  }
+
+  private shiftPlayer(dx: number, z: number): void {
+    // Line up with the doorway of the casino you're stepping into (or out of).
+    this.player.x = CENTER_X + clamp(this.player.x + dx - CENTER_X, -0.8, 0.8);
+    this.player.z = z;
+    this.player.floor = 0;
+    this.player.yaw = Math.PI;
+    this.cam.snap(this.player.x, this.player.z);
+    this.doorCooldown = 1;
+    this.transitionT = 0.35;
+  }
+
+  /** Put a casino's floor plan into the world (yours or one you're visiting). */
+  private loadCasino(s: CasinoSnapshot, visiting: boolean): void {
+    this.layout = { ...s.layout };
+    this.setFloorCount(s.floors || 1);
+    for (const l of this.levels) l.grid.setLayout(this.layout);
+    for (const l of this.levels) l.grid.floor.fill(0);
+    this.resetWorld();
+    s.paint?.forEach((p, f) => this.levels[f]?.grid.decodeFloor(p));
+    for (const l of this.levels) l.floor.rebuild();
+    this.building.setLook(s.look);
+    this.items.load(s.items);
+    for (const st of s.staff ?? []) this.addWorker(st.role, st.look, st.name, true);
+    this.rating = s.rating || 2;
+    this.ratingTarget = this.rating;
+    this.jackpotPot = s.jackpotPot || JACKPOT_SEED;
+    this.spawnT = 0.5;
+    this.activeEvent = null;
+    if (visiting) {
+      // A lively floor to walk into.
+      const cap = Math.min(this.maxCustomers(), Math.round(4 + this.items.gamblingSeats() * 0.55));
+      for (let i = 0; i < cap; i++) {
+        const g = this.gridAt(0);
+        const spot = g.randomInsideWalkable();
+        if (spot) this.spawnCustomer(Math.random() < 0.08 ? 'vip' : 'regular', spot[0] + 0.5, spot[1] + 0.5);
+      }
+    }
+    this.items.setViewFloor(this.player.floor);
+    this.trash.setViewFloor(this.player.floor);
+  }
+
+  private restoreHomeProfile(s: SaveData): void {
+    this.day = s.day;
+    this.dayMinutes = s.dayMinutes;
+    this.satAvg = s.satAvg;
+    this.jackpotPot = s.jackpotPot || JACKPOT_SEED;
+    for (const [x, z, f] of s.trash ?? []) this.trash.add(x, z, f ?? 0);
+  }
+
+  /**
+   * Fast-forward your casino after a visit: a short real simulation, then the rest estimated
+   * from how the casino was doing, with wages paid at each day that went by.
+   */
+  private catchUp(seconds: number): number {
+    const before = this.money;
+    const rate = this.incomePerMin / 60;
+    const real = Math.min(seconds, 60);
+    const dt = 0.25;
+    for (let t = 0; t < real; t += dt) this.simulateWorld(dt);
+    let rest = seconds - real;
+    while (rest > 0) {
+      const step = Math.min(rest, 30);
+      rest -= step;
+      this.money += rate * step;
+      this.dayMinutes += step * (1440 / DAY_SECONDS);
+      if (this.dayMinutes >= 1440) {
+        this.dayMinutes -= 1440;
+        this.endOfDay();
+      }
+    }
+    return Math.round(this.money - before);
   }
 
   // ------------------------------------------------------------------ World / ItemHost
@@ -354,12 +632,16 @@ export class Game implements World, ItemHost {
     this.stats.trashCleaned++;
   }
 
+  /** Sounds from floors you can't see (or from inside while you're out) are hushed. */
+  private fxFloor = 0;
   sfxAt(name: SfxName, x: number, z: number, volume = 1): void {
+    const hidden = this.fxFloor !== this.viewFloor || (!this.inside && z < FACADE_Z);
+    const v = hidden ? volume * 0.25 : volume;
     if (this.state !== 'playing' && name !== 'jackpot') {
-      audio.playAt(name, x, z, volume * 0.5);
+      audio.playAt(name, x, z, v * 0.5);
       return;
     }
-    audio.playAt(name, x, z, volume);
+    audio.playAt(name, x, z, v);
   }
 
   notify(text: string, kind: ToastKind = 'info'): void {
@@ -375,25 +657,25 @@ export class Game implements World, ItemHost {
     return this.workers.filter((w) => w.role === role).length;
   }
 
-  stageBoostAt(x: number, z: number): number {
+  stageBoostAt(x: number, z: number, floor = 0): number {
     let b = 0;
     for (const it of this.items.items) {
-      if (it.def.kind !== 'stage') continue;
+      if (it.def.kind !== 'stage' || it.floor !== floor) continue;
       const d = Math.hypot(it.cx - x, it.cz - z);
       if (d < it.def.appealRadius) b += 1.1 * (1 - d / it.def.appealRadius);
     }
     return b;
   }
 
-  witness(x: number, z: number, radius: number, mood: number, except?: Customer): void {
+  witness(x: number, z: number, radius: number, mood: number, except?: Customer, floor = 0): void {
     for (const c of this.customers) {
-      if (c === except || !c.inside) continue;
+      if (c === except || !c.inside || c.floor !== floor) continue;
       if (Math.hypot(c.x - x, c.z - z) <= radius) c.witnessed(mood);
     }
   }
 
   onCustomerExited(c: Customer): void {
-    if (this.state !== 'playing') return;
+    if (this.state !== 'playing' || this.visit) return;
     this.satAvg = this.satAvg * 0.93 + c.mood * 0.07;
   }
 
@@ -401,65 +683,87 @@ export class Game implements World, ItemHost {
     c.dispose();
   }
 
+  /** Every round settles straight away: a guest's loss lands in your bank, their win comes out of it. */
   roundDone(item: PlacedItem, o: Outcome, user: SeatUser): void {
-    const playing = this.state === 'playing';
+    const home = this.state === 'playing' && !this.visit;
+    // Visuals only where the camera can see them; sounds from elsewhere are hushed.
+    const playing = this.state === 'playing' && item.floor === this.viewFloor && this.inside;
+    this.fxFloor = item.floor;
     const k = item.def.kind;
     const pos = new THREE.Vector3(item.cx, item.model.height + 0.2, item.cz);
     const customer = this.customers.find((c) => c.uid === user.uid);
     const at = customer ? customer.headPos.clone() : pos;
+    const showMoney = (amount: number) => {
+      // One popup per machine every so often keeps a busy floor readable.
+      const last = this.floaterT.get(item.uid) ?? -9;
+      if (Math.abs(amount) < 1 || (this.time - last < 1.6 && Math.abs(amount) < 200)) return;
+      this.floaterT.set(item.uid, this.time);
+      this.floaters.money(pos, amount, Math.abs(amount) >= 500);
+    };
     if (k === 'bar' || k === 'snack' || k === 'atm') {
+      if (k === 'bar' || k === 'snack') {
+        if (home) this.stats.drinksServed++;
+        this.sfxAt('drink', item.cx, item.cz, 0.7);
+      } else this.sfxAt('coin', item.cx, item.cz, 0.7);
+      if (!home) return;
       this.dayAcc.sales += o.bet;
       this.logNet(o.bet);
-      if (k === 'bar' || k === 'snack') this.stats.drinksServed++;
-      if (playing) this.sfxAt(k === 'atm' ? 'coin' : 'drink', item.cx, item.cz, 0.7);
+      this.addMoney(o.bet, 'collect');
+      if (playing) showMoney(o.bet);
       this.gainXp(1);
       return;
     }
     if (k === 'bench') return;
-    this.stats.rounds++;
-    this.logNet(o.bet - o.payout);
-    this.dayAcc.revenue += o.bet;
-    this.dayAcc.payouts += o.payout;
-    this.dayAcc.byItem.set(item.def.name, (this.dayAcc.byItem.get(item.def.name) ?? 0) + (o.bet - o.payout));
-    if (item.def.jackpot) this.jackpotPot += o.bet * 0.04;
-    this.gainXp(1 + Math.min(20, o.bet / 40));
+    const net = o.bet - o.payout;
+    if (home) {
+      this.stats.rounds++;
+      this.logNet(net);
+      this.dayAcc.revenue += o.bet;
+      this.dayAcc.payouts += o.payout;
+      this.dayAcc.byItem.set(item.def.name, (this.dayAcc.byItem.get(item.def.name) ?? 0) + net);
+      if (item.def.jackpot) this.jackpotPot += o.bet * 0.04;
+      this.addMoney(net, net >= 0 ? 'collect' : 'payout');
+      if (playing) showMoney(net);
+      this.gainXp(1 + Math.min(20, o.bet / 40));
+    }
     if (k === 'claw' && o.tier === 'win') {
       if (playing) this.effects.sparkle(at.x, at.y, at.z, 10, 0xff9fcf);
       return;
     }
     if (o.tier === 'win') {
-      if (playing) {
-        this.floaters.money(at, o.payout);
-        this.sfxAt('win', item.cx, item.cz, 0.55);
-        this.effects.sparkle(pos.x, pos.y, pos.z, 6);
-      }
+      this.sfxAt('win', item.cx, item.cz, 0.55);
+      if (playing) this.effects.sparkle(pos.x, pos.y, pos.z, 6);
     } else if (o.tier === 'big') {
-      this.stats.bigWins++;
-      this.stats.biggestWin = Math.max(this.stats.biggestWin, o.payout);
+      if (home) {
+        this.stats.bigWins++;
+        this.stats.biggestWin = Math.max(this.stats.biggestWin, o.payout);
+      }
       if (playing) {
         this.floaters.text(at.clone().setY(at.y + 0.4), o.label, 'big');
-        this.floaters.money(at, o.payout, true);
         this.sfxAt('bigwin', item.cx, item.cz, 0.9);
         this.effects.confetti(pos.x, pos.y, pos.z, 50, 0.8);
         this.cam.shake(0.05);
       }
     } else if (o.tier === 'jackpot') {
-      this.stats.jackpots++;
-      this.stats.bigWins++;
-      this.stats.biggestWin = Math.max(this.stats.biggestWin, o.payout);
+      if (home) {
+        this.stats.jackpots++;
+        this.stats.bigWins++;
+        this.stats.biggestWin = Math.max(this.stats.biggestWin, o.payout);
+        this.buzz = Math.min(1, this.buzz + 0.5);
+      }
       if (item.def.jackpot && o.label.startsWith('MEGA')) this.jackpotPot = JACKPOT_SEED;
-      this.buzz = Math.min(1, this.buzz + 0.5);
       if (playing) {
         this.floaters.text(at.clone().setY(at.y + 0.6), 'JACKPOT!', 'jackpot', 3, 1.4);
-        this.floaters.money(at, o.payout, true);
         audio.play('jackpot');
         this.effects.confetti(pos.x, pos.y + 0.5, pos.z, 160, 1.2);
         this.effects.sparkle(pos.x, pos.y, pos.z, 30, 0xffd24a, 1.5);
         this.cam.shake(0.18);
+      }
+      if (home) {
         this.events.emit('jackpot', { amount: o.payout, machine: item.def.name });
         this.activeEvent = { id: 'buzz', title: 'Jackpot buzz!', left: 45, spawnMult: 1.8 };
       }
-    } else if (o.tier === 'lose' && playing && item.def.shared && Math.random() < 0.3) {
+    } else if (o.tier === 'lose' && this.state === 'playing' && item.def.shared && Math.random() < 0.3) {
       this.sfxAt('chips', item.cx, item.cz, 0.4);
     }
   }
@@ -494,8 +798,10 @@ export class Game implements World, ItemHost {
   machineBroke(item: PlacedItem): void {
     this.sfxAt('break', item.cx, item.cz);
     this.effects.smoke(item.cx, item.model.height, item.cz, 6);
+    if (this.visit) return;
     const tech = this.staffCount('technician') > 0;
-    this.notify(tech ? `${item.def.name} broke down. A technician is on the way.` : `${item.def.name} broke down! Stand next to it and hold Space to fix it.`, 'bad');
+    const where = this.floors > 1 ? ` on ${floorName(item.floor)}` : '';
+    this.notify(tech ? `${item.def.name}${where} broke down. A technician is on the way.` : `${item.def.name}${where} broke down! Stand next to it and hold Space to fix it.`, 'bad');
   }
 
   // ------------------------------------------------------------------ progression
@@ -521,17 +827,13 @@ export class Game implements World, ItemHost {
     return xpForLevel(this.level);
   }
 
-  get freeSpinReady(): boolean {
-    return this.freeSpinDay !== this.day;
-  }
-
-  useFreeSpin(): void {
-    this.freeSpinDay = this.day;
-    this.requestSave();
-  }
-
   resetJackpot(): void {
     this.jackpotPot = JACKPOT_SEED;
+  }
+
+  /** Width steps + depth steps bought (for goals). */
+  get expansion(): number {
+    return this.homeLayout.width + this.homeLayout.depth;
   }
 
   objectiveView(): ObjectiveView {
@@ -540,10 +842,13 @@ export class Game implements World, ItemHost {
       level: this.level,
       rating: this.rating,
       expansion: this.expansion,
+      floors: this.floors,
+      widthStep: this.layout.width,
       countItem: (id) => this.items.count(id),
-      countCategory: (cat) => this.items.countKind((i) => i.def.category === cat),
+      countCategory: (cat) => this.items.countKind((i) => i.def.category === cat && !i.def.fixed),
       countKind: (kind) => this.items.countKind((i) => i.def.kind === kind),
       staffTotal: this.workers.length,
+      doorGuards: this.staffCount('doorman'),
       customersNow: this.customers.filter((c) => c.inside && !c.exited).length,
       stats: this.stats,
       floorPainted: this.floorPainted,
@@ -594,7 +899,7 @@ export class Game implements World, ItemHost {
   /** Components of the star rating, each 0..1 (shown in the Casino panel). */
   ratingBreakdown(): { happiness: number; decor: number; variety: number; clean: number; working: number } {
     const r = this.grid.rect;
-    const area = (r.x1 - r.x0 + 1) * (r.z1 - r.z0 + 1);
+    const area = (r.x1 - r.x0 + 1) * (r.z1 - r.z0 + 1) * this.floors;
     const machines = this.items.items.filter((i) => i.isGambling);
     const kinds = new Set(machines.map((i) => i.def.kind));
     const broken = machines.length ? machines.filter((m) => m.broken).length / machines.length : 0;
@@ -628,12 +933,17 @@ export class Game implements World, ItemHost {
     const c = new Customer(type, sx, sz, undefined, wealth);
     this.customers.push(c);
     this.renderer.scene.add(c.model.root);
-    if (this.state === 'playing') {
+    if (this.state === 'playing' && !this.visit) {
       this.stats.visitors++;
       this.dayAcc.visitors++;
       if (type === 'vip') {
         this.notify(`A VIP high roller just arrived! Greet ${c.name.split(' ')[0]} for a tip.`, 'event');
         audio.play('doorbell');
+      }
+      if (type === 'cheater') {
+        // Door guards spot most cheaters before they get in.
+        const guards = this.workers.filter((w) => w.role === 'doorman').length;
+        c.turnAway = guards > 0 && Math.random() < 1 - Math.pow(0.28, guards);
       }
     }
     return c;
@@ -641,7 +951,7 @@ export class Game implements World, ItemHost {
 
   private maxCustomers(): number {
     const q = this.settings.quality;
-    return q === 'high' ? 80 : q === 'medium' ? 55 : 35;
+    return q === 'high' ? 90 : q === 'medium' ? 60 : 38;
   }
 
   private hourMult(): number {
@@ -665,7 +975,7 @@ export class Game implements World, ItemHost {
     if (seats > 0 && inside < cap) {
       let type: CustomerType = 'regular';
       const vipChance = this.rating >= 2.5 ? 0.025 + (this.rating - 2.5) * 0.035 : 0;
-      const cheatChance = this.level >= 3 ? 0.045 : 0;
+      const cheatChance = this.level >= 4 && !this.visit ? 0.012 : 0;
       const r = Math.random();
       if (r < vipChance) type = 'vip';
       else if (r < vipChance + cheatChance) type = 'cheater';
@@ -674,6 +984,25 @@ export class Game implements World, ItemHost {
     }
     const perMin = (3.5 + this.rating * 2.4 + Math.min(this.items.totalAppeal, 80) * 0.1 + seats * 0.2) * this.hourMult() * mult;
     this.spawnT = (60 / perMin) * rand(0.6, 1.4);
+  }
+
+  /** Door guards stop flagged cheaters at the red carpet. */
+  private updateDoor(): void {
+    for (const c of this.customers) {
+      if (!c.turnAway || c.state === 'leave' || c.inside) continue;
+      const [dx, dz] = DOOR_TILES[0];
+      if (Math.hypot(c.x - (dx + 1), c.z - dz) > 2.4) continue;
+      c.turnAway = false;
+      c.leave('The door guard wouldn’t let me in…');
+      const guard = this.workers.filter((w) => w.role === 'doorman').sort((a, b) => Math.hypot(a.x - c.x, a.z - c.z) - Math.hypot(b.x - c.x, b.z - c.z))[0];
+      guard?.turnAway();
+      this.stats.turnedAway++;
+      if (this.inside || this.player.z > FACADE_Z) {
+        this.floaters.text(c.headPos.clone().setY(c.headPos.y + 0.5), 'Not tonight!', 'bad', 1.8);
+      }
+      if (this.stats.turnedAway <= 3 || this.stats.turnedAway % 10 === 0) this.notify(`Your door guard turned a cheater away (${this.stats.turnedAway} so far).`, 'good');
+      this.gainXp(20);
+    }
   }
 
   private startEvent(id: string, title: string, text: string, seconds: number, spawnMult: number): void {
@@ -719,12 +1048,14 @@ export class Game implements World, ItemHost {
   // ------------------------------------------------------------------ economy actions
 
   purchase(def: ItemDef, tx: number, tz: number, rot: number, color: number): PlacedItem | null {
+    if (this.visit) return null;
     if (this.money < def.price) {
       audio.play('error');
       this.notify(`Not enough cash for ${def.name}`, 'bad');
       return null;
     }
-    const check = this.items.canPlace(def, tx, tz, rot);
+    const floor = this.viewFloor;
+    const check = this.items.canPlace(def, floor, tx, tz, rot);
     if (!check.ok) {
       audio.play('error');
       this.notify(check.reason ?? 'Can’t place that here', 'bad');
@@ -732,7 +1063,7 @@ export class Game implements World, ItemHost {
     }
     this.spend(def.price, 'purchase');
     const hadSeats = this.items.gamblingSeats() > 0;
-    const item = this.items.add(def, tx, tz, rot, color);
+    const item = this.items.add(def, floor, tx, tz, rot, color);
     item.placedAt = this.time;
     if (!hadSeats && item.isGambling) this.spawnT = Math.min(this.spawnT, 0.8);
     item.playDropIn();
@@ -747,13 +1078,14 @@ export class Game implements World, ItemHost {
   }
 
   afterLayoutChange(): void {
-    this.player.unstick(this.grid);
+    this.player.unstick(this.gridAt(this.player.floor));
     for (const c of this.customers) {
       if (c.state === 'seated') continue;
+      const g = this.gridAt(c.floor);
       const tx = Math.floor(c.x);
       const tz = Math.floor(c.z);
-      if (!this.grid.isWalkable(tx, tz)) {
-        const n = this.grid.nearestWalkable(tx, tz);
+      if (!g.isWalkable(tx, tz)) {
+        const n = g.nearestWalkable(tx, tz);
         if (n) {
           c.x = n[0] + 0.5;
           c.z = n[1] + 0.5;
@@ -764,7 +1096,7 @@ export class Game implements World, ItemHost {
   }
 
   upgrade(item: PlacedItem): boolean {
-    if (!item.upgradable || item.level >= 5) return false;
+    if (!item.upgradable || item.level >= 5 || this.visit) return false;
     const cost = item.upgradeCost;
     if (this.money < cost) {
       audio.play('error');
@@ -784,9 +1116,10 @@ export class Game implements World, ItemHost {
   }
 
   sell(item: PlacedItem): void {
+    if (item.def.fixed || this.visit) return;
     const refund = item.refundable;
     if (!refund && item.pendingXp) this.gainXp(item.pendingXp);
-    const value = item.sellValueFor(refund) + Math.max(0, Math.floor(item.cash));
+    const value = item.sellValueFor(refund);
     if (refund) this.notify(`Purchase undone: ${item.def.name} fully refunded`, 'money');
     this.items.remove(item);
     this.addMoney(value, 'sell', new THREE.Vector3(item.cx, 1.5, item.cz));
@@ -805,10 +1138,32 @@ export class Game implements World, ItemHost {
     this.requestSave();
   }
 
+  private addWorker(role: WorkerRole, look?: Appearance, name?: string, atPost = false): Worker {
+    const [dx, dz] = DOOR_TILES[0];
+    const w = new Worker(role, dx + 0.5, dz - 1.5, look, name);
+    if (role === 'doorman') {
+      const used = new Set(this.workers.filter((o) => o.role === 'doorman').map((o) => o.post));
+      w.post = used.has(0) ? 1 : 0;
+      if (atPost) {
+        const p = DOOR_POSTS[w.post];
+        w.x = p[0];
+        w.z = p[1];
+      }
+    }
+    this.workers.push(w);
+    this.renderer.scene.add(w.model.root);
+    return w;
+  }
+
   hire(role: WorkerRole): boolean {
+    if (this.visit) return false;
     const info = ROLES.find((r) => r.role === role)!;
     if (this.level < info.unlock) {
       this.notify(`${info.title}s unlock at level ${info.unlock}`, 'bad');
+      return false;
+    }
+    if (role === 'doorman' && this.staffCount('doorman') >= MAX_DOOR_GUARDS) {
+      this.notify(`The entrance only has room for ${MAX_DOOR_GUARDS} door guards.`, 'bad');
       return false;
     }
     const cost = info.wage;
@@ -818,12 +1173,9 @@ export class Game implements World, ItemHost {
       return false;
     }
     this.spend(cost, 'wages');
-    const [dx, dz] = DOOR_TILES[0];
-    const w = new Worker(role, dx + 0.5, dz - 0.5);
-    this.workers.push(w);
-    this.renderer.scene.add(w.model.root);
+    const w = this.addWorker(role);
     audio.play('purchase');
-    this.notify(`${w.name} joined as your ${info.title.toLowerCase()}!`, 'good');
+    this.notify(role === 'doorman' ? `${w.name} is taking up a post at the front door!` : `${w.name} joined as your ${info.title.toLowerCase()}!`, 'good');
     this.events.emit('staff', undefined);
     this.requestSave();
     return true;
@@ -838,61 +1190,140 @@ export class Game implements World, ItemHost {
     this.requestSave();
   }
 
-  expand(): boolean {
-    const next = EXPANSIONS[this.expansion + 1];
-    if (!next) return false;
-    if (this.level < next.level) {
-      this.notify(`Reach level ${next.level} to expand`, 'bad');
-      return false;
-    }
-    if (this.money < next.cost) {
-      audio.play('error');
-      this.notify(`Expansion costs ${formatMoney(next.cost)}`, 'bad');
-      return false;
-    }
-    this.spend(next.cost, 'expand');
-    this.expansion++;
-    const prev = { ...this.grid.rect };
-    this.grid.setExpansion(this.expansion);
-    // New floor inherits the most used carpet
-    const counts = new Map<number, number>();
-    for (let z = prev.z0; z <= prev.z1; z++) for (let x = prev.x0; x <= prev.x1; x++) {
-      const s = this.grid.getFloor(x, z);
-      counts.set(s, (counts.get(s) ?? 0) + 1);
-    }
-    const main = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
-    const r = this.grid.rect;
-    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) {
-      const inside = x >= prev.x0 && x <= prev.x1 && z >= prev.z0 && z <= prev.z1;
-      if (!inside) this.grid.setFloor(x, z, main);
+  // ------------------------------------------------------------------ growing the building
+
+  get nextWidth(): { w: number; cost: number; level: number } | null {
+    return WIDTHS[this.layout.width + 1] ?? null;
+  }
+
+  get nextDepthCost(): number {
+    return depthCost(this.layout.depth);
+  }
+
+  get nextDepthLevel(): number {
+    return depthLevel(this.layout.depth);
+  }
+
+  get nextFloorCost(): number {
+    return floorCost(this.floors);
+  }
+
+  get nextFloorLevel(): number {
+    return floorLevel(this.floors);
+  }
+
+  private afterExpand(prev: { x0: number; x1: number; z0: number; z1: number }, label: string, cost: number): void {
+    // New floor space inherits each floor's most used carpet.
+    for (const l of this.levels) {
+      const counts = new Map<number, number>();
+      for (let z = prev.z0; z <= prev.z1; z++) for (let x = prev.x0; x <= prev.x1; x++) {
+        const s = l.grid.getFloor(x, z);
+        counts.set(s, (counts.get(s) ?? 0) + 1);
+      }
+      const main = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
+      const r = l.grid.rect;
+      for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) {
+        const inside = x >= prev.x0 && x <= prev.x1 && z >= prev.z0 && z <= prev.z1;
+        if (!inside) l.grid.setFloor(x, z, main);
+      }
     }
     this.building.rebuild();
-    this.floor.rebuild();
+    for (const l of this.levels) l.floor.rebuild();
+    const r = this.grid.rect;
     this.renderer.fitShadow(r.x0, r.x1 + 1, r.z0, r.z1 + 1);
     this.items.recompute();
     audio.play('levelup');
     for (let i = 0; i < 8; i++) this.effects.dust(rand(r.x0, r.x1), rand(r.z0, r.z1), 1.5);
     this.effects.confetti(this.player.x, 2.5, this.player.z, 120, 1.1);
-    this.notify(`Casino expanded to ${next.w}×${next.d}!`, 'good');
+    this.notify(label, 'good');
     this.events.emit('expansion', this.expansion);
-    this.gainXp(Math.round(next.cost / 40));
+    this.gainXp(Math.round(cost / 40));
+    this.refreshStreet();
     this.requestSave();
+  }
+
+  private payFor(cost: number, level: number, what: string): boolean {
+    if (this.visit) return false;
+    if (this.level < level) {
+      this.notify(`Reach level ${level} to ${what}`, 'bad');
+      return false;
+    }
+    if (this.money < cost) {
+      audio.play('error');
+      this.notify(`That costs ${formatMoney(cost)}`, 'bad');
+      return false;
+    }
+    this.spend(cost, 'expand');
     return true;
   }
 
-  /** Repaint every tile of the casino; returns tiles changed (0 if unaffordable). */
-  paintAll(style: number): number {
-    const price = FLOOR_STYLES[style]?.price ?? 0;
+  /** Widen the building (up to the street's width limit). */
+  expandWidth(): boolean {
+    const next = this.nextWidth;
+    if (!next) {
+      this.notify(`Every lot on the street is capped at ${MAX_WIDTH} tiles wide. Build deeper or add a floor!`, 'bad');
+      return false;
+    }
+    if (!this.payFor(next.cost, next.level, 'widen the casino')) return false;
+    const prev = { ...this.grid.rect };
+    this.layout = { ...this.layout, width: this.layout.width + 1 };
+    for (const l of this.levels) l.grid.setLayout(this.layout);
+    this.afterExpand(prev, `Casino widened to ${next.w} tiles!`, next.cost);
+    return true;
+  }
+
+  /** Push the back wall out; depth has no limit. */
+  expandDepth(): boolean {
+    const cost = this.nextDepthCost;
+    if (!this.payFor(cost, this.nextDepthLevel, 'build deeper')) return false;
+    const prev = { ...this.grid.rect };
+    this.layout = { ...this.layout, depth: this.layout.depth + 1 };
+    for (const l of this.levels) l.grid.setLayout(this.layout);
     const r = this.grid.rect;
+    this.afterExpand(prev, `Casino extended to ${r.z1 - r.z0 + 1} tiles deep!`, cost);
+    return true;
+  }
+
+  /** Build another storey on top; floors have no limit. The elevator links them all. */
+  addFloor(): boolean {
+    if (this.visit) return false;
+    const blockers = this.floors === 1 ? this.items.elevatorBlockers(0) : [];
+    if (blockers.length) {
+      const b = blockers[0];
+      this.items.selection.show(PORTAL[0] - 2, PORTAL[1] - 1, PORTAL[0] + 1, PORTAL[1] + 2, 0xff4d5e);
+      this.notify(`Move the ${b.def.name} first: the elevator goes next to the entrance (marked in red).`, 'bad');
+      audio.play('error');
+      return false;
+    }
+    const cost = this.nextFloorCost;
+    if (!this.payFor(cost, this.nextFloorLevel, 'add a floor')) return false;
+    const prev = { ...this.grid.rect };
+    this.setFloorCount(this.floors + 1);
+    this.items.syncElevators();
+    const top = this.levels[this.floors - 1];
+    const base = this.levels[0].grid;
+    const r = base.rect;
+    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) top.grid.setFloor(x, z, base.getFloor(x, z));
+    this.items.setViewFloor(this.viewFloor);
+    this.afterExpand(prev, `${floorName(this.floors - 1)} is open! Take the elevator up.`, cost);
+    return true;
+  }
+
+  /** Repaint every tile of the floor you're on; returns tiles changed (0 if unaffordable). */
+  paintAll(style: number): number {
+    if (this.visit) return 0;
+    const price = FLOOR_STYLES[style]?.price ?? 0;
+    const g = this.gridAt(this.viewFloor);
+    const r = g.rect;
     let n = 0;
-    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) if (this.grid.getFloor(x, z) !== style) n++;
+    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) if (g.getFloor(x, z) !== style) n++;
     if (!n) return 0;
     if (this.money < n * price) {
       audio.play('error');
       this.notify(`Painting ${n} tiles costs ${formatMoney(n * price)}`, 'bad');
       return 0;
     }
-    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) this.grid.setFloor(x, z, style);
+    for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) g.setFloor(x, z, style);
     this.spend(n * price, 'paint');
     this.floorPainted += n;
     this.floor.rebuild();
@@ -913,9 +1344,11 @@ export class Game implements World, ItemHost {
   }
 
   setLook(look: Partial<CasinoLook>): void {
+    if (this.visit) return;
     if (look.name !== undefined && look.name !== this.building.look.name) this.renamed = true;
     this.building.setLook(look);
     this.lookEdited = true;
+    this.refreshStreet();
     this.events.emit('look', undefined);
     this.requestSave();
   }
@@ -926,6 +1359,30 @@ export class Game implements World, ItemHost {
     for (const it of this.items.items) if (it.def.model === 'statue') it.rebuildModel();
     this.events.emit('look', undefined);
     this.requestSave();
+  }
+
+  setCameraMode(mode: CamMode): void {
+    this.cam.setMode(mode);
+    this.settings.camera = mode;
+    this.events.emit('camera', mode);
+  }
+
+  // ------------------------------------------------------------------ floors for the player
+
+  /** Ride the elevator to a floor (instantly, with a little flourish). */
+  goToFloor(f: number): void {
+    if (f < 0 || f >= this.floors || f === this.player.floor) return;
+    if (this.build.active) this.build.cancel();
+    this.select(null);
+    this.player.floor = f;
+    this.player.x = PORTAL[0] + 0.5;
+    this.player.z = PORTAL[1] + 0.5;
+    this.player.yaw = Math.PI / 2;
+    this.player.unstick(this.gridAt(f));
+    this.cam.snap(this.player.x, this.player.z);
+    this.transitionT = 0.3;
+    audio.play('doorbell', { volume: 0.5, pitch: 1.3 });
+    this.events.emit('floor', f);
   }
 
   // ------------------------------------------------------------------ selection & interaction
@@ -946,20 +1403,19 @@ export class Game implements World, ItemHost {
     this.events.emit('mode', undefined);
   }
 
-  private pickCharacter(px: number, py: number): Customer | Worker | null {
+  private pickCharacter(px: number, py: number): Customer | Worker | RemoteView | null {
     const { w, h } = this.renderer.size;
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2((px / w) * 2 - 1, -(py / h) * 2 + 1), this.renderer.camera);
-    let best: Customer | Worker | null = null;
+    let best: Customer | Worker | RemoteView | null = null;
     let bestT = Infinity;
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     const onRay = new THREE.Vector3();
     const onSeg = new THREE.Vector3();
-    for (const c of [...this.customers, ...this.workers]) {
-      if ((c as Customer).gone) continue;
-      a.set(c.x, 0.15, c.z);
-      b.set(c.x, 1.25, c.z);
+    const test = (c: Customer | Worker | RemoteView, x: number, z: number) => {
+      a.set(x, 0.15, z);
+      b.set(x, 1.25, z);
       const d2 = ray.ray.distanceSqToSegment(a, b, onRay, onSeg);
       if (d2 < 0.36 * 0.36) {
         const t = onRay.distanceTo(ray.ray.origin);
@@ -968,7 +1424,12 @@ export class Game implements World, ItemHost {
           best = c;
         }
       }
+    };
+    for (const c of [...this.customers, ...this.workers]) {
+      if ((c as Customer).gone || !c.model.root.visible) continue;
+      test(c, c.x, c.z);
     }
+    for (const r of this.remotes) test(r, r.x, r.z);
     return best;
   }
 
@@ -978,12 +1439,18 @@ export class Game implements World, ItemHost {
       const ch = this.pickCharacter(c.x, c.y);
       if (ch) {
         audio.play('click');
-        this.select(ch instanceof Customer ? { kind: 'customer', c: ch } : { kind: 'worker', w: ch as Worker });
+        if (ch instanceof Customer) this.select({ kind: 'customer', c: ch });
+        else if (ch instanceof Worker) this.select({ kind: 'worker', w: ch });
+        else this.select({ kind: 'remote', pid: (ch as RemoteView).pid });
+        continue;
+      }
+      if (!this.inside) {
+        if (this.selection) this.select(null);
         continue;
       }
       const { w, h } = this.renderer.size;
       const item = this.items.pick(new THREE.Vector2((c.x / w) * 2 - 1, -(c.y / h) * 2 + 1), this.renderer.camera);
-      if (item) {
+      if (item && !this.visit) {
         audio.play('click');
         this.select({ kind: 'item', item });
       } else if (this.selection) {
@@ -996,7 +1463,7 @@ export class Game implements World, ItemHost {
   private updateHover(dt: number): void {
     const input = this.input;
     const canvas = this.renderer.renderer.domElement;
-    if (this.state !== 'playing' || this.build.active || this.photoMode || input.isTouch || !input.pointer.over) {
+    if (this.state !== 'playing' || this.build.active || this.photoMode || input.isTouch || !input.pointer.over || !this.inside) {
       if (this.hoverUid !== -1) {
         this.hoverUid = -1;
         this.items.hover.hide();
@@ -1009,7 +1476,7 @@ export class Game implements World, ItemHost {
     this.hoverT = 0.08;
     const { w, h } = this.renderer.size;
     const ch = this.pickCharacter(input.pointer.x, input.pointer.y);
-    const item = ch ? undefined : this.items.pick(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), this.renderer.camera);
+    const item = ch || this.visit ? undefined : this.items.pick(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), this.renderer.camera);
     canvas.style.cursor = ch || item ? 'pointer' : '';
     const uid = item?.uid ?? -1;
     if (uid === this.hoverUid) return;
@@ -1021,121 +1488,143 @@ export class Game implements World, ItemHost {
     } else this.items.hover.hide();
   }
 
+  /** Walkability for the manager: the floor they're on, plus the whole sidewalk outside. */
+  private playerWalk = (tx: number, tz: number): boolean => {
+    const g = this.gridAt(this.player.floor);
+    if (this.player.floor > 0 || tz < FACADE_Z) return g.isWalkable(tx, tz);
+    if (tz === FACADE_Z) return g.isDoor(tx, tz) || this.street.doorAt(tx, tz) !== null;
+    return this.street.isStreetWalkable(tx, tz);
+  };
+
   private updateInteraction(dt: number): void {
     const p = this.player;
-    // Auto-collect cash from nearby machines
-    for (const it of this.items.items) {
-      if (it.cash < 5) continue;
-      const b = it.bounds;
-      if (distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1) > 1.35) continue;
-      const last = this.collectT.get(it.uid) ?? -10;
-      if (this.time - last < 0.5) continue;
-      this.collectT.set(it.uid, this.time);
-      const amount = Math.floor(it.cash);
-      it.cash -= amount;
-      const from = new THREE.Vector3(it.cx, it.model.height + 0.3, it.cz);
-      const target = () => new THREE.Vector3(p.x, 1.0, p.z);
-      this.effects.coinFlight(from, target, Math.max(2, Math.round(Math.log2(amount + 1) * 1.5)), () => audio.play('coin', { pitch: 0.9 + Math.random() * 0.3 }));
-      this.addMoney(amount, 'collect', new THREE.Vector3(p.x, 1.6, p.z));
-      if (amount >= 200) audio.play('cash');
-      this.gainXp(Math.min(15, amount / 60));
-    }
-    // Pick up litter by walking over it
-    for (const t of this.trash.near(p.x, p.z, 0.65)) {
-      this.trash.remove(t);
-      this.stats.trashCleaned++;
-      this.effects.sparkle(t.x, 0.3, t.z, 6, 0xbfe9ff, 0.4);
-      audio.play('pop', { volume: 0.5, pitch: 1.4 });
-      this.gainXp(2);
+    const pf = p.floor;
+    // Pick up litter by walking over it (not in someone else's casino)
+    if (!this.visit) {
+      for (const t of this.trash.near(p.x, p.z, 0.65, pf)) {
+        this.trash.remove(t);
+        this.stats.trashCleaned++;
+        this.effects.sparkle(t.x, 0.3, t.z, 6, 0xbfe9ff, 0.4);
+        audio.play('pop', { volume: 0.5, pitch: 1.4 });
+        this.gainXp(2);
+      }
     }
 
     // Context action
     let target: typeof this.interactTarget = null;
     let bestD = Infinity;
-    for (const it of this.items.items) {
-      if (!it.broken) continue;
-      const b = it.bounds;
-      const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
-      if (d < 1.3 && d < bestD) {
-        bestD = d;
-        target = {
-          kind: 'repair', label: 'Hold to fix', hold: true, anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.9, it.cz),
-          act: () => {
-            it.broken = false;
-            this.stats.repairs++;
-            this.effects.sparkle(it.cx, 1.2, it.cz, 18, 0x9fe8ff, 1);
-            audio.play('fixed');
-            this.floaters.text(new THREE.Vector3(it.cx, it.model.height + 0.4, it.cz), 'Fixed!', 'good');
-            this.gainXp(25);
-          },
-        };
-      }
-    }
-    for (const c of this.customers) {
-      if (c.exited || c.gone) continue;
-      const d = Math.hypot(c.x - p.x, c.z - p.z);
-      if (d > 1.7 || d >= bestD) continue;
-      if (c.exposed) {
-        bestD = d;
-        target = {
-          kind: 'bust', label: 'Bust cheater!', hold: false, anchor: () => c.headPos.clone().setY(c.headPos.y + 0.35),
-          act: () => {
-            const loot = c.bust(this);
-            this.stats.cheatersCaught++;
-            this.addMoney(loot, 'bust', c.headPos.clone());
-            audio.play('bust');
-            this.player.playEmote('point', 1.2);
-            this.floaters.text(c.headPos.clone().setY(c.headPos.y + 0.5), 'BUSTED!', 'bad', 2);
-            this.notify(`Cheater busted! You recovered ${formatMoney(loot)}.`, 'good');
-            this.buzz = Math.min(1, this.buzz + 0.05);
-            this.gainXp(60);
-          },
-        };
-      } else if (c.type === 'vip' && !c.greeted && c.inside) {
-        bestD = d;
-        target = {
-          kind: 'greet', label: 'Greet VIP', hold: false, anchor: () => c.headPos.clone().setY(c.headPos.y + 0.35),
-          act: () => {
-            const tip = c.greet(this);
-            this.stats.vipsGreeted++;
-            this.addMoney(tip, 'tip', c.headPos.clone());
-            audio.play('cash');
-            this.player.playEmote('wave', 1.4);
-            this.gainXp(30);
-          },
-        };
-      } else if (c.mood < 38 && !c.comped && c.inside && c.state !== 'leave') {
-        bestD = d;
-        target = {
-          kind: 'comp', label: 'Comp a drink ($20)', hold: false, anchor: () => c.headPos.clone().setY(c.headPos.y + 0.35),
-          act: () => {
-            if (this.money < 20) {
-              audio.play('error');
-              return;
-            }
-            this.spend(20, 'comp');
-            c.comp(this);
-            this.stats.comps++;
-            audio.play('drink');
-            this.player.playEmote('wave', 1);
-            this.gainXp(8);
-          },
-        };
-      }
-    }
-    if (!target) {
-      let bestPlay = 1.25;
+    if (!this.visit) {
       for (const it of this.items.items) {
-        if (it.def.kind !== 'slot' || it.broken) continue;
+        if (!it.broken || it.floor !== pf) continue;
         const b = it.bounds;
         const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
-        if (d >= bestPlay || it.occupiedCount() >= it.seats.length) continue;
+        if (d < 1.3 && d < bestD) {
+          bestD = d;
+          target = {
+            kind: 'repair', label: 'Hold to fix', hold: true, anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.9, it.cz),
+            act: () => {
+              it.broken = false;
+              this.stats.repairs++;
+              this.effects.sparkle(it.cx, 1.2, it.cz, 18, 0x9fe8ff, 1);
+              audio.play('fixed');
+              this.floaters.text(new THREE.Vector3(it.cx, it.model.height + 0.4, it.cz), 'Fixed!', 'good');
+              this.gainXp(25);
+            },
+          };
+        }
+      }
+      for (const c of this.customers) {
+        if (c.exited || c.gone || c.floor !== pf || c.inElevator) continue;
+        const d = Math.hypot(c.x - p.x, c.z - p.z);
+        if (d > 1.7 || d >= bestD) continue;
+        if (c.exposed) {
+          bestD = d;
+          target = {
+            kind: 'bust', label: 'Bust cheater!', hold: false, anchor: () => c.headPos.clone().setY(c.headPos.y + 0.35),
+            act: () => {
+              const loot = c.bust(this);
+              this.stats.cheatersCaught++;
+              this.addMoney(loot, 'bust', c.headPos.clone());
+              audio.play('bust');
+              this.player.playEmote('point', 1.2);
+              this.floaters.text(c.headPos.clone().setY(c.headPos.y + 0.5), 'BUSTED!', 'bad', 2);
+              this.notify(`Cheater busted! You recovered ${formatMoney(loot)}.`, 'good');
+              this.buzz = Math.min(1, this.buzz + 0.05);
+              this.gainXp(60);
+            },
+          };
+        } else if (c.type === 'vip' && !c.greeted && c.inside) {
+          bestD = d;
+          target = {
+            kind: 'greet', label: 'Greet VIP', hold: false, anchor: () => c.headPos.clone().setY(c.headPos.y + 0.35),
+            act: () => {
+              const tip = c.greet(this);
+              this.stats.vipsGreeted++;
+              this.addMoney(tip, 'tip', c.headPos.clone());
+              audio.play('cash');
+              this.player.playEmote('wave', 1.4);
+              this.gainXp(30);
+            },
+          };
+        } else if (c.mood < 38 && !c.comped && c.inside && c.state !== 'leave') {
+          bestD = d;
+          target = {
+            kind: 'comp', label: 'Comp a drink ($20)', hold: false, anchor: () => c.headPos.clone().setY(c.headPos.y + 0.35),
+            act: () => {
+              if (this.money < 20) {
+                audio.play('error');
+                return;
+              }
+              this.spend(20, 'comp');
+              c.comp(this);
+              this.stats.comps++;
+              audio.play('drink');
+              this.player.playEmote('wave', 1);
+              this.gainXp(8);
+            },
+          };
+        }
+      }
+    }
+    // Somebody else's casino: every game is yours to play (never at your own).
+    if (!target && this.visit) {
+      let bestPlay = 1.35;
+      for (const it of this.items.items) {
+        if (!it.isGambling || it.broken || it.floor !== pf) continue;
+        const b = it.bounds;
+        const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
+        if (d >= bestPlay) continue;
         bestPlay = d;
         target = {
-          kind: `play${it.uid}`, label: this.freeSpinReady ? `Free spin on ${it.def.name}!` : `Play ${it.def.name}`, hold: false,
+          kind: `play${it.uid}`, label: `Play ${it.def.name} · ${formatMoney(it.minBet)}–${formatMoney(it.maxBet)}`, hold: false,
           anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.7, it.cz),
           act: () => this.events.emit('minigame', it),
         };
+      }
+    }
+    // The elevator
+    if (!target && this.floors > 1 && Math.hypot(p.x - (PORTAL[0] + 0.5), p.z - (PORTAL[1] + 0.5)) < 1.2) {
+      const up = pf + 1 < this.floors;
+      const to = up ? pf + 1 : 0;
+      target = {
+        kind: `lift${pf}`, label: `Elevator ${up ? '▲' : '▼'} ${floorName(to)}`, hold: false,
+        anchor: () => new THREE.Vector3(PORTAL[0] - 0.5, 2.6, PORTAL[1] + 0.5),
+        act: () => this.goToFloor(to),
+      };
+    }
+    // Out on the street: the doors of the other casinos
+    if (!target && !this.inside) {
+      const lot = this.street.lotAt(p.x);
+      if (lot && lot.id !== this.street.activeId) {
+        const o = this.street.offsetOf(lot.id);
+        if (Math.abs(p.x - (CENTER_X + o)) < 3 && p.z < FACADE_Z + 3.2) {
+          const block = this.entryBlock(lot);
+          target = {
+            kind: `door${lot.id}`, label: block ? `🚫 ${lot.info.look.name}` : lot.kind === 'me' ? `Back to ${lot.info.look.name}` : `Enter ${lot.info.look.name}`, hold: false,
+            anchor: () => new THREE.Vector3(CENTER_X + o, 3.6, FACADE_Z + 0.8),
+            act: () => this.enterLot(lot),
+          };
+        }
       }
     }
     if (this.photoMode) target = null;
@@ -1175,6 +1664,73 @@ export class Game implements World, ItemHost {
     } else {
       this.floaters.ring(null, 0);
     }
+  }
+
+  /** Walking into a doorway on the street takes you inside that casino. */
+  private checkDoors(dt: number): void {
+    this.doorCooldown = Math.max(0, this.doorCooldown - dt);
+    if (this.doorCooldown > 0 || this.player.floor !== 0) return;
+    const tx = Math.floor(this.player.x);
+    const tz = Math.floor(this.player.z);
+    const lot = this.street.doorAt(tx, tz);
+    if (lot) {
+      if (!this.enterLot(lot)) {
+        // Bounced: step back onto the sidewalk.
+        this.player.z = FACADE_Z + 1.3;
+        this.doorCooldown = 1.5;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ gambling as a visitor
+
+  /** Money you bet at someone else's table (returns false if you can't cover it). */
+  visitorBet(amount: number): boolean {
+    if (!this.visit || amount <= 0 || this.money < amount) return false;
+    this.money -= amount;
+    this.events.emit('money', { money: this.money, delta: -amount });
+    return true;
+  }
+
+  /**
+   * Settle a round you played as a visitor: `payout` is what the table hands back (0 on a
+   * loss). What you lose goes to the owner; what you win comes out of their bank.
+   */
+  visitorSettle(bet: number, payout: number, item: PlacedItem): void {
+    const v = this.visit;
+    if (!v) return;
+    if (payout > 0) {
+      this.money += payout;
+      this.events.emit('money', { money: this.money, delta: payout });
+    }
+    const net = payout - bet;
+    v.net += net;
+    v.hands++;
+    this.stats.awayNet += net;
+    this.stats.awayHands++;
+    if (net > 0) this.stats.earnedTotal += net;
+    this.gainXp(1 + Math.min(10, bet / 60));
+    const pos = new THREE.Vector3(item.cx, item.model.height + 0.3, item.cz);
+    if (Math.abs(net) >= 1) this.floaters.money(pos, net, Math.abs(net) >= 500);
+    if (v.lot.kind === 'rival') {
+      this.rival.bank -= net;
+      this.rival.net += net;
+      if (tickRival(this.rival, 0)) this.refreshStreet();
+    } else if (v.lot.kind === 'player') {
+      this.net.owes[v.lot.id] = (this.net.owes[v.lot.id] ?? 0) - net;
+    }
+    this.requestSave();
+  }
+
+  /** The rival doesn't like big winners. Called by the mini-games after each round. */
+  checkWinnerLimit(): boolean {
+    const v = this.visit;
+    if (!v || v.lot.kind !== 'rival' || v.net < RIVAL_WIN_LIMIT) return false;
+    this.rival.banUntil = Date.now() + RIVAL_BAN_MS;
+    this.events.emit('toast', { text: `${RIVAL_NAME}'s security escorts you out: "You're winning a little too much, pal." Banned for 5 minutes.`, kind: 'bad' });
+    audio.play('bust');
+    this.returnHome(this.street.offsetOf('me'), true);
+    return true;
   }
 
   // ------------------------------------------------------------------ loop
@@ -1234,18 +1790,73 @@ export class Game implements World, ItemHost {
     for (let i = 0; i < steps; i++) this.step(dt, false);
   }
 
+  /** The simulation half of a step: guests, staff, machines, the clock. */
+  private simulateWorld(sim: number): void {
+    const playing = this.state === 'playing';
+    if (playing) {
+      if (this.visit) {
+        this.visit.away += sim;
+        if (tickRival(this.rival, sim)) this.refreshStreet();
+      } else {
+        this.dayMinutes += sim * (1440 / DAY_SECONDS);
+        if (this.dayMinutes >= 1440) {
+          this.dayMinutes -= 1440;
+          this.endOfDay();
+        }
+        this.updateEvents(sim);
+        this.updateRating(sim);
+        if (tickRival(this.rival, sim)) this.refreshStreet();
+      }
+    }
+    this.updateSpawner(sim);
+    const vf = this.viewFloor;
+    for (const c of this.customers) {
+      const hidden = c.floor !== vf || (!this.inside && c.inside);
+      this.fxFloor = c.floor;
+      this.effects.muted = hidden;
+      this.floaters.muted = hidden;
+      c.update(sim, this);
+    }
+    if (this.customers.some((c) => c.gone)) {
+      this.customers = this.customers.filter((c) => {
+        if (c.gone) {
+          if (this.selection?.kind === 'customer' && this.selection.c === c) this.select(null);
+          return false;
+        }
+        return true;
+      });
+    }
+    for (const w of this.workers) {
+      const hidden = w.floor !== vf || (!this.inside && w.z < FACADE_Z);
+      this.fxFloor = w.floor;
+      this.effects.muted = hidden;
+      this.floaters.muted = hidden;
+      w.update(sim, this);
+    }
+    this.fxFloor = vf;
+    this.items.hideAll = !this.inside;
+    this.items.update(sim, this.time);
+    this.effects.muted = false;
+    this.floaters.muted = false;
+    if (playing && !this.visit) this.updateDoor();
+  }
+
   private step(dt: number, render: boolean): void {
-    const sim = this.paused ? 0 : dt * this.speed;
+    const sim = this.paused && !this.visit ? 0 : dt * (this.visit ? 1 : this.speed);
     this.time += sim;
     const input = this.input;
     const playing = this.state === 'playing';
+    const third = this.cam.mode === 'third' && playing;
 
     // Camera controls
     if (input.wheel) this.cam.zoomBy(Math.exp(input.wheel * 0.0012));
     if (input.pinch !== 1) this.cam.zoomBy(input.pinch);
-    if (playing && !this.paused) {
-      if (input.hit('KeyQ')) this.cam.rotate(-1);
-      if (input.hit('KeyE')) this.cam.rotate(1);
+    if (playing && sim > 0) {
+      if (!third) {
+        if (input.hit('KeyQ')) this.cam.rotate(-1);
+        if (input.hit('KeyE')) this.cam.rotate(1);
+      }
+      if (input.hit('KeyV')) this.setCameraMode(third ? 'top' : 'third');
       if (input.hit('Minus') || input.hit('NumpadSubtract')) this.cam.zoomBy(1.15);
       if (input.hit('Equal') || input.hit('NumpadAdd')) this.cam.zoomBy(1 / 1.15);
       if (input.hit('Escape')) {
@@ -1261,7 +1872,9 @@ export class Game implements World, ItemHost {
     }
 
     // Player movement
-    if (playing && !this.paused) {
+    const canMove = playing && sim > 0 && this.transitionT <= 0;
+    this.transitionT = Math.max(0, this.transitionT - dt);
+    if (canMove) {
       let ix = 0;
       let iz = 0;
       if (input.down('KeyW') || input.down('ArrowUp')) iz += 1;
@@ -1273,14 +1886,23 @@ export class Game implements World, ItemHost {
         iz -= input.joy.y;
       }
       const sprint = input.down('ShiftLeft') || input.down('ShiftRight') || Math.hypot(input.joy.x, input.joy.y) > 0.92;
-      this.player.update(dt, ix, iz, sprint, this.cam.basis(), this.grid);
+      this.player.update(dt, ix, iz, sprint, this.cam.basis(), this.playerWalk, third);
     } else {
-      this.player.update(dt, 0, 0, false, this.cam.basis(), this.grid);
+      this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third);
     }
+    this.cam.followYaw = this.player.yaw;
     this.player.model.root.visible = playing;
     this.playerPos.set(this.player.x, 0, this.player.z);
+    const wasInside = this.inside;
+    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && Math.abs(this.player.x - CENTER_X) < 16);
+    if (this.inside !== wasInside) {
+      if (!this.inside && this.build.active) this.build.cancel();
+      if (!this.inside && this.selection?.kind === 'item') this.select(null);
+      this.renderer.markShadowsDirty(4);
+    }
+    if (playing) this.checkDoors(dt);
 
-    if (playing && !this.paused) {
+    if (playing && sim > 0) {
       this.build.update();
       this.handleClicks();
     }
@@ -1311,35 +1933,16 @@ export class Game implements World, ItemHost {
 
     // Simulation
     if (sim > 0) {
-      if (playing) {
-        this.dayMinutes += sim * (1440 / DAY_SECONDS);
-        if (this.dayMinutes >= 1440) {
-          this.dayMinutes -= 1440;
-          this.endOfDay();
-        }
-        this.updateEvents(sim);
-        this.updateRating(sim);
-      }
-      this.updateSpawner(sim);
-      for (const c of this.customers) c.update(sim, this);
-      if (this.customers.some((c) => c.gone)) {
-        this.customers = this.customers.filter((c) => {
-          if (c.gone) {
-            if (this.selection?.kind === 'customer' && this.selection.c === c) this.select(null);
-            return false;
-          }
-          return true;
-        });
-      }
-      for (const w of this.workers) w.update(sim, this);
-      this.items.update(sim, this.time);
+      this.simulateWorld(sim);
       if (playing) {
         this.updateInteraction(sim);
-        this.objectiveT -= sim;
-        if (this.objectiveT <= 0) {
-          this.objectiveT = 0.5;
-          this.settleRefunds();
-          this.checkObjectives();
+        if (!this.visit) {
+          this.objectiveT -= sim;
+          if (this.objectiveT <= 0) {
+            this.objectiveT = 0.5;
+            this.settleRefunds();
+            this.checkObjectives();
+          }
         }
         this.moneyHistoryT -= sim;
         if (this.moneyHistoryT <= 0) {
@@ -1357,16 +1960,19 @@ export class Game implements World, ItemHost {
       if (this.autosaveT <= 0) this.saveNow();
     }
 
+    this.updateVisibility();
+
     // Audio listener and ambience
     audio.listener.x = this.cam.focus.x;
     audio.listener.z = this.cam.focus.z;
     audio.listener.yaw = this.cam.yaw;
-    audio.bustle = clamp(this.customers.length / 40, 0, 1) * (this.paused ? 0 : 1);
+    audio.bustle = clamp(this.customers.filter((c) => c.floor === this.viewFloor).length / 40, 0, 1) * (this.paused ? 0 : 1) * (this.inside ? 1 : 0.35);
 
     const fx = this.camFocus?.x ?? this.player.x;
     const fz = this.camFocus?.z ?? this.player.z;
     this.cam.update(dt, fx, fz);
-    this.building.update(dt, this.cam.yaw);
+    this.building.update(dt, this.cam.yaw, this.cam.low);
+    this.street.update(dt, this.player.x, this.inside);
     // Neon pops a little more after dark
     const hour = this.clockMinutes / 60;
     const night = hour >= 20 || hour < 5 ? 1 : hour >= 17 ? (hour - 17) / 3 : hour < 8 ? 1 - (hour - 5) / 3 : 0;
@@ -1377,6 +1983,24 @@ export class Game implements World, ItemHost {
     this.floaters.update(dt, this.renderer.camera, w, h);
     this.renderer.render();
     input.endFrame();
+  }
+
+  /** Only the floor you're on is drawn, and the inside of the building only while you're in it. */
+  private updateVisibility(): void {
+    const vf = this.viewFloor;
+    const inside = this.inside || this.state !== 'playing';
+    this.levels.forEach((l, i) => (l.floor.group.visible = inside && i === vf));
+    this.items.group.visible = inside;
+    if (this.items.viewFloor !== vf) this.items.setViewFloor(vf);
+    this.trash.setViewFloor(vf);
+    this.trash.group.visible = inside;
+    this.building.interior.visible = inside;
+    for (const c of this.customers) {
+      c.model.root.visible = !c.inElevator && c.floor === vf && (inside || !c.inside);
+    }
+    for (const w of this.workers) {
+      w.model.root.visible = !w.inElevator && w.floor === vf && (inside || w.z >= FACADE_Z);
+    }
   }
 
   // ------------------------------------------------------------------ persistence
@@ -1398,48 +2022,65 @@ export class Game implements World, ItemHost {
     this.onSave?.(this.serialize());
   }
 
+  /** Your casino as a snapshot others can walk into. */
+  snapshot(): CasinoSnapshot {
+    const s = this.serialize();
+    return { name: s.name, look: s.look, layout: s.layout, floors: s.floors, paint: s.paint, items: s.items, staff: s.staff, rating: s.rating, jackpotPot: s.jackpotPot };
+  }
+
   serialize(): SaveData {
+    // While visiting, your casino is the one saved when you left (with your current money).
+    if (this.visit) {
+      const home = this.visit.home;
+      return {
+        ...home,
+        money: Math.round(this.money),
+        xp: Math.round(this.xp),
+        level: this.level,
+        objectives: [...this.doneObjectives],
+        stats: { ...this.stats },
+        rival: { ...this.rival },
+        player: { ...home.player, look: this.player.appearance, name: this.player.name },
+      };
+    }
     return {
-      v: 1,
+      v: 2,
       name: this.building.look.name,
       look: { ...this.building.look },
+      layout: { ...this.layout },
+      floors: this.floors,
+      paint: this.levels.map((l) => l.grid.encodeFloor()),
+      items: this.items.serialize(),
+      staff: this.workers.map((w) => ({ role: w.role, name: w.name, look: w.look })),
+      rating: this.rating,
+      jackpotPot: Math.round(this.jackpotPot),
       money: Math.round(this.money),
       xp: Math.round(this.xp),
       level: this.level,
       day: this.day,
       dayMinutes: this.dayMinutes,
-      rating: this.rating,
       satAvg: this.satAvg,
-      expansion: this.expansion,
-      floor: encodeFloor(this.grid.floor),
-      items: this.items.serialize(),
-      staff: this.workers.map((w) => ({ role: w.role, name: w.name, look: w.look })),
-      player: { look: this.player.appearance, name: this.player.name, x: this.player.x, z: this.player.z },
+      player: { look: this.player.appearance, name: this.player.name, x: this.player.x, z: this.player.z, floor: this.player.floor },
       objectives: [...this.doneObjectives],
       stats: { ...this.stats },
-      jackpotPot: Math.round(this.jackpotPot),
       trash: this.trash.serialize(),
       history: [...this.history],
       floorPainted: this.floorPainted,
       lookEdited: this.lookEdited,
       renamed: this.renamed,
       speed: this.speed,
-      freeSpinDay: this.freeSpinDay,
+      rival: { ...this.rival },
+      createdAt: this.createdAt,
     };
   }
 
   load(s: SaveData): void {
     this.state = 'playing';
+    this.visit = null;
+    this.street.activeId = 'me';
     this.money = s.money;
     this.xp = s.xp;
     this.level = s.level;
-    this.day = s.day;
-    this.dayMinutes = s.dayMinutes;
-    this.rating = s.rating;
-    this.ratingTarget = s.rating;
-    this.satAvg = s.satAvg;
-    this.expansion = clamp(s.expansion, 0, EXPANSIONS.length - 1);
-    this.jackpotPot = s.jackpotPot || JACKPOT_SEED;
     this.stats = { ...emptyStats(), ...s.stats };
     this.doneObjectives = new Set(s.objectives);
     this.floorPainted = s.floorPainted ?? 0;
@@ -1447,34 +2088,52 @@ export class Game implements World, ItemHost {
     this.renamed = !!s.renamed;
     this.history = s.history ?? [];
     this.netLog = [];
-    this.freeSpinDay = s.freeSpinDay ?? 0;
     this.speed = s.speed || 1;
     this.paused = false;
-    decodeFloor(s.floor, this.grid.floor);
-    this.resetWorld();
-    this.building.setLook(s.look);
-    this.items.load(s.items);
-    for (const [x, z] of s.trash ?? []) this.trash.add(x, z);
-    for (const st of s.staff ?? []) {
-      const [dx, dz] = DOOR_TILES[0];
-      const w = new Worker(st.role, dx + 0.5, dz - 1.5, st.look, st.name);
-      this.workers.push(w);
-      this.renderer.scene.add(w.model.root);
+    this.rival = { ...newRival(), ...s.rival };
+    this.createdAt = s.createdAt || Date.now();
+    this.player.floor = 0;
+    const before = s.items.length;
+    this.loadCasino(s, false);
+    this.restoreHomeProfile(s);
+    // Anything that no longer fits the lot rules is sold back automatically.
+    const dropped = before - this.items.items.filter((i) => !i.def.fixed).length;
+    if (dropped > 0) {
+      const kept = new Set(this.items.items.map((i) => `${i.floor}:${i.tx},${i.tz},${i.def.id}`));
+      let refund = 0;
+      for (const it of s.items) {
+        if (kept.has(`${it.f ?? 0}:${it.tx},${it.tz},${it.id}`)) continue;
+        try {
+          refund += Math.round(itemDef(it.id).price * 0.8);
+        } catch {
+          /* unknown item */
+        }
+      }
+      if (refund) {
+        this.money += refund;
+        window.setTimeout(() => this.notify(`${dropped} items didn't fit the new street rules (lots are now ${MAX_WIDTH} wide but can go deeper and taller). They were sold for ${formatMoney(refund)}.`, 'money'), 1500);
+      }
     }
+    // Old saves kept money in machine cash boxes; bank it.
+    const boxed = s.items.reduce((a, i) => a + Math.max(0, Math.floor(i.cash ?? 0)), 0);
+    if (boxed > 0) this.money += boxed;
     this.player.setAppearance(s.player.look);
     this.player.name = s.player.name;
+    this.player.floor = clamp(s.player.floor ?? 0, 0, this.floors - 1);
     this.player.x = s.player.x;
     this.player.z = s.player.z;
-    this.player.unstick(this.grid);
+    this.player.unstick(this.gridAt(this.player.floor));
     for (const it of this.items.items) if (it.def.model === 'statue') it.rebuildModel();
     this.cam.setOrbit(false);
     this.cam.distTarget = 15;
     this.cam.snap(this.player.x, this.player.z);
     this.spawnT = 1;
+    this.refreshStreet();
     this.events.emit('money', { money: this.money, delta: 0 });
     this.events.emit('objectives', undefined);
     this.events.emit('look', undefined);
     this.events.emit('staff', undefined);
+    this.events.emit('visit', undefined);
   }
 
   setQuality(q: Quality): void {
@@ -1483,29 +2142,6 @@ export class Game implements World, ItemHost {
   }
 }
 
-function encodeFloor(arr: Uint8Array): string {
-  // Run-length encoding: "value:count,value:count"
-  const out: string[] = [];
-  let cur = arr[0];
-  let n = 0;
-  for (let i = 0; i < arr.length; i++) {
-    if (arr[i] === cur) n++;
-    else {
-      out.push(`${cur}:${n}`);
-      cur = arr[i];
-      n = 1;
-    }
-  }
-  out.push(`${cur}:${n}`);
-  return out.join(',');
-}
-
-function decodeFloor(s: string, into: Uint8Array): void {
-  into.fill(0);
-  if (!s) return;
-  let i = 0;
-  for (const part of s.split(',')) {
-    const [v, n] = part.split(':').map(Number);
-    for (let k = 0; k < n && i < into.length; k++) into[i++] = v;
-  }
+export function floorName(f: number): string {
+  return f === 0 ? 'Ground floor' : `Floor ${f + 1}`;
 }

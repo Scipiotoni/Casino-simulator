@@ -1,20 +1,53 @@
 import { describe, expect, it } from 'vitest';
-import { DOOR_TILES, EXPANSIONS, FACADE_Z, Grid, expansionRect } from '../src/world/grid';
+import { DOOR_TILES, FACADE_Z, Grid, MAX_WIDTH, WIDTHS, depthCost, floorCost, layoutRect } from '../src/world/grid';
 import { findPath, smoothPath } from '../src/world/pathfinding';
 
 describe('grid', () => {
-  it('grows every expansion around the fixed entrance', () => {
-    let prev = expansionRect(0);
-    for (let i = 1; i < EXPANSIONS.length; i++) {
-      const r = expansionRect(i);
+  it('grows around the fixed entrance, capped in width but not in depth', () => {
+    let prev = layoutRect({ width: 0, depth: 0 });
+    for (let i = 1; i < WIDTHS.length; i++) {
+      const r = layoutRect({ width: i, depth: 0 });
       expect(r.z1).toBe(FACADE_Z - 1);
       expect(r.x0).toBeLessThanOrEqual(prev.x0);
-      expect(r.x1).toBeGreaterThanOrEqual(prev.x1);
-      expect(r.z0).toBeLessThanOrEqual(prev.z0);
-      expect(r.x1 - r.x0 + 1).toBe(EXPANSIONS[i].w);
-      expect(r.z1 - r.z0 + 1).toBe(EXPANSIONS[i].d);
+      expect(r.x1 - r.x0 + 1).toBe(WIDTHS[i].w);
       prev = r;
     }
+    const huge = layoutRect({ width: 99, depth: 60 });
+    expect(huge.x1 - huge.x0 + 1).toBe(MAX_WIDTH);
+    expect(huge.z1 - huge.z0 + 1).toBe(12 + 60 * 4);
+    expect(depthCost(10)).toBeGreaterThan(depthCost(9));
+    expect(floorCost(3)).toBeGreaterThan(floorCost(2));
+  });
+
+  it('reallocates for unlimited depth and keeps what was there', () => {
+    const g = new Grid(0);
+    g.setFloor(20, 30, 7);
+    g.setOcc(21, 31, 42);
+    g.setLayout({ width: 2, depth: 40 });
+    expect(g.zMin).toBeLessThan(0);
+    expect(g.getFloor(20, 30)).toBe(7);
+    expect(g.occupant(21, 31)).toBe(42);
+    expect(g.isOwned(20, g.rect.z0)).toBe(true);
+    const back = g.rect.z0;
+    expect(findPath(g, 24, 43, 20, back)).not.toBeNull();
+  });
+
+  it('round-trips floor paint', () => {
+    const g = new Grid(0, { width: 1, depth: 2 });
+    g.setFloor(g.rect.x0, g.rect.z0, 3);
+    g.setFloor(g.rect.x1, g.rect.z1, 9);
+    const s = g.encodeFloor();
+    const h = new Grid(0, { width: 1, depth: 2 });
+    h.decodeFloor(s);
+    expect(h.getFloor(g.rect.x0, g.rect.z0)).toBe(3);
+    expect(h.getFloor(g.rect.x1, g.rect.z1)).toBe(9);
+  });
+
+  it('upper floors are entered from the elevator, not the street', () => {
+    const up = new Grid(1);
+    expect(up.isWalkable(DOOR_TILES[0][0], DOOR_TILES[0][1])).toBe(false);
+    const reach = up.reachableFromDoor();
+    expect(reach[up.idx(up.rect.x0, up.rect.z0)]).toBe(1);
   });
 
   it('only connects inside and outside through the door', () => {

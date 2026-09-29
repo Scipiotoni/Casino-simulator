@@ -71,7 +71,8 @@ export class PlacedItem {
   readonly root = new THREE.Group();
   model!: ItemModel;
   seats: SeatRuntime[] = [];
-  cash = 0;
+  /** Which floor of the casino this stands on. */
+  floor = 0;
   broken = false;
   level = 1;
   color: number;
@@ -92,7 +93,6 @@ export class PlacedItem {
   private statusKind = '';
   /** Claimed by a staff member so two workers don't chase the same job. */
   repairClaim: number | null = null;
-  collectClaim: number | null = null;
   tiles: [number, number][] = [];
   cx = 0;
   cz = 0;
@@ -120,7 +120,7 @@ export class PlacedItem {
   }
 
   get upgradable(): boolean {
-    return this.def.kind !== 'decor' && this.def.kind !== 'bench' && this.def.kind !== 'stage';
+    return !this.def.fixed && this.def.kind !== 'decor' && this.def.kind !== 'bench' && this.def.kind !== 'stage';
   }
 
   get minBet(): number {
@@ -130,10 +130,6 @@ export class PlacedItem {
   get maxBet(): number {
     const raw = this.def.maxBet * (1 + 0.45 * (this.level - 1));
     return raw > 20 ? Math.round(raw / 5) * 5 : Math.round(raw);
-  }
-
-  get cashCap(): number {
-    return Math.round(this.def.cashCap * (1 + 0.7 * (this.level - 1)));
   }
 
   get appeal(): number {
@@ -173,10 +169,6 @@ export class PlacedItem {
 
   get signable(): boolean {
     return ['slot', 'megaslot', 'bar', 'snack', 'claw'].includes(this.def.model);
-  }
-
-  get isFull(): boolean {
-    return this.def.cashCap > 0 && this.cash >= this.cashCap;
   }
 
   get profit(): number {
@@ -254,7 +246,7 @@ export class PlacedItem {
   }
 
   freeSeat(): SeatRuntime | null {
-    if (this.broken || this.isFull) return null;
+    if (this.broken) return null;
     const free = this.seats.filter((s) => s.reachable && !s.occupant && !s.reserved);
     if (!free.length) return null;
     return free[Math.floor(Math.random() * free.length)];
@@ -320,15 +312,13 @@ export class PlacedItem {
   }
 
   private takeBet(amount: number): void {
-    this.cash += amount;
     this.stats.wagered += amount;
   }
 
-  /** Wins are paid from the machine's cash box, which may dip below zero and refill from later bets. */
+  /** The bank settles each round as it ends (see ItemHost.roundDone): a guest's win is your loss. */
   private payOut(amount: number): void {
     if (amount <= 0) return;
     this.stats.paid += amount;
-    this.cash -= amount;
   }
 
   private resolveIndividual(bet: number, user: SeatUser): Outcome {
@@ -351,10 +341,6 @@ export class PlacedItem {
       default:
         return { bet, payout: 0, label: 'Resting', tier: 'push', visual: { kind: 'none' } };
     }
-  }
-
-  private isService(): boolean {
-    return ['bar', 'snack', 'atm', 'bench'].includes(this.def.kind);
   }
 
   update(dt: number, ctxT: number): void {
@@ -386,10 +372,6 @@ export class PlacedItem {
       s.timer -= dt;
       if (s.timer > 0) continue;
       if (s.state === 'idle') {
-        if (this.isFull && !this.isService()) {
-          u.forceLeave('This machine is full of cash!', 4);
-          continue;
-        }
         const bet = u.nextBet(this, s.index);
         if (bet === null) continue; // user stands up on their own
         const outcome = this.resolveIndividual(bet, u);
@@ -435,11 +417,6 @@ export class PlacedItem {
       case 'betting': {
         if (t.timer > 0) break;
         t.bets.clear();
-        if (this.isFull) {
-          seated.forEach((s) => s.occupant!.forceLeave('This table is out of chips!', 4));
-          t.phase = 'idle';
-          break;
-        }
         for (const s of seated) {
           const u = s.occupant!;
           const amount = u.nextBet(this, s.index);
@@ -556,7 +533,7 @@ export class PlacedItem {
   }
 
   private updateStatus(): void {
-    const kind = this.broken ? 'broken' : this.isFull ? 'full' : '';
+    const kind = this.broken ? 'broken' : '';
     if (kind === this.statusKind) {
       if (this.status) this.status.position.y = this.model.height + 0.45 + Math.sin(this.host.time * 4) * 0.08;
       return;
@@ -572,7 +549,7 @@ export class PlacedItem {
       this.status.renderOrder = 10;
       this.root.add(this.status);
     }
-    (this.status.material as THREE.SpriteMaterial).map = badgeTexture(kind as 'broken' | 'full');
+    (this.status.material as THREE.SpriteMaterial).map = badgeTexture('broken');
     (this.status.material as THREE.SpriteMaterial).needsUpdate = true;
     this.status.visible = true;
     this.status.position.set(0, this.model.height + 0.45, 0);
@@ -609,8 +586,8 @@ export class PlacedItem {
 
   serialize(): SavedItem {
     return {
-      id: this.def.id, tx: this.tx, tz: this.tz, rot: this.rot, level: this.level, color: this.color,
-      cash: Math.round(this.cash), broken: this.broken, stats: { ...this.stats }, label: this.label ?? undefined,
+      id: this.def.id, f: this.floor || undefined, tx: this.tx, tz: this.tz, rot: this.rot, level: this.level, color: this.color,
+      broken: this.broken, stats: { ...this.stats }, label: this.label ?? undefined,
       pxp: this.pendingXp || undefined,
     };
   }
@@ -618,12 +595,15 @@ export class PlacedItem {
 
 export interface SavedItem {
   id: string;
+  /** Floor (omitted for the ground floor). */
+  f?: number;
   tx: number;
   tz: number;
   rot: number;
   level: number;
   color: number;
-  cash: number;
+  /** Cash box contents from saves made before bets settled straight to the bank. */
+  cash?: number;
   broken: boolean;
   stats: ItemStats;
   label?: string;
