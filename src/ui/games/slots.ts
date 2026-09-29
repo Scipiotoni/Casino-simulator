@@ -3,7 +3,7 @@ import { REEL_SYMBOLS, drawSymbol } from '../../render/textures';
 import { resolveSlot, SLOT_TABLE, SLOT_TABLE_LOW } from '../../items/games';
 import { formatMoney } from '../../core/math';
 import { audio } from '../../core/audio';
-import { type GameCtx, Session } from './common';
+import { type GameCtx, Session, chipRow, chipValues } from './common';
 
 const CELL = 92;
 const LOOP = REEL_SYMBOLS.length;
@@ -46,26 +46,18 @@ export function openSlots(ctx: GameCtx): void {
   }
   window_.appendChild(h('div', { class: 'mg-payline' }));
   const result = h('div', { class: 'mg-result', text: 'Place your bet and pull!' });
-  const bets = [1, 2, 5, 10, 25, 50, 100, 250, 500].filter((b) => b >= item.minBet && b <= item.maxBet);
-  if (!bets.length) bets.push(item.minBet);
+  const bets = chipValues(item.minBet);
   let bet = bets[Math.min(1, bets.length - 1)];
   let spinning = false;
-  const betRow = h('div', { class: 'chips mg-bets' });
-  const renderBets = () => {
-    betRow.replaceChildren(
-      ...bets.map((b) =>
-        h('button', {
-          class: `chip-btn${b === bet ? ' on' : ''}`, text: formatMoney(b),
-          onClick: () => { if (!spinning) { bet = b; renderBets(); refresh(); audio.play('chips'); } },
-        }),
-      ),
-    );
-  };
+  const betRow = chipRow(bets, () => bet, (v) => {
+    if (spinning) return;
+    bet = v;
+    refresh();
+  }, { min: item.minBet, bank: () => s.bank });
   const spinBtn = h('button', { class: 'btn gold mg-spin', onClick: () => void spin() });
   const refresh = () => {
     spinBtn.innerHTML = `${icon('dice', 20)} SPIN · ${formatMoney(bet)}`;
   };
-  renderBets();
   const spin = async () => {
     if (spinning || s.closed) return;
     if (!s.bet(bet)) {

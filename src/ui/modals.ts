@@ -319,6 +319,7 @@ export class Modals {
       ['Money', 'Every bet settles the moment a round ends: when a guest loses, the chips land in your bank; when a guest wins, you pay them. The house edge wins over time.'],
       ['The street', 'Walk out the front door. The Golden Viper, a rival AI casino, is next door, and every other player’s casino lines the street too. You can’t gamble in your own casino, so go play theirs: blackjack, Casino Hold’em, roulette, craps, the big wheel and slots.'],
       ['Floors', 'Your lot has a width limit like every lot on the street, but you can build deeper and add as many floors as you can afford. The elevator links them.'],
+      ['Yard', 'Decorations can also go in the two rows of sidewalk in front of your casino (build mode shows the grid). The red carpet stays clear.'],
       ['Door guards', 'Hire a Door Guard (Staff) to stand at the entrance and turn most cheaters away.'],
       ['Blacklist', 'Click another player in your casino to blacklist them for 10 minutes (then a 30-minute cooldown).'],
       ['Camera', 'V switches between the top-down view and a third-person camera behind you (A/D turn, W/S walk).'],

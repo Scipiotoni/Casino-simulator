@@ -109,6 +109,14 @@ export class FloorRenderer {
     const y = 0.012;
     for (let x = r.x0; x <= r.x1 + 1; x++) pts.push(x, y, r.z0, x, y, r.z1 + 1);
     for (let z = r.z0; z <= r.z1 + 1; z++) pts.push(r.x0, y, z, r.x1 + 1, y, z);
+    // The decoratable yard out front (ground floor only)
+    const g = this.grid;
+    for (let z = r.z1 + 2; z <= r.z1 + 4; z++) {
+      for (let x = r.x0; x <= r.x1; x++) {
+        if (!g.isYard(x, z)) continue;
+        pts.push(x, y, z, x + 1, y, z, x, y, z + 1, x + 1, y, z + 1, x, y, z, x, y, z + 1, x + 1, y, z, x + 1, y, z + 1);
+      }
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     if (this.gridLines) {

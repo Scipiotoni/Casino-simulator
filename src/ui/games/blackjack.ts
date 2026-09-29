@@ -10,7 +10,7 @@ const shoe = new Shoe(6);
 /** Blackjack: 6 decks, dealer stands on 17, blackjack pays 3:2, double on any first two cards. */
 export function openBlackjack(ctx: GameCtx): void {
   const s = new Session(ctx);
-  const chips = chipValues(s.min, s.max);
+  const chips = chipValues(s.min);
   let bet = chips[Math.min(1, chips.length - 1)];
   let busy = false;
   const dealerRow = h('div', { class: 'pc-row' });
@@ -24,7 +24,7 @@ export function openBlackjack(ctx: GameCtx): void {
       bet = v;
       betLabel.textContent = formatMoney(bet);
     }
-  });
+  }, { min: s.min, bank: () => s.bank });
   const dealBtn = h('button', { class: 'btn gold tg-main', text: 'Deal' });
   const hitBtn = h('button', { class: 'btn', text: 'Hit' });
   const standBtn = h('button', { class: 'btn', text: 'Stand' });

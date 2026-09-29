@@ -9,7 +9,7 @@ let url: string | null = null;
 /** Big Six wheel: bet on a symbol, it pays its number to one (the star pays 20:1). */
 export function openWheel(ctx: GameCtx): void {
   const s = new Session(ctx);
-  const chips = chipValues(s.min, s.max);
+  const chips = chipValues(s.min);
   let chip = chips[0];
   let pickOn = 1;
   let busy = false;
@@ -65,7 +65,7 @@ export function openWheel(ctx: GameCtx): void {
     result,
     row,
     h('div', { class: 'tg-betline', text: 'Bet' }),
-    chipRow(chips, () => chip, (v) => (chip = v)),
+    chipRow(chips, () => chip, (v) => (chip = v), { min: s.min, bank: () => s.bank }),
     spin,
   );
   ctx.modals.open('Big Wheel', body, { cls: 'minigame table-game', onClose: () => s.dispose() });

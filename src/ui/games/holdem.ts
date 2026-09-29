@@ -13,7 +13,7 @@ const shoe = new Shoe(1);
  */
 export function openHoldem(ctx: GameCtx): void {
   const s = new Session(ctx);
-  const chips = chipValues(s.min, Math.max(s.min, Math.floor(s.max / 3)));
+  const chips = chipValues(s.min);
   let ante = chips[0];
   let busy = false;
   const dealerRow = h('div', { class: 'pc-row' });
@@ -28,7 +28,7 @@ export function openHoldem(ctx: GameCtx): void {
       ante = v;
       anteLabel.textContent = formatMoney(ante);
     }
-  });
+  }, { min: s.min, bank: () => s.bank });
   const dealBtn = h('button', { class: 'btn gold tg-main', text: 'Deal' });
   const callBtn = h('button', { class: 'btn gold', text: 'Call' });
   const foldBtn = h('button', { class: 'btn danger', text: 'Fold' });

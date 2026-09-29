@@ -48,8 +48,8 @@ export class ShopDrawer {
       this.game.notify('You can only build in your own casino.', 'bad');
       return;
     }
-    if (!this.game.inside) {
-      this.game.notify('Step inside your casino to build.', 'bad');
+    if (!this.game.canBuildHere) {
+      this.game.notify('Head back to your casino to build.', 'bad');
       return;
     }
     this.game.build.cancel();

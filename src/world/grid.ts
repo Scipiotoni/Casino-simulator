@@ -47,6 +47,12 @@ export function floorLevel(k: number): number {
   return 4 + (k - 1) * 2;
 }
 
+/** Rows of sidewalk in front of your casino that you may decorate. */
+export const YARD_Z0 = SIDEWALK_Z0;
+export const YARD_Z1 = SIDEWALK_Z0 + 1;
+/** Columns kept clear for the red carpet, rope posts and door guards. */
+export const YARD_GAP: [number, number] = [CENTER_X - 2, CENTER_X + 1];
+
 /** Stairwell footprint (2×3 tiles) and the tile where walkers change floors. */
 export const STAIR_TILE: [number, number] = [CENTER_X - 7, FACADE_Z - 4];
 export const PORTAL: [number, number] = [CENTER_X - 5, FACADE_Z - 3];
@@ -72,6 +78,7 @@ export function layoutRect(l: Layout): Rect {
 const F_OWNED = 1;
 const F_SIDEWALK = 2;
 const F_DOOR = 4;
+const F_YARD = 8;
 
 export class Grid {
   readonly w = GRID_W;
@@ -151,6 +158,7 @@ export class Grid {
         const i = this.idx(x, z);
         if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) this.flags[i] |= F_OWNED;
         if (this.level === 0 && z >= SIDEWALK_Z0 && z <= SIDEWALK_Z1) this.flags[i] |= F_SIDEWALK;
+        if (this.level === 0 && z >= YARD_Z0 && z <= YARD_Z1 && x >= r.x0 && x <= r.x1 && (x < YARD_GAP[0] || x > YARD_GAP[1])) this.flags[i] |= F_YARD;
       }
     }
     if (this.level === 0) for (const [x, z] of DOOR_TILES) this.flags[this.idx(x, z)] |= F_DOOR;
@@ -165,6 +173,11 @@ export class Grid {
     return this.isOwned(x, z);
   }
 
+  /** Outdoor tile in front of the casino where decorations may be placed. */
+  isYard(x: number, z: number): boolean {
+    return this.inBounds(x, z) && (this.flags[this.idx(x, z)] & F_YARD) !== 0;
+  }
+
   isSidewalk(x: number, z: number): boolean {
     return this.inBounds(x, z) && (this.flags[this.idx(x, z)] & F_SIDEWALK) !== 0;
   }
@@ -177,7 +190,7 @@ export class Grid {
     if (!this.inBounds(x, z)) return false;
     const i = this.idx(x, z);
     const f = this.flags[i];
-    if (f & (F_SIDEWALK | F_DOOR)) return true;
+    if (f & (F_SIDEWALK | F_DOOR)) return this.occ[i] === 0;
     if (!(f & F_OWNED)) return false;
     return this.occ[i] === 0;
   }

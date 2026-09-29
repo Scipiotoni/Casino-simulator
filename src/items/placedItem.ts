@@ -7,10 +7,18 @@ import { CharacterModel } from '../entities/characterModel';
 import { type Appearance, randomStaffAppearance } from '../entities/appearance';
 import { badgeTexture } from '../render/textures';
 import { easeOutBack } from '../core/math';
+import { FACADE_Z as DOOR_Z } from '../world/grid';
 
 
 /** Seconds after buying during which selling refunds the full price. */
 export const REFUND_SECONDS = 15;
+
+/**
+ * House luck: when a guest's round would pay out more than they bet, the house gets a
+ * second draw this often. Results stay honest to look at (the second draw is a complete,
+ * normal round), guests just win less often and you make more.
+ */
+export const HOUSE_REROLL = 0.35;
 export interface SeatUser {
   readonly uid: number;
   readonly isCheater: boolean;
@@ -113,6 +121,11 @@ export class PlacedItem {
     this.rebuildModel();
     this.setPosition(tx, tz, rot);
     if (def.staff) this.createStaff();
+  }
+
+  /** Stands in the yard out front rather than inside the building. */
+  get outdoor(): boolean {
+    return this.floor === 0 && this.tz > DOOR_Z;
   }
 
   get isGambling(): boolean {
@@ -374,7 +387,8 @@ export class PlacedItem {
       if (s.state === 'idle') {
         const bet = u.nextBet(this, s.index);
         if (bet === null) continue; // user stands up on their own
-        const outcome = this.resolveIndividual(bet, u);
+        let outcome = this.resolveIndividual(bet, u);
+        if (outcome.payout > bet && Math.random() < HOUSE_REROLL) outcome = this.resolveIndividual(bet, u);
         this.takeBet(bet);
         s.outcome = outcome;
         s.state = 'playing';
@@ -434,35 +448,22 @@ export class PlacedItem {
           break;
         }
         // Resolve everything up front so the animation can land on the real result.
-        t.outcomes = new Map();
-        let shared: SharedVisual;
-        if (this.def.kind === 'roulette') shared = { kind: 'roulette', number: G.spinRoulette(this.def.rtp) };
-        else shared = G.sharedFor(this.def.kind);
-        t.shared = shared;
-        for (const [idx, b] of t.bets) {
-          let oc: Outcome;
-          switch (this.def.kind) {
-            case 'roulette':
-              oc = G.resolveRouletteBet(b.amount, b.choice as G.RouletteBet, (shared as { number: number }).number, b.user.isCheater);
-              break;
-            case 'wheel':
-              oc = G.resolveWheelBet(b.amount, b.choice as number, (shared as { segment: number }).segment, b.user.isCheater);
-              break;
-            case 'craps':
-              oc = G.resolveCrapsBet(b.amount, b.choice as G.CrapsBet, (shared as { dice: [number, number] }).dice, b.user.isCheater);
-              break;
-            case 'blackjack':
-              oc = G.resolveBlackjackSeat(b.amount, (shared as { dealer: Card[] }).dealer, b.user.isCheater);
-              break;
-            case 'poker':
-              oc = G.resolvePokerSeat(b.amount, this.def.rtp, b.user.isCheater);
-              if (oc.visual.kind === 'poker') oc.visual.board = (shared as { board: Card[] }).board;
-              break;
-            default:
-              oc = { bet: b.amount, payout: 0, label: '', tier: 'lose', visual: { kind: 'none' } };
+        // A table that would pay out more than it took gets a second draw now and then.
+        let shared: SharedVisual = { kind: 'none' };
+        let staked = 0;
+        t.bets.forEach((b) => (staked += b.amount));
+        for (let attempt = 0; attempt < 2; attempt++) {
+          t.outcomes = new Map();
+          shared = this.def.kind === 'roulette' ? { kind: 'roulette', number: G.spinRoulette(this.def.rtp) } : G.sharedFor(this.def.kind);
+          let paid = 0;
+          for (const [idx, b] of t.bets) {
+            const oc = this.resolveTableSeat(b, shared);
+            paid += oc.payout;
+            t.outcomes.set(idx, oc);
           }
-          t.outcomes.set(idx, oc);
+          if (paid <= staked || Math.random() >= HOUSE_REROLL) break;
         }
+        t.shared = shared;
         const duration = this.def.roundTime * (0.9 + Math.random() * 0.2);
         this.model.event({ type: 'tableStart', seats: [...t.bets.keys()], outcomes: t.outcomes, shared, duration });
         for (const [idx, b] of t.bets) b.user.roundStarted(this, t.outcomes.get(idx)!, duration);
@@ -494,6 +495,26 @@ export class PlacedItem {
           t.bets.clear();
         }
         break;
+    }
+  }
+
+  private resolveTableSeat(b: { amount: number; user: SeatUser; choice: unknown }, shared: SharedVisual): Outcome {
+    switch (this.def.kind) {
+      case 'roulette':
+        return G.resolveRouletteBet(b.amount, b.choice as G.RouletteBet, (shared as { number: number }).number, b.user.isCheater);
+      case 'wheel':
+        return G.resolveWheelBet(b.amount, b.choice as number, (shared as { segment: number }).segment, b.user.isCheater);
+      case 'craps':
+        return G.resolveCrapsBet(b.amount, b.choice as G.CrapsBet, (shared as { dice: [number, number] }).dice, b.user.isCheater);
+      case 'blackjack':
+        return G.resolveBlackjackSeat(b.amount, (shared as { dealer: Card[] }).dealer, b.user.isCheater);
+      case 'poker': {
+        const oc = G.resolvePokerSeat(b.amount, this.def.rtp, b.user.isCheater);
+        if (oc.visual.kind === 'poker') oc.visual.board = (shared as { board: Card[] }).board;
+        return oc;
+      }
+      default:
+        return { bet: b.amount, payout: 0, label: '', tier: 'lose', visual: { kind: 'none' } };
     }
   }
 

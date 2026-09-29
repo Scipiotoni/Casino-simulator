@@ -33,7 +33,7 @@ let wheelUrl: string | null = null;
 /** Single-zero roulette with a full betting layout. */
 export function openRoulette(ctx: GameCtx): void {
   const s = new Session(ctx);
-  const chips = chipValues(s.min, s.max);
+  const chips = chipValues(s.min);
   let chip = chips[0];
   let busy = false;
   const all = spots();
@@ -60,11 +60,6 @@ export function openRoulette(ctx: GameCtx): void {
   const place = (sp: Spot) => {
     if (busy) return;
     const cur = bets.get(sp.id) ?? 0;
-    if (cur + chip > s.max) {
-      audio.play('error');
-      setResult(result, `Table limit is ${formatMoney(s.max)} per spot`, 'lose');
-      return;
-    }
     bets.set(sp.id, cur + chip);
     audio.play('chips', { volume: 0.5 });
     refreshTotal();
@@ -145,7 +140,7 @@ export function openRoulette(ctx: GameCtx): void {
     result,
     h('div', { class: 'rb' }, grid, dozens, outs),
     h('div', { class: 'tg-betline' }, 'On the table ', totalEl),
-    chipRow(chips, () => chip, (v) => (chip = v)),
+    chipRow(chips, () => chip, (v) => (chip = v), { min: s.min, bank: () => s.bank }),
     h('div', { class: 'tg-actions' }, clearBtn, spinBtn),
   );
   ctx.modals.open('Roulette', body, { cls: 'minigame table-game wide-game', onClose: () => s.dispose() });

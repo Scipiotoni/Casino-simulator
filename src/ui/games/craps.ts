@@ -14,7 +14,7 @@ function die(v: number): HTMLElement {
 /** Craps: a pass line bet with a point, plus an optional one-roll field bet. */
 export function openCraps(ctx: GameCtx): void {
   const s = new Session(ctx);
-  const chips = chipValues(s.min, s.max);
+  const chips = chipValues(s.min);
   let bet = chips[0];
   let field = false;
   let point = 0;
@@ -30,7 +30,7 @@ export function openCraps(ctx: GameCtx): void {
     if (point) return;
     bet = v;
     betLabel.textContent = formatMoney(bet);
-  });
+  }, { min: s.min, bank: () => s.bank });
   const refresh = () => {
     puck.textContent = point ? `POINT ${point}` : 'OFF';
     puck.classList.toggle('on', !!point);

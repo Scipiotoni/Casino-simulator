@@ -8,7 +8,7 @@ import { type GameCtx, Session, chipRow, chipValues, resultLine, setResult, slee
 export function openQuick(ctx: GameCtx): void {
   const s = new Session(ctx);
   const claw = ctx.item.def.kind === 'claw';
-  const chips = chipValues(s.min, s.max);
+  const chips = chipValues(s.min);
   let bet = chips[0];
   let busy = false;
   const stage = h('div', { class: `qk ${claw ? 'claw' : 'pachinko'}` });
@@ -37,7 +37,7 @@ export function openQuick(ctx: GameCtx): void {
     s.head,
     stage,
     result,
-    chipRow(chips, () => bet, (v) => (bet = v)),
+    chipRow(chips, () => bet, (v) => (bet = v), { min: s.min, bank: () => s.bank }),
     go,
   );
   ctx.modals.open(ctx.item.def.name, body, { cls: 'minigame table-game', onClose: () => s.dispose() });

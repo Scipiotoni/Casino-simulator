@@ -90,7 +90,7 @@ const DAY_START = 10 * 60;
 const START_MONEY = 3000;
 const JACKPOT_SEED = 5000;
 /** Win this much in one visit and the rival's security walks you out. */
-const RIVAL_WIN_LIMIT = 15000;
+const RIVAL_WIN_LIMIT = 100000;
 const RIVAL_BAN_MS = 5 * 60 * 1000;
 
 interface ActiveEvent {
@@ -1444,7 +1444,7 @@ export class Game implements World, ItemHost {
         else this.select({ kind: 'remote', pid: (ch as RemoteView).pid });
         continue;
       }
-      if (!this.inside) {
+      if (!this.inside && !this.onHomeFront) {
         if (this.selection) this.select(null);
         continue;
       }
@@ -1463,7 +1463,7 @@ export class Game implements World, ItemHost {
   private updateHover(dt: number): void {
     const input = this.input;
     const canvas = this.renderer.renderer.domElement;
-    if (this.state !== 'playing' || this.build.active || this.photoMode || input.isTouch || !input.pointer.over || !this.inside) {
+    if (this.state !== 'playing' || this.build.active || this.photoMode || input.isTouch || !input.pointer.over || (!this.inside && !this.onHomeFront)) {
       if (this.hoverUid !== -1) {
         this.hoverUid = -1;
         this.items.hover.hide();
@@ -1493,8 +1493,20 @@ export class Game implements World, ItemHost {
     const g = this.gridAt(this.player.floor);
     if (this.player.floor > 0 || tz < FACADE_Z) return g.isWalkable(tx, tz);
     if (tz === FACADE_Z) return g.isDoor(tx, tz) || this.street.doorAt(tx, tz) !== null;
+    // Decorations in the yard out front are solid.
+    if (g.inBounds(tx, tz) && g.occupant(tx, tz)) return false;
     return this.street.isStreetWalkable(tx, tz);
   };
+
+  /** Standing on the sidewalk in front of your own casino (you can decorate the yard from here). */
+  get onHomeFront(): boolean {
+    return !this.visit && this.player.floor === 0 && Math.abs(this.player.x - CENTER_X) < 16;
+  }
+
+  /** Can the build tools be used from where you're standing? */
+  get canBuildHere(): boolean {
+    return !this.visit && (this.inside || this.onHomeFront);
+  }
 
   private updateInteraction(dt: number): void {
     const p = this.player;
@@ -1651,7 +1663,7 @@ export class Game implements World, ItemHost {
             target.act();
             this.holdT = 0;
             this.floaters.ring(null, 0);
-            this.lastInteractKey = '';
+            this.lastInteractKey = '#acted';
           }
         } else {
           this.holdT = Math.max(0, this.holdT - dt * 2);
@@ -1659,7 +1671,7 @@ export class Game implements World, ItemHost {
         }
       } else if (pressed) {
         target.act();
-        this.lastInteractKey = '';
+        this.lastInteractKey = '#acted';
       }
     } else {
       this.floaters.ring(null, 0);
@@ -1896,10 +1908,11 @@ export class Game implements World, ItemHost {
     const wasInside = this.inside;
     this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && Math.abs(this.player.x - CENTER_X) < 16);
     if (this.inside !== wasInside) {
-      if (!this.inside && this.build.active) this.build.cancel();
-      if (!this.inside && this.selection?.kind === 'item') this.select(null);
+      if (!this.inside && this.build.active && !this.onHomeFront) this.build.cancel();
+      if (!this.inside && this.selection?.kind === 'item' && !this.selection.item.outdoor) this.select(null);
       this.renderer.markShadowsDirty(4);
     }
+    if (this.build.active && !this.canBuildHere) this.build.cancel();
     if (playing) this.checkDoors(dt);
 
     if (playing && sim > 0) {
@@ -1985,13 +1998,17 @@ export class Game implements World, ItemHost {
     input.endFrame();
   }
 
+  private itemsInside = true;
+
   /** Only the floor you're on is drawn, and the inside of the building only while you're in it. */
   private updateVisibility(): void {
     const vf = this.viewFloor;
     const inside = this.inside || this.state !== 'playing';
     this.levels.forEach((l, i) => (l.floor.group.visible = inside && i === vf));
-    this.items.group.visible = inside;
-    if (this.items.viewFloor !== vf) this.items.setViewFloor(vf);
+    if (this.items.viewFloor !== vf || this.itemsInside !== inside) {
+      this.itemsInside = inside;
+      this.items.setViewFloor(vf, inside);
+    }
     this.trash.setViewFloor(vf);
     this.trash.group.visible = inside;
     this.building.interior.visible = inside;

@@ -132,8 +132,12 @@ export class ItemManager {
     const g = this.grid(floor);
     const tiles = footprintTiles(def, tx, tz, rot);
     const floorLayer = def.layer === 'floor';
+    const outdoor = tiles.some(([x, z]) => g.isYard(x, z));
+    if (outdoor && def.category !== 'decor') return { ok: false, reason: 'Only decorations can go outside' };
     for (const [x, z] of tiles) {
-      if (!g.isOwned(x, z)) return { ok: false, reason: 'Outside your casino walls' };
+      if (!g.isOwned(x, z) && !g.isYard(x, z)) {
+        return { ok: false, reason: floor === 0 && z > DOOR_TILES[0][1] ? 'Outside, keep to the yard in front of your casino' : 'Outside your casino walls' };
+      }
       const i = g.idx(x, z);
       const occ = floorLayer ? g.floorOcc[i] : g.occ[i];
       if (occ && occ !== ignore?.uid) return { ok: false, reason: 'That spot is taken' };
@@ -148,8 +152,7 @@ export class ItemManager {
       if (!g.inBounds(x, z)) return false;
       const i = g.idx(x, z);
       if (newSet.has(i)) return false;
-      if (g.isSidewalk(x, z) || g.isDoor(x, z)) return true;
-      if (!g.isOwned(x, z)) return false;
+      if (!g.isSidewalk(x, z) && !g.isDoor(x, z) && !g.isOwned(x, z)) return false;
       const o = g.occ[i];
       return o === 0 || o === ignoreUid;
     };
@@ -344,7 +347,7 @@ export class ItemManager {
 
   pick(ndc: THREE.Vector2, camera: THREE.Camera): PlacedItem | undefined {
     this.raycaster.setFromCamera(ndc, camera);
-    const roots = this.items.filter((i) => i.floor === this.viewFloor).map((i) => i.root);
+    const roots = this.items.filter((i) => i.floor === this.viewFloor && (this.inside || i.outdoor)).map((i) => i.root);
     const hits = this.raycaster.intersectObjects(roots, true);
     for (const h of hits) {
       let o: THREE.Object3D | null = h.object;
@@ -357,11 +360,14 @@ export class ItemManager {
     return undefined;
   }
 
-  /** Only the floor being looked at is drawn. */
-  setViewFloor(floor: number): void {
+  /** Only the floor being looked at is drawn; from the street, only the yard decorations. */
+  setViewFloor(floor: number, inside = this.inside): void {
     this.viewFloor = floor;
-    for (const it of this.items) it.root.visible = it.floor === floor;
+    this.inside = inside;
+    for (const it of this.items) it.root.visible = it.floor === floor && (inside || it.outdoor);
   }
+
+  private inside = true;
 
   count(id: string): number {
     return this.items.reduce((a, i) => a + (i.def.id === id ? 1 : 0), 0);
@@ -432,7 +438,7 @@ export class ItemManager {
   private canPlaceLoose(def: ItemDef, floor: number, tx: number, tz: number, rot: number): boolean {
     const g = this.grid(floor);
     for (const [x, z] of footprintTiles(def, tx, tz, rot)) {
-      if (!g.isOwned(x, z)) return false;
+      if (!g.isOwned(x, z) && !(g.isYard(x, z) && def.category === 'decor')) return false;
       if (g.occ[g.idx(x, z)]) return false;
       if (this.isReserved(floor, x, z)) return false;
     }

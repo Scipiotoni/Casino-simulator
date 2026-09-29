@@ -17,6 +17,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - Paint the floor tile by tile, or the whole casino in one click, with 12 carpet styles from Royal Crimson and Vegas Retro to marble, gold tiles and a glowing neon grid.
 - Rename your casino and restyle its sign (4 lettering styles and 8 colors), the walls and the neon trim. Paint the floor from the Casino panel.
 - **Grow wide, deep and tall.** Every lot on the street shares the same width limit (22 tiles), but you can keep building deeper and stack as many floors as you can afford. A glass elevator by the entrance links the floors, and guests and staff ride it.
+- **Decorate the yard:** decorations can also go in the two rows of sidewalk in front of your casino, so the street sees your palms, fountains and neon.
 - The building is modelled from the outside too: storeys with lit windows, neon trim, a marquee with chasing bulbs over the entrance and a roof billboard with your casino's name. Step inside and the walls cut away.
 
 **Customize characters**
@@ -25,7 +26,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 
 **A living casino**
 - Every guest has a wallet, a bank balance, a mood, thirst, hunger and energy. They pick games they like, bet by their budget, cheer big wins, get grumpy on losing streaks, buy drinks, rest on benches, hit the ATM, watch the show and drop litter. Three cocktails in, they get **tipsy**: they sway, hiccup and bet bigger. They also tell you what's missing ("Slots are fine, but where are the table games?").
-- **Real money flow.** Every round settles the moment it ends: when a guest loses, their bet lands in your bank; when a guest wins, you pay them out of it. The house edge wins over time, but a lucky streak on your floor stings.
+- **Real money flow.** Every round settles the moment it ends: when a guest loses, their bet lands in your bank; when a guest wins, you pay them out of it. The house edge wins over time (guests get back roughly 56¢ per dollar on average), but a lucky streak on your floor still stings.
 - Real game rules. The slot reels land on the actual result, the roulette ball drops into the winning pocket, blackjack is dealt card by card, dice tumble across the craps table and the big wheel clicks past its pegs.
 - **VIP high rollers** sparkle gold: greet them for a tip. **Cheaters** (rare) get a red "?" once they're caught winning too often: bust them to recover the loot. Machines **break down** and smoke until you fix them.
 - Hire janitors, technicians, security and **door guards**, who stand at the entrance and turn most cheaters away before they get in. Wages are paid at the end of each day.
@@ -35,7 +36,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 
 **The street**
 - **The Golden Viper**, a rival AI casino, sits next door. It grows (wider, deeper, up to four floors) as players lose money there, and its security walks you out if you win too much.
-- You can't gamble in your own casino, so go and play somewhere else: full **blackjack** (hit, stand, double; 3:2 blackjack), **Casino Hold'em** against the dealer, single-zero **roulette** with a full betting layout, **craps** (pass line with a point, plus the field), the **big wheel**, **slots**, pachinko and the claw crane. You bet from your own bank; what you lose goes to the owner.
+- You can't gamble in your own casino, so go and play somewhere else: full **blackjack** (hit, stand, double; 3:2 blackjack), **Casino Hold'em** against the dealer, single-zero **roulette** with a full betting layout, **craps** (pass line with a point, plus the field), the **big wheel**, **slots**, pachinko and the claw crane. There's no maximum bet: pick a chip, type any amount or go all in. You bet from your own bank; what you lose goes to the owner.
 - Your casino keeps running while you're out, and catches up when you get back.
 
 **Multiplayer**

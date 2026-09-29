@@ -15,12 +15,12 @@ export interface GameCtx {
 
 export const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
 
-/** Chip values that fit a table's limits. */
-export function chipValues(min: number, max: number): number[] {
-  const base = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
-  const out = base.filter((v) => v >= min && v <= max);
+/** Chip denominations from the table minimum up (there's no maximum for visitors). */
+export function chipValues(min: number): number[] {
+  const base = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 100000];
+  const out = base.filter((v) => v >= min);
   if (!out.includes(min)) out.unshift(min);
-  return out.slice(0, 7);
+  return out.slice(0, 8);
 }
 
 /**
@@ -37,7 +37,7 @@ export class Session {
 
   constructor(readonly ctx: GameCtx) {
     this.head = h('div', { class: 'tg-head' },
-      h('span', { class: 'tg-where', text: `${ctx.game.hereName} · limits ${formatMoney(this.min)}–${formatMoney(this.max)}` }),
+      h('span', { class: 'tg-where', text: `${ctx.game.hereName} · min ${formatMoney(this.min)} · no max bet` }),
       h('span', {}, 'Bank ', this.bankEl, ' ', this.netEl),
     );
     this.offMoney = ctx.game.events.on('money', () => this.refresh());
@@ -48,8 +48,9 @@ export class Session {
     return this.ctx.item.minBet;
   }
 
+  /** Visitors can bet as much as their bank holds. */
   get max(): number {
-    return this.ctx.item.maxBet;
+    return Infinity;
   }
 
   get bank(): number {
@@ -94,10 +95,42 @@ export class Session {
   }
 }
 
-/** Clickable chip selector. */
-export function chipRow(values: number[], get: () => number, set: (v: number) => void): HTMLElement {
+/**
+ * Clickable chip selector. With `custom`, it also takes any amount typed in and has an
+ * "All in" button, so bets are only limited by the table minimum and your bank.
+ */
+export function chipRow(values: number[], get: () => number, set: (v: number) => void, custom?: { min: number; bank: () => number }): HTMLElement {
+  const wrap = h('div', { class: 'tg-chipwrap' });
   const row = h('div', { class: 'tg-chips' });
+  wrap.appendChild(row);
+  let input: HTMLInputElement | null = null;
+  if (custom) {
+    input = h('input', { class: 'text-input tg-amount', type: 'number', placeholder: `Any amount (min ${formatMoney(custom.min)})`, 'aria-label': 'Bet amount' }) as HTMLInputElement;
+    input.min = String(custom.min);
+    input.step = '1';
+    input.inputMode = 'numeric';
+    const apply = (v: number) => {
+      if (!Number.isFinite(v)) return;
+      const amt = Math.max(custom.min, Math.floor(v));
+      set(amt);
+      render();
+    };
+    input.addEventListener('change', () => apply(Number(input!.value)));
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') input!.blur();
+    });
+    const allIn = h('button', {
+      class: 'btn small danger', text: 'All in',
+      onClick: () => {
+        apply(Math.max(custom.min, custom.bank()));
+        audio.play('chips');
+      },
+    });
+    wrap.appendChild(h('div', { class: 'tg-custom' }, input, allIn));
+  }
   const render = () => {
+    if (input && document.activeElement !== input) input.value = values.includes(get()) ? '' : String(get());
     row.replaceChildren(
       ...values.map((v, i) =>
         h('button', {
@@ -112,7 +145,7 @@ export function chipRow(values: number[], get: () => number, set: (v: number) =>
     );
   };
   render();
-  return row;
+  return wrap;
 }
 
 /** A playing card (face down when `card` is null). */

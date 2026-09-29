@@ -446,7 +446,7 @@ export class Net {
     for (const [pid, { owed, name }] of totals) {
       const prev = g.net.credited[pid] ?? 0;
       const delta = Math.round(owed - prev);
-      if (Math.abs(delta) < 1 || Math.abs(delta) > 5_000_000) continue;
+      if (Math.abs(delta) < 1 || Math.abs(delta) > 1e12) continue;
       g.net.credited[pid] = owed;
       g.addMoney(delta, delta > 0 ? 'collect' : 'payout');
       g.notify(delta > 0 ? `${name} lost ${formatMoney(delta)} at your tables!` : `${name} won ${formatMoney(-delta)} at your tables.`, delta > 0 ? 'money' : 'bad');
