@@ -4,7 +4,7 @@ A 3D casino tycoon you play from a top-down (or third-person) camera that follow
 
 ![Gameplay: a busy casino floor with slot rows, roulette, blackjack, a bar, a fountain and a golden statue](docs/screenshot-casino.jpg)
 
-**Play it: https://scipiotoni.github.io/Casino-simulator/** (single-player; multiplayer needs the shared artifact page).
+**Play it: https://scipiotoni.github.io/Casino-simulator/** (multiplayer: everyone who opens the link shares one street).
 
 It runs in any modern browser on desktop or phone. Everything you see and hear is generated in code: every 3D model, texture, carpet pattern, sound effect and the lounge music loop. The project has no art or audio files.
 
@@ -40,7 +40,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - Your casino keeps running while you're out, and catches up when you get back.
 
 **Multiplayer**
-- Everyone who opens the shared game page builds a casino on the same street. You see each other walking around live, with name tags, and you can walk into any published casino and play its games. Losses and wins at another player's tables are settled into their bank through a shared ledger, even if they're offline.
+- Everyone who opens the game (the public site, or the shared Claude artifact) builds a casino on the same street. You see each other walking around live, with name tags, and you can walk into any published casino and play its games. Losses and wins at another player's tables are settled into their bank through a shared ledger, even if they're offline.
 - Owners can **blacklist** a player for 10 minutes: they're walked out and can't come back in until it ends, and there's a 30-minute cooldown before you can blacklist them again.
 
 **Juice**
@@ -88,9 +88,11 @@ npm run build:artifact  # single-file HTML build in dist-artifact/
 
 ## Deploying
 
-The build is a static site with relative paths, so `dist/` can be hosted anywhere. Hosted on its own (GitHub Pages, `npm run dev`), the game is single-player with the rival AI next door.
+The build is a static site with relative paths, so `dist/` can be hosted anywhere.
 
-Multiplayer uses the Claude artifact runtime's shared database and live presence, so it's free and needs no server: publish `dist-artifact/jackpot-tycoon.html` as an artifact with the `db`, `room` and `user` capabilities (see `src/net/net.ts` for the exact rules) and share it. To let friends put their own casino on the street, give them edit access; people who can only view can still walk the street and play at everyone's tables.
+**Multiplayer on a static host** (GitHub Pages, `npm run dev`) goes through a free public MQTT broker over secure websockets (`src/net/relay.ts`, `src/net/mqtt.ts`): positions stream live, and each casino and money ledger is a retained message, so casinos stay on the street while their owners are offline. No accounts or servers to run. The trade-offs: public brokers are open to anyone and promise no uptime, so everything published (casino, name, look) is public, and some school or office networks block the broker's port (8084). Append `?mqtt=wss://your-broker/mqtt` to the page URL to use your own broker.
+
+**Inside Claude** the same code uses the artifact runtime's shared database and live presence instead: publish `dist-artifact/jackpot-tycoon.html` as an artifact with the `db`, `room` and `user` capabilities (see `src/net/net.ts` for the exact rules) and share it. That street is separate from the public one. To let friends put their own casino on the street, give them edit access; people who can only view can still walk the street and play at everyone's tables.
 
 This repo includes `.github/workflows/pages.yml`, which builds and deploys to **GitHub Pages** on every push to `main`. To turn it on, open **Settings → Pages** and set **Source** to **GitHub Actions**. `.github/workflows/ci.yml` typechecks, tests and builds every push and pull request.
 
@@ -113,7 +115,7 @@ src/
   entities/  character appearance + model, customers, staff, player
   items/     catalog, game rules, 3D models, placed-item runtime, manager
   game/      main game loop, build/placement controller, goals, saves, rival AI
-  net/       multiplayer (shared lots, presence, ledger, blacklist)
+  net/       multiplayer (shared lots, presence, ledger, blacklist; MQTT relay for static hosting)
   ui/        HUD, shop, panels, character creator, title screen
   ui/games/  blackjack, hold'em, roulette, craps, big wheel, slots, quick games
 tests/       vitest unit tests

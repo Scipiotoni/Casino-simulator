@@ -11,6 +11,7 @@ import { h, icon } from '../ui/dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { dampAngle } from '../core/math';
+import { Relay } from './relay';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -143,8 +144,23 @@ export class Net {
   async start(): Promise<void> {
     const claude = (window as unknown as { claude?: ClaudeUse }).claude;
     if (!claude?.use) {
+      // Stand-alone site (GitHub Pages, local dev): relay through a public MQTT broker.
       this.pid = localPid();
       this.game.pid = this.pid;
+      this.status = 'Connecting to the street…';
+      const relay = new Relay(this.pid);
+      relay.onStatus = (up) => {
+        this.status = up
+          ? 'Connected: everyone playing this site shares one street. Anything you publish (casino, name, look) is public.'
+          : 'Reconnecting to the street…';
+      };
+      await relay.start();
+      this.db = relay.db as unknown as Db;
+      this.room = relay.room as unknown as Room;
+      this.online = true;
+      this.db.collection('lots').onSnapshot((snap) => this.onLots(snap));
+      this.db.collection('ledger').onSnapshot((snap) => this.onLedger(snap));
+      this.room.onPeers(({ peers }) => this.onPeers(peers));
       return;
     }
     const [db, room, user] = await Promise.all([
@@ -176,6 +192,8 @@ export class Net {
     for (const d of snap.docs) {
       if (d.id === this.pid || !d.exists) continue;
       const raw = d.data() ?? {};
+      // Casinos nobody has opened in two weeks drop off the street.
+      if (typeof raw.updated === 'number' && Date.now() - raw.updated > 14 * 86400_000) continue;
       const snapData = sanitizeSnapshot(raw.snap, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
       if (!snapData) continue;
       this.lots.set(d.id, {
