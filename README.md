@@ -4,6 +4,8 @@ A 3D casino tycoon you play from a top-down (or third-person) camera that follow
 
 ![Gameplay: a busy casino floor with slot rows, roulette, blackjack, a bar, a fountain and a golden statue](docs/screenshot-casino.jpg)
 
+**Play it: https://scipiotoni.github.io/Casino-simulator/** (single-player; multiplayer needs the shared artifact page).
+
 It runs in any modern browser on desktop or phone. Everything you see and hear is generated in code: every 3D model, texture, carpet pattern, sound effect and the lounge music loop. The project has no art or audio files.
 
 ## Features
