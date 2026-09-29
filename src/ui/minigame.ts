@@ -3,7 +3,7 @@ import type { Modals } from './modals';
 import type { PlacedItem } from '../items/placedItem';
 import { h, icon } from './dom';
 import { REEL_SYMBOLS, drawSymbol } from '../render/textures';
-import { resolveSlot, SLOT_TABLE } from '../items/games';
+import { resolveSlot, SLOT_TABLE, SLOT_TABLE_LOW } from '../items/games';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 
@@ -39,6 +39,8 @@ export class SlotMiniGame {
   open(item: PlacedItem): void {
     const g = this.game;
     const urls = symbols();
+    const low = item.def.params?.volatility === 'low';
+    const table = low ? SLOT_TABLE_LOW : SLOT_TABLE;
     const reels: { strip: HTMLElement; pos: number }[] = [];
     const window_ = h('div', { class: 'mg-window' });
     for (let r = 0; r < 3; r++) {
@@ -88,7 +90,7 @@ export class SlotMiniGame {
       spinBtn.disabled = true;
       if (free) g.useFreeSpin();
       else g.spend(this.bet, 'play');
-      const o = resolveSlot(this.bet, item.def.rtp, false, item.def.jackpot ? g.jackpotPot : 0);
+      const o = resolveSlot(this.bet, item.def.rtp, false, item.def.jackpot ? g.jackpotPot : 0, low ? 'low' : 'normal');
       if (o.visual.kind !== 'slot') return;
       const target = o.visual.symbols;
       audio.play('spin');
@@ -142,7 +144,7 @@ export class SlotMiniGame {
     const pay = h('details', { class: 'mg-pay' },
       h('summary', { text: 'Paytable' }),
       h('div', { class: 'mg-pay-grid' },
-        ...SLOT_TABLE.map((l) => {
+        ...table.map((l) => {
           const icons = l.kind === 'three' ? [l.sym, l.sym, l.sym] : l.kind === 'two' ? [l.sym, l.sym] : [l.sym];
           return h('div', { class: 'mg-pay-row' },
             h('span', { class: 'mg-pay-icons' }, ...icons.map((s) => h('img', { src: urls[s], alt: SYMBOL_NAMES[s] }))),

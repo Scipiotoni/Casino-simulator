@@ -182,6 +182,7 @@ export class Worker extends Walker {
       this.stepPath(dt, w.grid);
       if (dist(c.x, c.z, this.x, this.z) < 1.3) {
         const loot = c.bust(w);
+        w.onStaffBust();
         w.addMoney(loot, 'bust', c.headPos.clone());
         w.sfxAt('bust', c.x, c.z);
         w.notify(`${this.name} busted a cheater! +${formatMoney(loot)}`, 'good');
@@ -215,7 +216,10 @@ export class Worker extends Walker {
     if (t.kind === 'repair' && Math.random() < dt * 3) w.sfxAt('repair', this.x, this.z, 0.6);
     if (this.workT <= 0) {
       if (t.kind === 'trash') {
-        if (w.trash.list.includes(t.trash)) w.trash.remove(t.trash);
+        if (w.trash.list.includes(t.trash)) {
+          w.trash.remove(t.trash);
+          w.onStaffClean();
+        }
         w.effects.sparkle(this.x, 0.4, this.z, 5, 0xbfe9ff, 0.5);
       } else if (t.kind === 'repair') {
         if (t.item.broken) {

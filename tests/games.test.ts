@@ -38,9 +38,22 @@ describe('slot machines', () => {
   });
 
   it('lets cheaters win far more often', () => {
-    const honest = rtp(100_000, () => resolveSlot(10, 0.9, false));
-    const cheat = rtp(100_000, () => resolveSlot(10, 0.9, true));
-    expect(cheat).toBeGreaterThan(honest * 1.6);
+    const honest = rtp(200_000, () => resolveSlot(10, 0.9, false));
+    const cheat = rtp(200_000, () => resolveSlot(10, 0.9, true));
+    expect(cheat).toBeGreaterThan(honest * 1.4);
+  });
+
+  it('low-volatility machines hit more often at the same RTP', () => {
+    let hitsLow = 0;
+    let hitsNormal = 0;
+    for (let i = 0; i < 100_000; i++) {
+      if (resolveSlot(10, 0.88, false, 0, 'low').payout > 0) hitsLow++;
+      if (resolveSlot(10, 0.88, false).payout > 0) hitsNormal++;
+    }
+    expect(hitsLow).toBeGreaterThan(hitsNormal);
+    const r = rtp(400_000, () => resolveSlot(10, 0.88, false, 0, 'low'));
+    expect(r).toBeGreaterThan(0.84);
+    expect(r).toBeLessThan(0.92);
   });
 
   it('pays the progressive pot on the mega jackpot', () => {

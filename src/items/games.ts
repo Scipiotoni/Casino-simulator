@@ -20,19 +20,34 @@ interface SlotLine {
 }
 
 export const SLOT_TABLE: SlotLine[] = [
-  { kind: 'three', sym: SEVEN, p: 0.001, mult: 100, label: 'TRIPLE 7s!' },
-  { kind: 'three', sym: 6, p: 0.0025, mult: 40, label: 'Diamonds!' },
+  { kind: 'three', sym: SEVEN, p: 0.0004, mult: 150, label: 'TRIPLE 7s!' },
+  { kind: 'three', sym: 6, p: 0.002, mult: 40, label: 'Diamonds!' },
   { kind: 'three', sym: 7, p: 0.004, mult: 20, label: 'Triple stars!' },
-  { kind: 'three', sym: 2, p: 0.006, mult: 12, label: 'Triple BAR!' },
-  { kind: 'three', sym: 4, p: 0.01, mult: 8, label: 'Bells!' },
-  { kind: 'three', sym: 5, p: 0.016, mult: 5, label: 'Grapes!' },
+  { kind: 'three', sym: 2, p: 0.007, mult: 12, label: 'Triple BAR!' },
+  { kind: 'three', sym: 4, p: 0.012, mult: 8, label: 'Bells!' },
+  { kind: 'three', sym: 5, p: 0.018, mult: 5, label: 'Grapes!' },
   { kind: 'three', sym: 3, p: 0.03, mult: 3, label: 'Lemons!' },
-  { kind: 'three', sym: CHERRY, p: 0.02, mult: 4, label: 'Cherries!' },
+  { kind: 'three', sym: CHERRY, p: 0.022, mult: 4, label: 'Cherries!' },
   { kind: 'two', sym: CHERRY, p: 0.05, mult: 2, label: 'Two cherries' },
-  { kind: 'one', sym: CHERRY, p: 0.13, mult: 1, label: 'Cherry' },
+  { kind: 'one', sym: CHERRY, p: 0.12, mult: 1, label: 'Cherry' },
+];
+
+/** Low-volatility paytable: smaller prizes, far more frequent hits (Lucky 7s). */
+export const SLOT_TABLE_LOW: SlotLine[] = [
+  { kind: 'three', sym: SEVEN, p: 0.001, mult: 50, label: 'TRIPLE 7s!' },
+  { kind: 'three', sym: 6, p: 0.003, mult: 20, label: 'Diamonds!' },
+  { kind: 'three', sym: 7, p: 0.006, mult: 12, label: 'Triple stars!' },
+  { kind: 'three', sym: 2, p: 0.01, mult: 8, label: 'Triple BAR!' },
+  { kind: 'three', sym: 4, p: 0.016, mult: 6, label: 'Bells!' },
+  { kind: 'three', sym: 5, p: 0.024, mult: 4, label: 'Grapes!' },
+  { kind: 'three', sym: 3, p: 0.04, mult: 3, label: 'Lemons!' },
+  { kind: 'three', sym: CHERRY, p: 0.03, mult: 3, label: 'Cherries!' },
+  { kind: 'two', sym: CHERRY, p: 0.06, mult: 2, label: 'Two cherries' },
+  { kind: 'one', sym: CHERRY, p: 0.12, mult: 1, label: 'Cherry' },
 ];
 
 export const SLOT_BASE_RTP = SLOT_TABLE.reduce((a, l) => a + l.p * l.mult, 0);
+const SLOT_LOW_RTP = SLOT_TABLE_LOW.reduce((a, l) => a + l.p * l.mult, 0);
 
 function randSym(exclude: number[] = []): number {
   for (;;) {
@@ -48,10 +63,11 @@ export function tierFor(mult: number): Tier {
   return 'win';
 }
 
-export function resolveSlot(bet: number, rtp: number, cheat: boolean, jackpotPot = 0): Outcome {
-  const scale = (rtp / SLOT_BASE_RTP) * (cheat ? 2.4 : 1);
+export function resolveSlot(bet: number, rtp: number, cheat: boolean, jackpotPot = 0, volatility: 'low' | 'normal' = 'normal'): Outcome {
+  const table = volatility === 'low' ? SLOT_TABLE_LOW : SLOT_TABLE;
+  const scale = (rtp / (volatility === 'low' ? SLOT_LOW_RTP : SLOT_BASE_RTP)) * (cheat ? 1.8 : 1);
   let r = Math.random();
-  for (const line of SLOT_TABLE) {
+  for (const line of table) {
     const p = line.p * scale;
     if (r < p) {
       let symbols: [number, number, number];
@@ -66,7 +82,8 @@ export function resolveSlot(bet: number, rtp: number, cheat: boolean, jackpotPot
         return { bet, payout: Math.round(jackpotPot), label: 'MEGA JACKPOT!', tier: 'jackpot', visual: { kind: 'slot', symbols } };
       }
       const payout = Math.round(bet * line.mult);
-      return { bet, payout, label: line.label, tier: isSeven ? 'jackpot' : tierFor(line.mult), visual: { kind: 'slot', symbols } };
+      const tier = isSeven && line.mult >= 100 ? 'jackpot' : tierFor(line.mult);
+      return { bet, payout, label: line.label, tier, visual: { kind: 'slot', symbols } };
     }
     r -= p;
   }
@@ -99,7 +116,7 @@ const PACHINKO_TABLE = [
 const PACHINKO_BASE = PACHINKO_TABLE.reduce((a, l) => a + l.p * l.mult, 0);
 
 export function resolvePachinko(bet: number, rtp: number, cheat: boolean): Outcome {
-  const scale = (rtp / PACHINKO_BASE) * (cheat ? 2.2 : 1);
+  const scale = (rtp / PACHINKO_BASE) * (cheat ? 1.7 : 1);
   let r = Math.random();
   for (const l of PACHINKO_TABLE) {
     const p = l.p * scale;
@@ -355,7 +372,7 @@ const POKER_TABLE: { p: number; mult: number; hands: string[] }[] = [
 const POKER_BASE = POKER_TABLE.reduce((a, l) => a + l.p * l.mult, 0);
 
 export function resolvePokerSeat(bet: number, rtp: number, cheat: boolean): Outcome {
-  const scale = (rtp / POKER_BASE) * (cheat ? 1.6 : 1);
+  const scale = (rtp / POKER_BASE) * (cheat ? 1.4 : 1);
   let r = Math.random();
   const hole = [drawCard(), drawCard()];
   for (const l of POKER_TABLE) {

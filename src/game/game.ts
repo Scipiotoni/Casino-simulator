@@ -338,6 +338,14 @@ export class Game implements World, ItemHost {
     this.events.emit('money', { money: this.money, delta: -amount });
   }
 
+  onStaffBust(): void {
+    this.stats.cheatersCaught++;
+  }
+
+  onStaffClean(): void {
+    this.stats.trashCleaned++;
+  }
+
   sfxAt(name: SfxName, x: number, z: number, volume = 1): void {
     if (this.state !== 'playing' && name !== 'jackpot') {
       audio.playAt(name, x, z, volume * 0.5);
@@ -441,7 +449,7 @@ export class Game implements World, ItemHost {
         this.effects.sparkle(pos.x, pos.y, pos.z, 30, 0xffd24a, 1.5);
         this.cam.shake(0.18);
         this.events.emit('jackpot', { amount: o.payout, machine: item.def.name });
-        this.startEvent('buzz', 'Jackpot buzz!', `Word of the ${formatMoney(o.payout)} jackpot is spreading. More guests incoming!`, 45, 1.8);
+        this.activeEvent = { id: 'buzz', title: 'Jackpot buzz!', left: 45, spawnMult: 1.8 };
       }
     } else if (o.tier === 'lose' && playing && item.def.shared && Math.random() < 0.3) {
       this.sfxAt('chips', item.cx, item.cz, 0.4);
@@ -592,7 +600,9 @@ export class Game implements World, ItemHost {
 
   spawnCustomer(type: CustomerType, x?: number, z?: number): Customer {
     const [sx, sz] = x !== undefined && z !== undefined ? [x, z] : spawnPoint();
-    const c = new Customer(type, sx, sz);
+    // A better reputation draws a wealthier crowd.
+    const wealth = 0.9 + Math.max(0, this.rating - 1) * 0.4 + Math.min(0.8, this.level * 0.04);
+    const c = new Customer(type, sx, sz, undefined, wealth);
     this.customers.push(c);
     this.renderer.scene.add(c.model.root);
     if (this.state === 'playing') {

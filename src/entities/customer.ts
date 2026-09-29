@@ -63,14 +63,14 @@ export class Customer extends Walker implements SeatUser {
   private tries = 0;
   readonly prefs: Partial<Record<GameKind, number>> = {};
 
-  constructor(readonly type: CustomerType, spawnX: number, spawnZ: number, look?: Appearance) {
+  constructor(readonly type: CustomerType, spawnX: number, spawnZ: number, look?: Appearance, wealth = 1) {
     super(
       look ?? (type === 'vip' ? vipAppearance() : type === 'cheater' ? cheaterAppearance() : type === 'tourist' ? touristAppearance() : randomCustomerAppearance()),
       spawnX,
       spawnZ,
     );
-    const base = type === 'vip' ? skewed(2600, 0.5) : type === 'tourist' ? skewed(220, 0.4) : skewed(340, 0.55);
-    this.wallet = Math.round(clamp(base, 60, 40000));
+    const base = (type === 'vip' ? skewed(2600, 0.5) : type === 'tourist' ? skewed(220, 0.4) : skewed(340, 0.55)) * wealth;
+    this.wallet = Math.round(clamp(base, 60, 80000));
     this.bank = Math.round(this.wallet * rand(0.2, 1.1));
     this.startCash = this.wallet + this.bank;
     this.mood = type === 'vip' ? rand(55, 70) : rand(55, 72);
@@ -170,7 +170,7 @@ export class Customer extends Walker implements SeatUser {
       this.standUp();
       return null;
     }
-    const frac = this.type === 'vip' ? rand(0.05, 0.14) : 0.03 + this.risk * 0.07;
+    const frac = this.type === 'vip' ? rand(0.05, 0.14) : 0.04 + this.risk * 0.08;
     let bet = this.wallet * frac * rand(0.7, 1.3);
     bet = clamp(bet, item.minBet, item.maxBet);
     if (bet > 100) bet = Math.round(bet / 10) * 10;

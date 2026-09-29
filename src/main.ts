@@ -132,6 +132,7 @@ async function start(hotData: unknown): Promise<void> {
     }
   };
   title.onHelp = () => hud.modals.openHelp();
+  title.confirm = (t, text, ok, fn) => hud.modals.confirm(t, text, ok, fn, true);
   hud.modals.onMainMenu = showTitle;
   hud.modals.onNewCasino = () => {
     removeKey(SAVE_KEY);
@@ -155,10 +156,6 @@ async function start(hotData: unknown): Promise<void> {
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
     if (e.code === 'KeyB') hud.shop.toggle();
     else if (e.code === 'KeyP') hud.setSpeed(0);
-    else if (e.code === 'Tab') {
-      e.preventDefault();
-      hud.shop.toggle();
-    }
   });
 
   let last = performance.now();

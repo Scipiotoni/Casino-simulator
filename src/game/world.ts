@@ -30,4 +30,6 @@ export interface World {
   witness(x: number, z: number, radius: number, mood: number, except?: Customer): void;
   notify(text: string, kind?: 'info' | 'good' | 'bad' | 'money' | 'event'): void;
   staffCount(role: string): number;
+  onStaffBust(): void;
+  onStaffClean(): void;
 }

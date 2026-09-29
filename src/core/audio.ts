@@ -111,6 +111,7 @@ class AudioEngine {
     const ctx = this.ctx!;
     const osc = ctx.createOscillator();
     osc.type = o.type ?? 'sine';
+    freq = Math.min(freq, 18000);
     osc.frequency.setValueAtTime(freq, start);
     if (o.freqEnd) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.freqEnd), start + dur);
     if (o.detune) osc.detune.value = o.detune;
@@ -159,8 +160,9 @@ class AudioEngine {
 
   private bell(freq: number, start: number, dur: number, gain: number, dest?: AudioNode): void {
     this.tone(freq, start, dur, { type: 'sine', gain, dest });
-    this.tone(freq * 2.76, start, dur * 0.4, { type: 'sine', gain: gain * 0.25, dest });
-    this.tone(freq * 5.4, start, dur * 0.2, { type: 'sine', gain: gain * 0.1, dest });
+    // Inharmonic partials give the metallic ring; skip any above the audible range.
+    if (freq * 2.76 < 16000) this.tone(freq * 2.76, start, dur * 0.4, { type: 'sine', gain: gain * 0.25, dest });
+    if (freq * 5.4 < 16000) this.tone(freq * 5.4, start, dur * 0.2, { type: 'sine', gain: gain * 0.1, dest });
   }
 
   // ---------------------------------------------------------------- public api

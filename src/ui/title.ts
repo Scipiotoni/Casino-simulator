@@ -16,6 +16,7 @@ export class TitleScreen {
   onStart: ((opts: { name: string; look: CasinoLook; player: ReturnType<typeof defaultAppearance>; playerName: string }) => void) | null = null;
   onContinue: (() => void) | null = null;
   onHelp: (() => void) | null = null;
+  confirm: ((title: string, text: string, ok: string, fn: () => void) => void) | null = null;
   private creator: CharacterCreator | null = null;
 
   constructor(parent: HTMLElement, private game: Game, private save: () => SaveData | null) {
@@ -53,9 +54,14 @@ export class TitleScreen {
         class: 'btn gold big', onClick: () => { audio.unlock(); audio.play('purchase'); this.onContinue?.(); },
       }, h('span', { class: 'btn-main', text: 'Continue' }), h('span', { class: 'btn-sub', text: `${save.name} · Day ${save.day} · ${formatMoney(save.money)}` })));
     }
-    buttons.appendChild(h('button', {
-      class: `btn ${save ? '' : 'gold '}big`, onClick: () => { audio.unlock(); audio.play('pop'); this.renderStep1(); },
-    }, h('span', { class: 'btn-main', text: save ? 'New casino' : 'Open your casino' }), h('span', { class: 'btn-sub', text: 'Name it, style it, build it' })));
+    const startNew = () => {
+      audio.unlock();
+      audio.play('pop');
+      if (save && this.confirm) this.confirm('Start a new casino?', `This replaces ${save.name} and its save once you open the doors.`, 'Start fresh', () => this.renderStep1());
+      else this.renderStep1();
+    };
+    buttons.appendChild(h('button', { class: `btn ${save ? '' : 'gold '}big`, onClick: startNew },
+      h('span', { class: 'btn-main', text: save ? 'New casino' : 'Open your casino' }), h('span', { class: 'btn-sub', text: 'Name it, style it, build it' })));
     buttons.appendChild(h('button', { class: 'btn ghost', html: `${icon('help', 16)} How to play`, onClick: () => { audio.unlock(); this.onHelp?.(); } }));
     this.card.append(
       logo,

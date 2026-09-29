@@ -304,7 +304,7 @@ export class PlacedItem {
     switch (d.kind) {
       case 'slot': {
         const pot = d.jackpot ? this.host.jackpotPot : 0;
-        return G.resolveSlot(bet, d.rtp, user.isCheater, pot);
+        return G.resolveSlot(bet, d.rtp, user.isCheater, pot, d.params?.volatility === 'low' ? 'low' : 'normal');
       }
       case 'claw':
         return G.resolveClaw(bet, user.isCheater);
@@ -377,14 +377,14 @@ export class PlacedItem {
         u.roundResult(this, oc);
         this.host.roundDone(this, oc, u);
         s.state = 'result';
-        s.timer = oc.tier === 'lose' ? 0.4 : oc.tier === 'push' ? 0.6 : 1.6;
+        s.timer = oc.tier === 'lose' ? 0.3 : oc.tier === 'push' ? 0.5 : 1.4;
         if (this.isGambling && this.def.breakChance > 0 && Math.random() < this.def.breakChance * (1 - 0.15 * (this.level - 1))) {
           this.setBroken(true);
           return;
         }
       } else {
         s.state = 'idle';
-        s.timer = 0.15 + Math.random() * 0.3;
+        s.timer = 0.1 + Math.random() * 0.25;
       }
     }
   }
