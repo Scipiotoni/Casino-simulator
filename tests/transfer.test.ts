@@ -11,6 +11,8 @@ const base = {
   trash: [], history: [1, 2], floorPainted: 0, lookEdited: false, renamed: true, speed: 2,
   rival: { bank: 5, tier: 1, banUntil: 99999999999999, net: 3 }, createdAt: 1000,
   cosmetics: { owned: ['crown', 'bogus'], on: ['crown', 'searchlights'] },
+  hotel: { floors: 5, tier: 2, staying: 12 },
+  rebirths: 3,
 };
 
 describe('casino export / import', () => {
@@ -25,6 +27,8 @@ describe('casino export / import', () => {
     expect(s.stats.visitors).toBe(12);
     expect(s.rival.banUntil).toBe(0);
     expect(s.cosmetics).toEqual({ owned: ['crown'], on: ['crown'] });
+    expect(s.hotel).toMatchObject({ floors: 5, tier: 2, staying: 12 });
+    expect(s.rebirths).toBe(3);
   });
 
   it('rejects junk and clamps nonsense', () => {
@@ -42,5 +46,12 @@ describe('casino export / import', () => {
     expect(new Set(COSMETICS.map((c) => c.id)).size).toBe(COSMETICS.length);
     for (const c of COSMETICS) expect(c.price).toBeGreaterThanOrEqual(100_000);
     expect(sanitizeCosmetics({ owned: ['halo'], on: ['halo', 'crown'] })).toEqual({ owned: ['halo'], on: ['halo'] });
+  });
+});
+
+describe('rebirth numerals', () => {
+  it('writes roman numerals', async () => {
+    const { roman } = await import('../src/game/game');
+    expect([1, 4, 9, 14, 40].map(roman)).toEqual(['I', 'IV', 'IX', 'XIV', 'XL']);
   });
 });

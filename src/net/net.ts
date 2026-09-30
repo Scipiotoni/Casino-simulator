@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { HOTEL_LAYOUT, HOTEL_TIERS, hotelLook, sanitizeHotel } from '../game/hotel';
+import { roman } from '../game/game';
 import { PlayerFx } from '../cosmetics/playerFx';
 import { cleanCosmetics, equipped } from '../cosmetics/catalog';
 import type { Game } from '../game/game';
@@ -84,7 +86,7 @@ interface LotDoc {
   since: number;
   snap: CasinoSnapshot | null;
   bans: Record<string, number>;
-  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[] };
+  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: { floors: number; tier: number } | null; rb?: number };
 }
 
 interface Remote {
@@ -108,6 +110,7 @@ interface Remote {
   casino: LotDoc['info'] | null;
   since: number;
   fx: PlayerFx;
+  rb: number;
 }
 
 const tmp = new THREE.Vector3();
@@ -209,7 +212,7 @@ export class Net {
         since: typeof raw.since === 'number' ? raw.since : Date.now(),
         snap: snapData,
         bans: cleanNumbers(raw.bans),
-        info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos) },
+        info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos), hotel: hotelInfo(raw.hotel), rb: rebirthsOf(raw.rb) },
       });
     }
     this.syncStreet();
@@ -242,7 +245,7 @@ export class Net {
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model),
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0,
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -251,7 +254,8 @@ export class Net {
       }
       r.pid = pid;
       r.name = typeof pr.nm === 'string' && pr.nm.trim() ? pr.nm.slice(0, 20) : 'Player';
-      r.label.textContent = r.name;
+      r.rb = rebirthsOf(pr.rb);
+      r.label.textContent = r.rb ? `⟳${roman(r.rb)} ${r.name}` : r.name;
       r.tx = num(pr.x);
       r.tz = num(pr.z);
       r.yaw = num(pr.yaw);
@@ -263,7 +267,7 @@ export class Net {
       r.since = num(pr.since) || r.since;
       const c = pr.casino as Record<string, unknown> | undefined;
       const snap = c ? sanitizeSnapshot({ ...c, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null;
-      r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos) } : null;
+      r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos), hotel: hotelInfo(c?.hotel), rb: r.rb } : null;
       r.fx.set(cleanCosmetics(pr.cos));
     }
     for (const [k, r] of this.remotes) {
@@ -339,31 +343,46 @@ export class Net {
   private syncStreet(): void {
     const online = new Set([...this.remotes.values()].map((r) => r.pid));
     const lots: StreetLot[] = [];
+    const hotels: StreetLot[] = [];
+    const tag = (owner: string, rb: number | undefined) => `${rb ? `REBIRTH ${roman(rb)} · ` : ''}${owner.toUpperCase()}'S PLACE`;
+    const addHotel = (pid: string, owner: string, look: CasinoLook, h: { floors: number; tier: number } | null | undefined, on: boolean) => {
+      if (!h) return;
+      const t = HOTEL_TIERS[h.tier];
+      hotels.push({
+        id: `${pid}~hotel`, kind: 'hotel', hotelOf: pid, owner, order: 0, online: on, hotel: { floors: h.floors, tier: h.tier },
+        info: { look: hotelLook(look), width: HOTEL_LAYOUT.width, depth: HOTEL_LAYOUT.depth, floors: h.floors, tagline: `${'★'.repeat(t.stars)} ${t.name.toUpperCase()}`, style: 'hotel' },
+      });
+    };
     for (const [pid, l] of this.lots) {
+      // Live presence beats the stored copy (cosmetics, hotel or rebirths changed since the last save).
+      const live = [...this.remotes.values()].find((r) => r.pid === pid)?.casino;
       lots.push({
         id: pid, kind: 'player', owner: l.owner, order: l.since, online: online.has(pid),
         info: {
-          look: l.info.look, width: l.info.layout.width, depth: l.info.layout.depth, floors: l.info.floors, tagline: `${l.owner.toUpperCase()}'S PLACE`,
-          // Live presence beats the stored copy (cosmetics switched on since the last save).
-          cos: [...this.remotes.values()].find((r) => r.pid === pid)?.casino?.cos ?? l.info.cos ?? [],
+          look: l.info.look, width: l.info.layout.width, depth: l.info.layout.depth, floors: l.info.floors, tagline: tag(l.owner, live?.rb ?? l.info.rb),
+          cos: live?.cos ?? l.info.cos ?? [],
         },
       });
+      addHotel(pid, l.owner, l.info.look, live ? live.hotel : l.info.hotel, online.has(pid));
     }
     // Players who can't publish still show their casino on the street while they're online.
     for (const r of this.remotes.values()) {
       if (this.lots.has(r.pid) || !r.casino || lots.some((l) => l.id === r.pid)) continue;
       lots.push({
         id: r.pid, kind: 'player', owner: r.name, order: r.since, online: true,
-        info: { look: r.casino.look, width: r.casino.layout.width, depth: r.casino.layout.depth, floors: r.casino.floors, tagline: `${r.name.toUpperCase()}'S PLACE`, cos: r.casino.cos ?? [] },
+        info: { look: r.casino.look, width: r.casino.layout.width, depth: r.casino.layout.depth, floors: r.casino.floors, tagline: tag(r.name, r.rb), cos: r.casino.cos ?? [] },
       });
+      addHotel(r.pid, r.name, r.casino.look, r.casino.hotel, true);
     }
+    lots.push(...hotels);
     const key = JSON.stringify(lots);
     if (key === this.streetKey) return;
     this.streetKey = key;
     this.game.extraLots = lots;
     this.game.refreshStreet();
     // If the casino you're in vanished from the street, head home.
-    if (this.game.visit?.lot.kind === 'player' && !this.game.street.get(this.game.visit.lot.id)) this.game.returnHome(true);
+    const v = this.game.visit?.lot;
+    if (v && (v.kind === 'player' || (v.kind === 'hotel' && v.id !== 'hotel')) && !this.game.street.get(v.id)) this.game.returnHome(true);
   }
 
   // ------------------------------------------------------------------ queries used by the game
@@ -465,8 +484,10 @@ export class Net {
       owes: g.net.owes,
       since: g.createdAt,
       cos: equipped(g.cosmetics, 'player'),
+      rb: g.rebirths,
       casino: {
         cos: equipped(g.cosmetics, 'casino'),
+        hotel: g.hotel ? { floors: g.hotel.floors, tier: g.hotel.tier } : null,
         look: home ? home.look : g.building.look,
         layout: g.homeLayout,
         floors: g.homeFloors,
@@ -499,6 +520,8 @@ export class Net {
       bans: { ...g.net.bans },
       snap: JSON.parse(JSON.stringify(snap)) as Record<string, unknown>,
       cos: equipped(g.cosmetics, 'casino'),
+      hotel: g.hotel ? { floors: g.hotel.floors, tier: g.hotel.tier } : null,
+      rb: g.rebirths,
       updated: Date.now(),
     };
     const key = JSON.stringify({ ...doc, updated: 0 });
@@ -672,4 +695,13 @@ function localPid(): string {
   } catch {
     return `p-${Math.random().toString(36).slice(2, 12)}`;
   }
+}
+
+function hotelInfo(raw: unknown): { floors: number; tier: number } | null {
+  const h = sanitizeHotel(raw);
+  return h ? { floors: h.floors, tier: h.tier } : null;
+}
+
+function rebirthsOf(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(99, Math.round(v))) : 0;
 }

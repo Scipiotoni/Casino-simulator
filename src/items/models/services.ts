@@ -320,3 +320,49 @@ export function elevatorModel(o: BuildOpts): ItemModel {
     },
   };
 }
+
+/** Hotel reception: a long marble counter with a bell, a key rack and a lit sign. */
+export function frontDeskModel(o: BuildOpts): ItemModel {
+  const root = new THREE.Group();
+  const dyn = new Dyn();
+  const wood = mat(o.color, { rough: 0.45 });
+  const marble = mat(0xf1ece2, { rough: 0.15, metal: 0.05 });
+  const g = gold();
+  rbox(root, 3.6, 1.0, 0.7, 0.05, wood, 0, 0.5, 0.35);
+  box(root, 3.7, 0.06, 0.8, marble, 0, 1.03, 0.35);
+  box(root, 3.62, 0.04, 0.02, g, 0, 0.9, 0.71);
+  // Back wall with key rack and sign
+  rbox(root, 3.6, 2.3, 0.14, 0.03, mat(shadeHex(o.color, 0.6), { rough: 0.6 }), 0, 1.15, -0.85);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 8; c++) {
+    box(root, 0.16, 0.2, 0.05, mat(0x2a1a12, { rough: 0.7 }), -1.2 + c * 0.34, 1.0 + r * 0.3, -0.76);
+    sph(root, 0.025, g, -1.2 + c * 0.34, 0.95 + r * 0.3, -0.72, 6, 5);
+  }
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.42), new THREE.MeshStandardMaterial({ map: labelTexture('RECEPTION', { color: '#ffc53d', glow: '#ffc53d', bg: '#17151f', w: 512, h: 96 }), emissive: 0xffffff, emissiveIntensity: 0.6 }));
+  sign.position.set(0, 2.0, -0.77);
+  root.add(sign);
+  // Bell and a little lamp
+  cyl(root, 0.07, 0.09, 0.02, g, 0.9, 1.07, 0.3, 14);
+  sph(root, 0.06, g, 0.9, 1.1, 0.3, 12, 8);
+  cyl(root, 0.02, 0.02, 0.3, g, -1.3, 1.2, 0.2, 8);
+  sph(root, 0.1, glow(0xffe0a0, 1.4), -1.3, 1.4, 0.2, 12, 8);
+  bake(root, dyn);
+  return { root, height: 2.3, update() {}, event() {}, dispose() { disposeTree(root); } };
+}
+
+/** A made-up hotel bed with pillows, a runner and a nightstand. */
+export function hotelBedModel(o: BuildOpts): ItemModel {
+  const root = new THREE.Group();
+  const dyn = new Dyn();
+  const frame = mat(0x2a1a12, { rough: 0.5 });
+  const sheet = mat(0xf6f3ee, { rough: 0.9 });
+  rbox(root, 1.7, 0.3, 2.3, 0.05, frame, 0, 0.15, 0.1);
+  rbox(root, 1.6, 0.25, 2.2, 0.08, sheet, 0, 0.42, 0.12);
+  rbox(root, 1.62, 0.08, 1.1, 0.04, mat(o.color, { rough: 0.8 }), 0, 0.56, 0.55);
+  for (const x of [-0.4, 0.4]) rbox(root, 0.62, 0.16, 0.34, 0.07, sheet, x, 0.6, -0.72);
+  rbox(root, 1.8, 1.1, 0.12, 0.04, mat(shadeHex(o.color, 0.55), { rough: 0.7 }), 0, 0.55, -1.05);
+  rbox(root, 0.34, 0.45, 0.34, 0.03, frame, 1.1, 0.23, -0.8);
+  cyl(root, 0.03, 0.05, 0.25, gold(), 1.1, 0.58, -0.8, 8);
+  sph(root, 0.1, glow(0xffe0a0, 1.2), 1.1, 0.76, -0.8, 12, 8);
+  bake(root, dyn);
+  return { root, height: 1.2, update() {}, event() {}, dispose() { disposeTree(root); } };
+}

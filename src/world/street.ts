@@ -3,7 +3,7 @@ import { Exterior, type LotLook } from './exterior';
 import { CENTER_X, DOOR_TILES, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z0 } from './grid';
 export { ROAD_MID } from './grid';
 
-export type LotKind = 'me' | 'rival' | 'player';
+export type LotKind = 'me' | 'rival' | 'player' | 'hotel';
 
 /** One casino on the street. */
 export interface StreetLot {
@@ -17,6 +17,10 @@ export interface StreetLot {
   order: number;
   /** Is the owner playing right now? */
   online: boolean;
+  /** For a hotel: the id of the casino it belongs to (it stands right next to it). */
+  hotelOf?: string;
+  /** For a hotel: its size and star tier (the interior is generated from these). */
+  hotel?: { floors: number; tier: number };
 }
 
 /** How many columns either side of the player exteriors are built. */
@@ -44,9 +48,35 @@ export class Street {
   lots: StreetLot[] = [];
   activeId = 'me';
   private built = new Map<string, { ext: Exterior; key: string }>();
+  /** Slot of each lot (col * 2 + side); hotels can leave gaps. */
+  private slots = new Map<string, number>();
+  private bySlot: (StreetLot | undefined)[] = [];
 
+  /**
+   * Casinos fill slots in opening order, alternating sides. A hotel takes the slot right
+   * beside its casino on the same side of the road (two slots on), and later casinos skip it.
+   */
   setLots(lots: StreetLot[]): void {
-    this.lots = [...lots].sort((a, b) => (a.kind === 'rival' ? -1 : b.kind === 'rival' ? 1 : a.order - b.order));
+    const casinos = lots.filter((l) => l.kind !== 'hotel').sort((a, b) => (a.kind === 'rival' ? -1 : b.kind === 'rival' ? 1 : a.order - b.order));
+    const hotels = new Map(lots.filter((l) => l.kind === 'hotel' && l.hotelOf).map((l) => [l.hotelOf!, l]));
+    this.slots.clear();
+    this.bySlot = [];
+    let next = 0;
+    const take = (l: StreetLot, i: number) => {
+      this.slots.set(l.id, i);
+      this.bySlot[i] = l;
+    };
+    for (const c of casinos) {
+      while (this.bySlot[next]) next++;
+      take(c, next);
+      const h = hotels.get(c.id);
+      if (h) {
+        let i = next + 2;
+        while (this.bySlot[i]) i += 2;
+        take(h, i);
+      }
+    }
+    this.lots = [...casinos, ...[...hotels.values()].filter((h) => this.slots.has(h.id))];
   }
 
   get(id: string): StreetLot | undefined {
@@ -54,8 +84,7 @@ export class Street {
   }
 
   slotOf(id: string): number {
-    const i = this.lots.findIndex((l) => l.id === id);
-    return i < 0 ? 0 : i;
+    return this.slots.get(id) ?? 0;
   }
 
   /** Column along the road and side (0 = north, 1 = south) of a lot. */
@@ -65,7 +94,7 @@ export class Street {
   }
 
   get columns(): number {
-    return Math.max(1, Math.ceil(this.lots.length / 2));
+    return Math.max(1, Math.ceil(this.bySlot.length / 2));
   }
 
   /** Lot-local point → street (global) frame. */
@@ -115,7 +144,7 @@ export class Street {
     const g = this.worldToGlobal(x, z);
     const col = Math.round((g.x - CENTER_X) / LOT_STRIDE);
     if (col < 0) return null;
-    return this.lots[col * 2 + (g.z < ROAD_MID ? 0 : 1)] ?? null;
+    return this.bySlot[col * 2 + (g.z < ROAD_MID ? 0 : 1)] ?? null;
   }
 
   private tileTo(id: string, tx: number, tz: number): [number, number] {
@@ -145,7 +174,8 @@ export class Street {
     const f = this.worldToGlobal(focusX, focusZ);
     const focusCol = Math.round((f.x - CENTER_X) / LOT_STRIDE);
     const keep = new Set<string>();
-    this.lots.forEach((l, slot) => {
+    this.lots.forEach((l) => {
+      const slot = this.slotOf(l.id);
       if (Math.abs(Math.floor(slot / 2) - focusCol) > VIEW_COLS && l.id !== this.activeId) return;
       keep.add(l.id);
       const key = JSON.stringify(l.info);

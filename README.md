@@ -11,7 +11,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 ## Features
 
 **Build it your way**
-- 36 items across four categories: machines (Lucky 7s, Fruit Frenzy, Diamond Deluxe, the linked **Mega Jackpot**, video poker, keno, claw crane, pachinko), tables (blackjack, baccarat, roulette, Big Six wheel, craps, sic bo, hold'em and Three Card Poker), services (cocktail bar, snack bar, ATM, lounge bench, show stage) and decor (plants, palms, velvet ropes, neon signs, giant dice, gold pillars, a fountain, an aquarium, a money tree, a giant diamond, and a solid-gold statue of *you*).
+- 36 shop items across four categories: machines (Lucky 7s, Fruit Frenzy, Diamond Deluxe, the linked **Mega Jackpot**, video poker, keno, claw crane, pachinko), tables (blackjack, baccarat, roulette, Big Six wheel, craps, sic bo, hold'em and Three Card Poker), services (cocktail bar, snack bar, ATM, lounge bench, show stage) and decor (plants, palms, velvet ropes, neon signs, giant dice, gold pillars, a fountain, an aquarium, a money tree, a giant diamond, and a solid-gold statue of *you*).
 - Place anything anywhere with a live ghost preview. It turns red if the spot is taken, would block the entrance, or would wall guests off from a seat.
 - Click any placed item to **upgrade** it (5 levels: higher bets, bigger cash box, fewer breakdowns), **move** it, **rotate** it, **recolor** it or **sell** it. Slot machines, the bars and the claw crane take your own **sign text**. Changed your mind? Selling within 15 seconds of buying is a full refund.
 - Paint the floor tile by tile, or the whole casino in one click, with 12 carpet styles from Royal Crimson and Vegas Retro to marble, gold tiles and a glowing neon grid.
@@ -48,6 +48,10 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 **Multiplayer**
 - Everyone who opens the game (the public site, or the shared Claude artifact) builds a casino on the same street. You see each other walking around live, with name tags, and you can walk into any published casino and play its games. Losses and wins at another player's tables are settled into their bank through a shared ledger, even if they're offline.
 - Owners can **blacklist** a player for 10 minutes: they're walked out and can't come back in until it ends, and there's a 30-minute cooldown before you can blacklist them again.
+
+**Hotel and rebirths**
+- From level 8, build a **hotel tower** right next to your casino (Hotel button). Add storeys of 8 rooms each and upgrade it from a one-star Budget Inn to the five-star Grand Palace Suites. Every night guests check in and pay for their rooms (minus housekeeping), and the next day they come over to gamble: up to twice as many arrivals and more high rollers. Walk in through its doors to see the lobby and the rooms, and use the front desk to run it. Other players see your hotel on the street and can walk around it.
+- **Rebirth** (in the menu) once you reach level 15 and $1,000,000 (the bar rises each time): your casino, hotel, money, level and goals reset, but you keep your character, casino style and luxury items, and everything you earn is worth 25% more for each rebirth. Your rebirth badge shows next to your level, on your name tag and on your casino's sign.
 
 **Luxury shop**
 - Spend your profits on very expensive, completely useless things: a solid-gold crown, a neon halo, a sparkle aura, orbiting lucky dice, a casino pup and a golden pup for your character; searchlights, rainbow neon, nightly fireworks and a gold-plated facade for your casino. Switch them on and off any time. Other players see them too.

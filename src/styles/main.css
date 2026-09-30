@@ -1744,7 +1744,8 @@ input:focus-visible {
   display: grid;
   gap: 5px;
   animation: card-in 0.3s ease;
-  z-index: 5;
+  /* Sits over the street map until it's dismissed. */
+  z-index: 8;
 }
 
 .day-card.out {
@@ -2558,8 +2559,8 @@ input:focus-visible {
 .floorbar {
   position: absolute;
   right: var(--gutter);
-  top: 50%;
-  transform: translateY(-50%);
+  /* Between the top bar and the street map; tall towers scroll. */
+  top: 132px;
   display: grid;
   gap: 6px;
   padding: 6px;
@@ -2567,8 +2568,15 @@ input:focus-visible {
   background: var(--panel);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
-  max-height: 60vh;
+  max-height: max(140px, calc(100vh - 132px - 310px));
   overflow-y: auto;
+}
+
+@media (max-width: 700px) {
+  .floorbar {
+    top: 212px;
+    max-height: max(140px, calc(100vh - 212px - 170px));
+  }
 }
 
 .fl-btn {
@@ -3634,4 +3642,32 @@ p.small {
   resize: vertical;
   font-family: ui-monospace, monospace;
   font-size: 11px;
+}
+
+/* ------------------------------------------------------------------ hotel & rebirth */
+.hotel-head {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  text-align: center;
+}
+
+.hotel-stars {
+  font-size: 26px;
+  letter-spacing: 4px;
+  color: var(--gold);
+}
+
+.rebirth-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 64px;
+  height: 64px;
+  padding: 0 12px;
+  border-radius: 99px;
+  background: conic-gradient(from 90deg, #ff3fa4, #ffc53d, #2fe6ff, #b77bff, #ff3fa4);
+  color: #17151f;
+  font-family: var(--font-display);
+  font-size: 22px;
+  box-shadow: 0 0 22px rgba(255, 197, 61, 0.45);
 }

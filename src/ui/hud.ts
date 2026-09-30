@@ -1,4 +1,4 @@
-import { type Game, type Selection, type DayReport, floorName } from '../game/game';
+import { type Game, type Selection, type DayReport, floorName, roman } from '../game/game';
 import { h, icon, stars, clear, swatch } from './dom';
 import { formatClock, formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
@@ -109,6 +109,7 @@ export class Hud {
       ['staff', 'Staff', () => this.modals.openStaff()],
       ['casino', 'Casino', () => this.modals.openCasino()],
       ['you', 'You', () => this.modals.openCreator('player')],
+      ['home', 'Hotel', () => this.modals.openHotel()],
       ['upgrade', 'Luxe', () => this.modals.openCosmetics()],
       ['stats', 'Stats', () => this.modals.openStats()],
     ];
@@ -179,6 +180,21 @@ export class Hud {
     g.events.on('mode', () => this.renderMode());
     g.events.on('look', () => (this.nameEl.textContent = g.building.look.name));
     g.events.on('day', (r) => this.dayReport(r));
+    g.events.on('hotelDesk', () => {
+      if (!this.modals.isOpen) this.modals.openHotel();
+    });
+    g.events.on('rebirth', (n) => {
+      this.banner(`Rebirth ${roman(n)}!`, `A fresh start. Everything you earn is now worth ${Math.round(g.incomeMult * 100)}%.`, 'level');
+      this.renderGoals();
+      this.renderVisit();
+    });
+    let rebirthHinted = false;
+    g.events.on('level', () => {
+      if (!rebirthHinted && g.level >= g.rebirthReq.level) {
+        rebirthHinted = true;
+        g.notify(`You can be reborn once you have ${formatMoney(g.rebirthReq.money)}: open the menu and pick Rebirth.`, 'good');
+      }
+    });
     g.events.on('minigame', (item) => {
       if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });
     });
@@ -568,7 +584,7 @@ export class Hud {
       const home = g.street.get('me');
       this.visitBar.append(
         h('div', { class: 'vb-text' },
-          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
+          h('b', { text: v.lot.id === 'hotel' ? `Your hotel · ${v.lot.info.look.name}` : v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
           h('span', { class: 'vb-net', dataset: { live: 'vnet' } }),
         ),
         h('button', {
@@ -624,7 +640,7 @@ export class Hud {
       const rate = g.incomePerMin;
       this.rateEl.textContent = `${rate >= 0 ? '+' : ''}${formatMoney(rate, true)}/min`;
       this.rateEl.className = `rate ${rate >= 0 ? 'pos' : 'neg'}`;
-      this.lvlEl.textContent = `LV ${g.level}`;
+      this.lvlEl.textContent = g.rebirths ? `LV ${g.level} · ⟳${roman(g.rebirths)}` : `LV ${g.level}`;
       this.xpFill.style.width = `${Math.min(100, (g.xp / g.xpNext) * 100).toFixed(1)}%`;
       this.timeEl.textContent = `Day ${g.day} · ${formatClock(g.clockMinutes)}`;
       this.speedBtns.forEach((b, i) => {
@@ -640,7 +656,7 @@ export class Hud {
         const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;
         if (vn) {
           const n = g.visit.net;
-          vn.textContent = g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
+          vn.textContent = g.visit.lot.kind === 'hotel' ? (g.visit.lot.id === 'hotel' ? 'Walk up to the front desk and press Space' : 'Just looking around') : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
           vn.className = `vb-net ${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}`;
         }
       }

@@ -14,6 +14,10 @@ import { Building, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
+import {
+  type HotelState, HOTEL_LAYOUT, HOTEL_LEVEL, HOTEL_MAX_FLOORS, HOTEL_PRICE, HOTEL_TIERS, generateHotel, hotelFloorCost, hotelGuestBoost,
+  hotelLook, hotelNight, hotelRooms, newHotel, sanitizeHotel,
+} from './hotel';
 import { CameraRig, type CamMode } from '../world/camera';
 import { TrashManager } from '../world/trash';
 import { FLOOR_STYLES } from '../render/textures';
@@ -55,6 +59,9 @@ export interface DayReport {
   visitors: number;
   bestMachine: string;
   rating: number;
+  /** Hotel: room revenue minus housekeeping last night (absent without a hotel). */
+  hotel?: number;
+  hotelGuests?: number;
 }
 
 export interface GameEvents {
@@ -68,6 +75,9 @@ export interface GameEvents {
   look: void;
   staff: void;
   cosmetics: void;
+  hotel: void;
+  hotelDesk: void;
+  rebirth: number;
   expansion: number;
   jackpot: { amount: number; machine: string };
   event: { title: string; text: string };
@@ -329,6 +339,10 @@ export class Game implements World, ItemHost {
     this.paused = false;
     this.rival = newRival();
     this.createdAt = Date.now();
+    this.hotel = null;
+    this.rebirths = 0;
+    this.cosmetics = emptyCosmetics();
+    this.applyCosmetics();
     this.setFloorCount(1);
     this.grid.floor.fill(0);
     this.resetWorld();
@@ -422,6 +436,126 @@ export class Game implements World, ItemHost {
   extraLots: StreetLot[] = [];
   /** Bought and switched-on cosmetics (they follow you, not a casino). */
   cosmetics: CosmeticState = emptyCosmetics();
+  /** Your hotel tower next door (null until you buy it). */
+  hotel: HotelState | null = null;
+  /** How many times you've been reborn: each one adds 25% to everything your businesses earn. */
+  rebirths = 0;
+
+  get incomeMult(): number {
+    return 1 + this.rebirths * 0.25;
+  }
+
+  /** What the next rebirth asks for. */
+  get rebirthReq(): { level: number; money: number } {
+    return { level: 15 + this.rebirths * 5, money: 1_000_000 * (this.rebirths + 1) };
+  }
+
+  /** Why you can't be reborn yet (null = ready). */
+  rebirthBlock(): string | null {
+    const r = this.rebirthReq;
+    if (this.visit) return 'Head home first.';
+    if (this.level < r.level) return `Reach level ${r.level} (you're level ${this.level}).`;
+    if (this.money < r.money) return `Have ${formatMoney(r.money)} in the bank.`;
+    return null;
+  }
+
+  /**
+   * Start over with a fresh casino, but keep your character, name, casino style and cosmetics,
+   * and earn 25% more from everything, forever.
+   */
+  rebirth(): boolean {
+    if (this.rebirthBlock()) return false;
+    const n = this.rebirths + 1;
+    const cos = { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] };
+    const stats = { ...this.stats };
+    this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
+    this.rebirths = n;
+    this.stats = stats;
+    this.cosmetics = cos;
+    this.applyCosmetics();
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2, this.player.z, 160, 1.2);
+    this.events.emit('rebirth', n);
+    this.saveNow();
+    return true;
+  }
+
+  // ------------------------------------------------------------------ hotel
+
+  /** Why the hotel can't be bought yet (null = go ahead). */
+  hotelBlock(): string | null {
+    if (this.hotel) return 'You already own a hotel.';
+    if (this.visit) return 'Head home first.';
+    if (this.level < HOTEL_LEVEL) return `Unlocks at level ${HOTEL_LEVEL}.`;
+    if (this.money < HOTEL_PRICE) return `Costs ${formatMoney(HOTEL_PRICE)}.`;
+    return null;
+  }
+
+  buyHotel(): boolean {
+    const block = this.hotelBlock();
+    if (block) {
+      audio.play('error');
+      this.notify(block, 'bad');
+      return false;
+    }
+    this.spend(HOTEL_PRICE, 'expand');
+    this.hotel = newHotel();
+    audio.play('levelup');
+    this.notify(`${hotelLook(this.building.look).name} is open next door! Guests check in every night.`, 'good');
+    this.afterHotelChange();
+    return true;
+  }
+
+  addHotelFloor(): boolean {
+    const h = this.hotel;
+    if (!h || h.floors >= HOTEL_MAX_FLOORS) return false;
+    const cost = hotelFloorCost(h);
+    if (this.money < cost) {
+      audio.play('error');
+      this.notify(`The next storey costs ${formatMoney(cost)}.`, 'bad');
+      return false;
+    }
+    this.spend(cost, 'expand');
+    h.floors++;
+    audio.play('purchase');
+    this.notify(`Storey ${h.floors} built: ${hotelRooms(h)} rooms now.`, 'good');
+    this.afterHotelChange();
+    return true;
+  }
+
+  upgradeHotel(): boolean {
+    const h = this.hotel;
+    const next = h ? HOTEL_TIERS[h.tier + 1] : undefined;
+    if (!h || !next) return false;
+    if (this.level < next.level || this.money < next.cost) {
+      audio.play('error');
+      this.notify(this.level < next.level ? `${next.name} unlocks at level ${next.level}.` : `${next.name} costs ${formatMoney(next.cost)}.`, 'bad');
+      return false;
+    }
+    this.spend(next.cost, 'upgrade');
+    h.tier++;
+    audio.play('levelup');
+    this.notify(`Your hotel is now a ${'★'.repeat(next.stars)} ${next.name}!`, 'good');
+    this.afterHotelChange();
+    return true;
+  }
+
+  private afterHotelChange(): void {
+    this.refreshStreet();
+    // If you're standing in the hotel, rebuild it around you.
+    if (this.visit?.lot.id === 'hotel' && this.hotel) {
+      const f = this.player.floor;
+      const x = this.player.x;
+      const z = this.player.z;
+      this.loadCasino(generateHotel(this.hotel, hotelLook(this.visit.home.look)), true);
+      this.player.floor = Math.min(f, this.floors - 1);
+      this.player.x = x;
+      this.player.z = z;
+      this.player.unstick(this.gridAt(this.player.floor));
+    }
+    this.events.emit('hotel', undefined);
+    this.saveNow();
+  }
   private playerFx: PlayerFx | null = null;
 
   /** Buy a cosmetic (it's switched on right away). */
@@ -468,14 +602,22 @@ export class Game implements World, ItemHost {
   refreshStreet(): void {
     const me: StreetLot = {
       id: 'me', kind: 'me', owner: this.player.name, order: this.createdAt, online: true,
-      info: { look: this.visit ? this.visit.home.look : { ...this.building.look }, width: this.homeLayout.width, depth: this.homeLayout.depth, floors: this.homeFloors, tagline: 'OPEN 24/7', cos: equipped(this.cosmetics, 'casino') },
+      info: { look: this.visit ? this.visit.home.look : { ...this.building.look }, width: this.homeLayout.width, depth: this.homeLayout.depth, floors: this.homeFloors, tagline: this.rebirths ? `REBIRTH ${roman(this.rebirths)} · OPEN 24/7` : 'OPEN 24/7', cos: equipped(this.cosmetics, 'casino') },
     };
     const ri = rivalLotInfo(this.rival);
     const rival: StreetLot = {
       id: RIVAL_ID, kind: 'rival', owner: 'The Viper', order: 0, online: true,
       info: { look: rivalLook(), width: ri.layout.width, depth: ri.layout.depth, floors: ri.floors, tagline: 'HIGH LIMITS · NO MERCY' },
     };
-    this.street.setLots([rival, me, ...this.extraLots]);
+    const lots = [rival, me, ...this.extraLots];
+    if (this.hotel) {
+      const t = HOTEL_TIERS[this.hotel.tier];
+      lots.push({
+        id: 'hotel', kind: 'hotel', hotelOf: 'me', owner: this.player.name, order: this.createdAt, online: true, hotel: { floors: this.hotel.floors, tier: this.hotel.tier },
+        info: { look: hotelLook(me.info.look), width: HOTEL_LAYOUT.width, depth: HOTEL_LAYOUT.depth, floors: this.hotel.floors, tagline: `${'★'.repeat(t.stars)} ${t.name.toUpperCase()}`, style: 'hotel' },
+      });
+    }
+    this.street.setLots(lots);
     if (!this.street.get(this.street.activeId)) this.street.activeId = 'me';
   }
 
@@ -499,6 +641,7 @@ export class Game implements World, ItemHost {
   private lotSnapshot(lot: StreetLot): CasinoSnapshot | null {
     if (lot.kind === 'rival') return generateRival(this.rival);
     if (lot.kind === 'player') return this.playerLot?.(lot.id) ?? null;
+    if (lot.kind === 'hotel' && lot.hotel) return generateHotel(lot.hotel, lot.info.look);
     return null;
   }
 
@@ -540,7 +683,10 @@ export class Game implements World, ItemHost {
     this.street.activeId = lot.id;
     this.shiftPlayer(at.x, FACADE_Z - 1.5);
     audio.play('doorbell');
-    this.events.emit('toast', { text: `Welcome to ${snap.name}! Walk up to any game and press Space to play.`, kind: 'event' });
+    this.events.emit('toast', {
+      text: lot.id === 'hotel' ? `Welcome to your hotel! Walk up to the front desk and press Space to run it.` : lot.kind === 'hotel' ? `Welcome to ${snap.name}!` : `Welcome to ${snap.name}! Walk up to any game and press Space to play.`,
+      kind: 'event',
+    });
     this.events.emit('visit', undefined);
     this.refreshStreet();
     return true;
@@ -662,6 +808,8 @@ export class Game implements World, ItemHost {
 
   addMoney(amount: number, reason: MoneyReason, pos?: THREE.Vector3): void {
     if (!amount) return;
+    // Rebirth bonus: everything your businesses earn is worth more.
+    if (amount > 0 && this.rebirths > 0 && (reason === 'collect' || reason === 'tip')) amount = Math.round(amount * this.incomeMult);
     this.money += amount;
     if (amount > 0) {
       this.stats.earnedTotal += amount;
@@ -1028,7 +1176,8 @@ export class Game implements World, ItemHost {
     const mult = this.activeEvent?.spawnMult ?? 1;
     if (seats > 0 && inside < cap) {
       let type: CustomerType = 'regular';
-      const vipChance = this.rating >= 2.5 ? 0.025 + (this.rating - 2.5) * 0.035 : 0;
+      const boost = this.visit ? { spawn: 1, vip: 0 } : hotelGuestBoost(this.hotel);
+      const vipChance = (this.rating >= 2.5 ? 0.025 + (this.rating - 2.5) * 0.035 : 0) + boost.vip;
       const cheatChance = this.level >= 4 && !this.visit ? 0.012 : 0;
       const r = Math.random();
       if (r < vipChance) type = 'vip';
@@ -1036,7 +1185,8 @@ export class Game implements World, ItemHost {
       else if (r < vipChance + cheatChance + 0.1) type = 'tourist';
       this.spawnCustomer(type);
     }
-    const perMin = (3.5 + this.rating * 2.4 + Math.min(this.items.totalAppeal, 80) * 0.1 + seats * 0.2) * this.hourMult() * mult;
+    const hotelMult = this.visit ? 1 : hotelGuestBoost(this.hotel).spawn;
+    const perMin = (3.5 + this.rating * 2.4 + Math.min(this.items.totalAppeal, 80) * 0.1 + seats * 0.2) * this.hourMult() * mult * hotelMult;
     this.spawnT = (60 / perMin) * rand(0.6, 1.4);
   }
 
@@ -1708,6 +1858,24 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    // Your hotel's front desk
+    if (!target && this.visit?.lot.kind === 'hotel') {
+      const desk = this.items.items.find((i) => i.def.id === 'frontdesk' && i.floor === pf);
+      if (desk) {
+        const b = desk.bounds;
+        if (distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1) < 1.4) {
+          const mine = this.visit.lot.id === 'hotel';
+          target = {
+            kind: `desk${desk.uid}`, label: mine ? 'Run your hotel' : 'Ask about rooms', hold: false,
+            anchor: () => new THREE.Vector3(desk.cx, 2.7, desk.cz),
+            act: () => {
+              if (mine) this.events.emit('hotelDesk', undefined);
+              else this.notify(`${this.visit?.lot.info.look.name}: “Sorry, we're fully booked tonight!”`, 'info');
+            },
+          };
+        }
+      }
+    }
     // The elevator
     const lp = this.gridAt(pf).portal;
     if (!target && this.floors > 1 && Math.hypot(p.x - (lp[0] + 0.5), p.z - (lp[1] + 0.5)) < 1.2) {
@@ -1890,6 +2058,15 @@ export class Game implements World, ItemHost {
     const upkeep = this.items.items.reduce((a, i) => a + i.def.upkeep, 0);
     this.money -= wages + upkeep;
     const best = [...this.dayAcc.byItem.entries()].sort((a, b) => b[1] - a[1])[0];
+    let hotelNet: number | undefined;
+    let hotelGuests: number | undefined;
+    if (this.hotel) {
+      const n = hotelNight(this.hotel, this.rating);
+      hotelGuests = n.guests;
+      hotelNet = Math.round(n.revenue * this.incomeMult) - n.costs;
+      this.money += hotelNet;
+      if (hotelNet > 0) this.stats.earnedTotal += hotelNet;
+    }
     const report: DayReport = {
       day: this.day,
       revenue: Math.round(this.dayAcc.revenue),
@@ -1901,13 +2078,17 @@ export class Game implements World, ItemHost {
       visitors: this.dayAcc.visitors,
       bestMachine: best ? best[0] : '—',
       rating: this.rating,
+      hotel: hotelNet,
+      hotelGuests,
     };
+    if (hotelNet !== undefined) report.profit += hotelNet;
     this.history.push(report.profit);
     if (this.history.length > 30) this.history.shift();
     this.dayAcc = { revenue: 0, payouts: 0, sales: 0, visitors: 0, byItem: new Map() };
     this.day++;
-    this.events.emit('money', { money: this.money, delta: -(wages + upkeep) });
+    this.events.emit('money', { money: this.money, delta: (hotelNet ?? 0) - (wages + upkeep) });
     this.events.emit('day', report);
+    if (this.hotel) this.events.emit('hotel', undefined);
     if (this.money < 0) this.notify('You are in the red! Wages and upkeep keep draining the bank until you earn it back.', 'bad');
     this.saveNow();
   }
@@ -2209,6 +2390,8 @@ export class Game implements World, ItemHost {
         rival: { ...this.rival },
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
+        hotel: this.hotel ? { ...this.hotel } : null,
+        rebirths: this.rebirths,
         savedAt: Date.now(),
       };
     }
@@ -2241,6 +2424,8 @@ export class Game implements World, ItemHost {
       rival: { ...this.rival },
       createdAt: this.createdAt,
       cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
+      hotel: this.hotel ? { ...this.hotel } : null,
+      rebirths: this.rebirths,
       savedAt: Date.now(),
     };
   }
@@ -2265,6 +2450,8 @@ export class Game implements World, ItemHost {
     this.rival = { ...newRival(), ...s.rival };
     this.createdAt = s.createdAt || Date.now();
     this.cosmetics = sanitizeCosmetics(s.cosmetics);
+    this.hotel = sanitizeHotel(s.hotel);
+    this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
     this.applyCosmetics();
     this.player.floor = 0;
     const before = s.items.length;
@@ -2324,4 +2511,15 @@ const VISITOR: SeatUser = {
 
 export function floorName(f: number): string {
   return f === 0 ? 'Ground floor' : `Floor ${f + 1}`;
+}
+
+/** 1 → I, 4 → IV … for the rebirth badge. */
+export function roman(n: number): string {
+  const t: [number, string][] = [[1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+  let out = '';
+  for (const [v, r] of t) while (n >= v) {
+    out += r;
+    n -= v;
+  }
+  return out;
 }

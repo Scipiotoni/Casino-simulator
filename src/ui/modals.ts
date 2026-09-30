@@ -1,4 +1,5 @@
-import type { Game, DayReport } from '../game/game';
+import { type Game, type DayReport, roman } from '../game/game';
+import { HOTEL_MAX_FLOORS, HOTEL_PRICE, HOTEL_TIERS, ROOMS_PER_FLOOR, hotelFloorCost, hotelGuestBoost, hotelLook, hotelRooms } from '../game/hotel';
 import { exportFileName, exportSave, parseImport } from '../game/transfer';
 import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
@@ -312,6 +313,83 @@ export class Modals {
     this.open('Export / import casino', body, { wide: true });
   }
 
+  /** Your hotel tower: buy it, add storeys, upgrade the stars, see last night. */
+  openHotel(): void {
+    const g = this.game;
+    const body = h('div', { class: 'stack' });
+    const render = () => {
+      clear(body);
+      const hs = g.hotel;
+      if (!hs) {
+        const block = g.hotelBlock();
+        fill(body, 
+          h('p', { text: 'Build a hotel tower right next to your casino. Every night guests check in and pay for their rooms, and the next day they come over and gamble: more guests and more high rollers.' }),
+          h('div', { class: 'kv' }, h('span', { text: 'Price' }), h('b', { text: formatMoney(HOTEL_PRICE) })),
+          h('div', { class: 'kv' }, h('span', { text: 'Starts with' }), h('b', { text: `A lobby and ${ROOMS_PER_FLOOR} rooms` })),
+          h('button', { class: 'btn gold', disabled: !!block, html: `${icon('home', 16)} Build the hotel <b>${formatMoney(HOTEL_PRICE)}</b>`, onClick: () => { if (g.buyHotel()) render(); } }),
+          block ? h('p', { class: 'muted small', text: block }) : null,
+        );
+        return;
+      }
+      const t = HOTEL_TIERS[hs.tier];
+      const next = HOTEL_TIERS[hs.tier + 1];
+      const boost = hotelGuestBoost(hs);
+      const floorCost = hotelFloorCost(hs);
+      const rooms = hotelRooms(hs);
+      fill(body, 
+        h('div', { class: 'hotel-head' },
+          h('div', { class: 'hotel-stars', text: '★'.repeat(t.stars) + '☆'.repeat(5 - t.stars) }),
+          h('b', { text: `${hotelLook(g.visit ? g.visit.home.look : g.building.look).name} · ${t.name}` }),
+          h('span', { class: 'muted small', text: `${hs.floors} storeys · ${rooms} rooms · ${formatMoney(Math.round(t.rate * g.incomeMult))} a night` }),
+        ),
+        h('div', { class: 'kv' }, h('span', { text: 'Last night' }), h('b', { text: hs.last ? `${hs.last.guests}/${hs.last.rooms} rooms booked` : 'Opens tonight' })),
+        hs.last ? h('div', { class: 'kv' }, h('span', { text: 'Rooms minus housekeeping' }), h('b', { class: 'pos', text: `${formatMoney(Math.round(hs.last.revenue * g.incomeMult))} − ${formatMoney(hs.last.costs)}` })) : null,
+        h('div', { class: 'kv' }, h('span', { text: 'Hotel guests in your casino today' }), h('b', { text: hs.staying ? `+${Math.round((boost.spawn - 1) * 100)}% visitors, more VIPs` : '—' })),
+        h('p', { class: 'muted small', text: 'More stars and a better casino rating fill more rooms. Fancier rooms earn far more per night but are harder to sell.' }),
+        h('div', { class: 'btn-row wrap' },
+          hs.floors < HOTEL_MAX_FLOORS
+            ? h('button', { class: 'btn', disabled: g.money < floorCost, html: `${icon('expand', 16)} Add a storey (+${ROOMS_PER_FLOOR} rooms) <b>${formatMoney(floorCost)}</b>`, onClick: () => { if (g.addHotelFloor()) render(); } })
+            : h('span', { class: 'muted small', text: 'The tower is as tall as the city allows.' }),
+          next
+            ? h('button', { class: 'btn gold', disabled: g.money < next.cost || g.level < next.level, html: `${icon('upgrade', 16)} ${'★'.repeat(next.stars)} ${next.name} <b>${formatMoney(next.cost)}</b>`, onClick: () => { if (g.upgradeHotel()) render(); } })
+            : h('span', { class: 'muted small', text: 'Five stars: the finest hotel on the street.' }),
+        ),
+        next && g.level < next.level ? h('p', { class: 'muted small', text: `${next.name} unlocks at level ${next.level}.` }) : null,
+        h('p', { class: 'muted small', text: g.visit?.lot.id === 'hotel' ? 'You are in the lobby. Take the elevator to see the rooms.' : 'Your hotel stands next to your casino: walk out onto the street and in through its doors.' }),
+      );
+    };
+    render();
+    const off = g.events.on('hotel', () => render());
+    this.open('Hotel', body, { onClose: () => off() });
+  }
+
+  /** Start over for a permanent bonus. */
+  openRebirth(): void {
+    const g = this.game;
+    const body = h('div', { class: 'stack' });
+    const req = g.rebirthReq;
+    const block = g.rebirthBlock();
+    const nextMult = 1 + (g.rebirths + 1) * 0.25;
+    fill(body, 
+      h('div', { class: 'hotel-head' },
+        h('div', { class: 'rebirth-badge big', text: g.rebirths ? `⟳ ${roman(g.rebirths)}` : '⟳' }),
+        h('b', { text: g.rebirths ? `Reborn ${g.rebirths} ${g.rebirths === 1 ? 'time' : 'times'} · ${Math.round(g.incomeMult * 100)}% income` : 'Not reborn yet' }),
+      ),
+      h('p', { text: `Sell up and start again from scratch, but richer in spirit: everything your casino and hotel earn is worth ${Math.round(nextMult * 100)}% after this rebirth (+25% each time), for good.` }),
+      h('div', { class: 'kv' }, h('span', { text: 'Needs' }), h('b', { text: `Level ${req.level} and ${formatMoney(req.money)}` })),
+      h('div', { class: 'kv' }, h('span', { text: 'You keep' }), h('b', { text: 'Your character, name, casino style, luxury items and lifetime stats' })),
+      h('div', { class: 'kv' }, h('span', { text: 'Resets' }), h('b', { class: 'neg', text: 'Money, level, goals, the casino, its staff and the hotel' })),
+      h('button', {
+        class: 'btn gold', disabled: !!block, text: `Rebirth ${roman(g.rebirths + 1)}`,
+        onClick: () => this.confirm('Rebirth?', `Your casino, hotel, money (${formatMoney(g.money)}), level and goals reset. You keep your character and luxury items, and earn ${Math.round(nextMult * 100)}% from now on.`, 'Rebirth', () => {
+          if (g.rebirth()) this.closeAll();
+        }),
+      }),
+      block ? h('p', { class: 'muted small', text: block }) : null,
+    );
+    this.open('Rebirth', body);
+  }
+
   /** Luxury shop: very expensive, purely for show. */
   openCosmetics(): void {
     const g = this.game;
@@ -403,6 +481,7 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('save', 16)} Save now`, onClick: () => { g.saveNow(); g.notify('Game saved', 'good'); } }),
       h('button', { class: 'btn', html: `${icon('help', 16)} How to play`, onClick: () => this.openHelp() }),
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
+      h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));
     body.appendChild(slider('Sound effects', st.sfx, (v) => { st.sfx = v; this.onSettingsChanged?.(); }));
@@ -500,6 +579,7 @@ export class Modals {
       ['Staff wages', -r.wages],
       ['Upkeep', -r.upkeep],
     ];
+    if (r.hotel !== undefined) lines.push([`Hotel (${r.hotelGuests ?? 0} guests)`, r.hotel]);
     const card = h('div', { class: 'day-card' },
       h('div', { class: 'day-title', text: `Day ${r.day} closed` }),
       h('div', { class: `day-profit ${r.profit >= 0 ? 'pos' : 'neg'}`, text: `${r.profit >= 0 ? '+' : ''}${formatMoney(r.profit)}` }),
@@ -574,4 +654,9 @@ function drawLine(canvas: HTMLCanvasElement, data: number[]): void {
   ctx.beginPath();
   ctx.arc(x(pts.length - 1), y(pts[pts.length - 1]), 4, 0, Math.PI * 2);
   ctx.fill();
+}
+
+/** Append children, skipping the optional ones that are null. */
+function fill(el: HTMLElement, ...kids: (Node | null)[]): void {
+  for (const k of kids) if (k) el.appendChild(k);
 }

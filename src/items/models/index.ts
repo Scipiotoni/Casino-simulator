@@ -2,7 +2,7 @@ import type { ItemModel } from '../types';
 import type { BuildOpts } from './common';
 import { atmModel, clawModel, megaSlotModel, pachinkoModel, slotModel } from './slots';
 import { bigWheelModel, blackjackModel, crapsModel, pokerModel, rouletteModel } from './tables';
-import { barModel, benchModel, elevatorModel, snackModel, stageModel } from './services';
+import { barModel, benchModel, elevatorModel, frontDeskModel, hotelBedModel, snackModel, stageModel } from './services';
 import {
   aquariumModel, binModel, diceModel, fountainModel, giantDiamondModel, lampModel, moneyTreeModel, neonModel, palmModel,
   pillarModel, plantModel, ropeModel, rugModel, statueModel,
@@ -26,6 +26,8 @@ const BUILDERS: Record<string, (o: BuildOpts) => ItemModel> = {
   bench: benchModel,
   stage: stageModel,
   elevator: elevatorModel,
+  frontdesk: frontDeskModel,
+  hotelbed: hotelBedModel,
   plant: plantModel,
   palm: palmModel,
   rope: ropeModel,

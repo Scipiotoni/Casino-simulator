@@ -84,7 +84,7 @@ export class ShopDrawer {
   private render(): void {
     clear(this.grid);
     const g = this.game;
-    const list = ITEMS.filter((d) => d.category === this.cat && !d.fixed);
+    const list = ITEMS.filter((d) => d.category === this.cat && !d.fixed && !d.hidden);
     for (const def of list) {
       const locked = def.unlock > g.level;
       const card = h('button', {

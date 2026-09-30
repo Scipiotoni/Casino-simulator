@@ -7,7 +7,7 @@ describe('catalog', () => {
     for (const d of ITEMS) {
       expect(ids.has(d.id)).toBe(false);
       ids.add(d.id);
-      if (!d.fixed) expect(d.price).toBeGreaterThan(0);
+      if (!d.fixed && !d.hidden) expect(d.price).toBeGreaterThan(0);
       expect(d.size[0]).toBeGreaterThan(0);
       expect(d.size[1]).toBeGreaterThan(0);
       expect(d.colors.length).toBeGreaterThan(0);

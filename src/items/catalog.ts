@@ -44,6 +44,8 @@ export interface ItemDef {
   litterReduce?: number;
   /** Built by the game itself (the elevator): never in the shop, can't be moved or sold. */
   fixed?: boolean;
+  /** Only used by generated buildings (the hotel): never sold in the shop. */
+  hidden?: boolean;
   /** Extra per-item look parameters handed to the model builder. */
   params?: Record<string, string | number>;
 }
@@ -352,6 +354,18 @@ export const ITEMS: ItemDef[] = [
     appeal: 0.5, appealRadius: 2.5, fixed: true,
     description: 'Takes guests and staff between floors.',
     colors: [0x3a1d4d], model: 'elevator',
+  },
+  {
+    ...base, id: 'frontdesk', name: 'Reception Desk', category: 'services', kind: 'decor', price: 0, unlock: 99, size: [4, 2],
+    appeal: 0.6, appealRadius: 3, hidden: true,
+    description: 'The hotel front desk. Walk up and press Space to run your hotel.',
+    colors: [0x5a1426], model: 'frontdesk',
+  },
+  {
+    ...base, id: 'hotelbed', name: 'Hotel Room', category: 'decor', kind: 'decor', price: 0, unlock: 99, size: [2, 3],
+    appeal: 0.3, appealRadius: 2, hidden: true,
+    description: 'A made-up hotel room, ready for tonight’s guests.',
+    colors: [0x8a1030], model: 'hotelbed',
   },
 ];
 

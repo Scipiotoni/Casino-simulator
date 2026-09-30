@@ -18,6 +18,8 @@ export interface LotLook {
   tagline?: string;
   /** Casino cosmetics switched on (searchlights, fireworks, gold facade, rainbow neon). */
   cos?: string[];
+  /** A hotel tower: balconies on every storey and a tall HOTEL sign. */
+  style?: 'hotel';
 }
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
@@ -127,6 +129,11 @@ export class Exterior {
       const y = f * STORY_H + 1.4;
       for (let x = x0 + 1.2; x <= x1 - 1.2; x += 1.7) {
         box(s, 1.05, 1.5, 0.08, (k++ * 7) % 5 === 0 ? dim : lit, x, y, z1 + 0.14);
+        if (this.info.style === 'hotel') {
+          // Little balconies with a gold rail
+          box(s, 1.3, 0.1, 0.6, wallDark, x, y - 0.8, z1 + 0.42);
+          box(s, 1.3, 0.05, 0.05, g, x, y - 0.35, z1 + 0.7);
+        }
       }
       for (let z = z0 + 1.5; z <= z1 - 1.5; z += 2.2) {
         box(s, 0.08, 1.4, 1.3, (k++ * 5) % 4 === 0 ? dim : lit, x0 - 0.14, y, z);
@@ -221,7 +228,32 @@ export class Exterior {
       const bladeTrim = new THREE.Mesh(new THREE.BoxGeometry(0.3, Math.min(H - 1.5, 7) + 0.1, 0.06), trim);
       bladeTrim.position.set(x1 - 1.2, blade.position.y, z1 + 1.26);
       s.add(bladeTrim);
-      for (let i = 0; i < 6; i++) sph(s, 0.14, glow(look.signColor, 1.6), x1 - 1.2, 3.8 + i * ((Math.min(H - 1.5, 7) - 0.8) / 5), z1 + 1.3, 10, 8);
+      if (this.info.style === 'hotel') {
+        const bh = Math.min(H - 1.5, 7);
+        const { canvas, ctx } = makeCanvas(128, 640);
+        ctx.fillStyle = '#12091c';
+        ctx.fillRect(0, 0, 128, 640);
+        ctx.font = '400 104px Bungee, "Arial Black", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = hex(look.signColor);
+        ctx.shadowBlur = 24;
+        ctx.fillStyle = '#fff4d6';
+        'HOTEL'.split('').forEach((c, i) => ctx.fillText(c, 64, 70 + i * 125));
+        this.bladeTex = canvasTexture(canvas);
+        const face = new THREE.Mesh(new THREE.PlaneGeometry(1.0, bh - 0.3), new THREE.MeshStandardMaterial({ map: this.bladeTex, emissive: 0xffffff, emissiveMap: this.bladeTex, emissiveIntensity: 1.2 }));
+        face.position.set(x1 - 1.2 + 0.13, blade.position.y, z1 + 0.7);
+        face.rotation.y = Math.PI / 2;
+        s.add(face);
+        dyn.keep(face);
+        const face2 = face.clone();
+        face2.position.x = x1 - 1.2 - 0.13;
+        face2.rotation.y = -Math.PI / 2;
+        s.add(face2);
+        dyn.keep(face2);
+      } else {
+        for (let i = 0; i < 6; i++) sph(s, 0.14, glow(look.signColor, 1.6), x1 - 1.2, 3.8 + i * ((Math.min(H - 1.5, 7) - 0.8) / 5), z1 + 1.3, 10, 8);
+      }
     }
     bake(s, dyn);
     for (let i = 0; i < 3; i++) {
@@ -283,6 +315,7 @@ export class Exterior {
   }
 
   private rainbow: THREE.MeshStandardMaterial | null = null;
+  private bladeTex: THREE.Texture | null = null;
   private beams: THREE.Object3D[] = [];
   private rockets: { pts: THREE.Points; vel: Float32Array; t: number; origin: THREE.Vector3 }[] = [];
   private fwBase = new THREE.Vector3();
@@ -376,6 +409,7 @@ export class Exterior {
     this.group.removeFromParent();
     disposeTree(this.group);
     this.rainbow?.dispose();
+    this.bladeTex?.dispose();
     this.signTex.dispose();
   }
 }

@@ -2,6 +2,7 @@ import { migrateSave, newRival, sanitizeSnapshot, type SaveData } from './save';
 import { sanitizeAppearance } from '../entities/appearance';
 import { SIGN_FONTS } from '../world/building';
 import { sanitizeCosmetics } from '../cosmetics/catalog';
+import { sanitizeHotel } from './hotel';
 import { emptyStats, type LifetimeStats } from './objectives';
 
 /** Marker at the top of an exported casino file. */
@@ -64,7 +65,7 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
     floorPainted: Math.round(num(r.floorPainted, 0, 1e9, 0)),
     lookEdited: r.lookEdited === true,
     renamed: r.renamed === true,
-    speed: Math.round(num(r.speed, 1, 3, 1)),
+    speed: 1,
     rival: {
       bank: num(rv.bank, 0, 1e15, base.bank),
       tier: Math.round(num(rv.tier, 0, 20, 0)),
@@ -73,6 +74,8 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
     },
     createdAt: Math.round(num(r.createdAt, 0, Date.now(), Date.now())),
     cosmetics: sanitizeCosmetics(r.cosmetics),
+    hotel: sanitizeHotel(r.hotel),
+    rebirths: Math.round(num(r.rebirths, 0, 99, 0)),
   };
   return { save };
 }
