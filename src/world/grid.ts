@@ -16,6 +16,9 @@ export const DOOR_TILES: [number, number][] = [
   [24, FACADE_Z],
 ];
 
+/** Mirror line of the road (world z): the south side of the street is the north side turned around it. */
+export const ROAD_MID = 49.5;
+
 /** The street is a row of lots this far apart (building width limit + a gap). */
 export const LOT_STRIDE = 30;
 

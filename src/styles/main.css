@@ -3500,3 +3500,66 @@ p.small {
   align-content: center;
   background: radial-gradient(ellipse at 50% 30%, #b8263f, #4a0a18 70%);
 }
+
+/* ------------------------------------------------------------------ minimap */
+.minimap {
+  position: absolute;
+  right: 16px;
+  bottom: 96px;
+  z-index: 6;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(23, 21, 31, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.minimap.big {
+  right: 50%;
+  bottom: 50%;
+  transform: translate(50%, 50%);
+  z-index: 30;
+}
+
+.mm-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 2px 4px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--gold);
+}
+
+.mm-toggle {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.mm-canvas {
+  display: block;
+  border-radius: 8px;
+  cursor: crosshair;
+}
+
+.photo .minimap,
+.hud-hidden .minimap {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .minimap:not(.big) {
+    top: 64px;
+    bottom: auto;
+    right: 8px;
+    transform: scale(0.72);
+    transform-origin: top right;
+  }
+}

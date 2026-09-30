@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mat, glow, gold } from '../render/materials';
 import { asphaltTexture, lotTexture, sidewalkTexture, wallTexture } from '../render/textures';
-import { CENTER_X, FACADE_Z, LOT_STRIDE, SIDEWALK_Z1, type Grid } from './grid';
+import { CENTER_X, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z1, type Grid } from './grid';
 
 export const WALL_H = 2.5;
 const WALL_T = 0.2;
@@ -63,11 +63,11 @@ export class Building {
   /** Ground, sidewalk, road and street lamps running the whole length of the street. */
   private buildStreet(): void {
     const lot = lotTexture().clone();
-    lot.repeat.set(STREET_LEN, 80);
+    lot.repeat.set(STREET_LEN, 240);
     lot.needsUpdate = true;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, 80), mat(0xffffff, { map: lot, rough: 1 }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, 240), mat(0xffffff, { map: lot, rough: 1 }));
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(CENTER_X, -0.02, 22);
+    ground.position.set(CENTER_X, -0.02, ROAD_MID);
     ground.receiveShadow = true;
     this.group.add(ground);
 
@@ -75,22 +75,28 @@ export class Building {
     const swDepth = SIDEWALK_Z1 + 1 - FACADE_Z;
     sw.repeat.set(STREET_LEN, swDepth);
     sw.needsUpdate = true;
-    const sidewalk = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, swDepth), mat(0xffffff, { map: sw, rough: 0.9 }));
-    sidewalk.rotation.x = -Math.PI / 2;
-    sidewalk.position.set(CENTER_X, 0.001, FACADE_Z + swDepth / 2);
-    sidewalk.receiveShadow = true;
-    this.group.add(sidewalk);
-
-    const curb = new THREE.Mesh(new THREE.BoxGeometry(STREET_LEN, 0.12, 0.25), mat(0xb9b4c2, { rough: 0.8 }));
-    curb.position.set(CENTER_X, 0.06, SIDEWALK_Z1 + 1.12);
-    this.group.add(curb);
+    const swMat = mat(0xffffff, { map: sw, rough: 0.9 });
+    const curbMat = mat(0xb9b4c2, { rough: 0.8 });
+    // Both sides of the road: the south side mirrors the north one around ROAD_MID.
+    for (const mirror of [false, true]) {
+      const sidewalk = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, swDepth), swMat);
+      sidewalk.rotation.x = -Math.PI / 2;
+      const zc = FACADE_Z + swDepth / 2;
+      sidewalk.position.set(CENTER_X, 0.001, mirror ? 2 * ROAD_MID - zc : zc);
+      sidewalk.receiveShadow = true;
+      this.group.add(sidewalk);
+      const curb = new THREE.Mesh(new THREE.BoxGeometry(STREET_LEN, 0.12, 0.25), curbMat);
+      curb.position.set(CENTER_X, 0.06, mirror ? 2 * ROAD_MID - (SIDEWALK_Z1 + 1.12) : SIDEWALK_Z1 + 1.12);
+      this.group.add(curb);
+    }
 
     const asph = asphaltTexture().clone();
     asph.repeat.set(STREET_LEN / 2, 4);
     asph.needsUpdate = true;
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, 8), mat(0xffffff, { map: asph, rough: 0.95 }));
+    const roadW = 2 * (ROAD_MID - SIDEWALK_Z1 - 1);
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, roadW), mat(0xffffff, { map: asph, rough: 0.95 }));
     road.rotation.x = -Math.PI / 2;
-    road.position.set(CENTER_X, -0.01, SIDEWALK_Z1 + 1.25 + 4);
+    road.position.set(CENTER_X, -0.01, ROAD_MID);
     road.receiveShadow = true;
     this.group.add(road);
 
@@ -100,7 +106,7 @@ export class Building {
     const nDash = Math.floor(STREET_LEN / 3);
     const dashes = new THREE.InstancedMesh(dashGeo, mat(0xffd23f, { emissive: 0x6b5200, emissiveIntensity: 0.4 }), nDash);
     for (let i = 0; i < nDash; i++) {
-      m4.makeTranslation(CENTER_X - STREET_LEN / 2 + i * 3 + 1, 0.0, SIDEWALK_Z1 + 5.25);
+      m4.makeTranslation(CENTER_X - STREET_LEN / 2 + i * 3 + 1, 0.0, ROAD_MID);
       dashes.setMatrixAt(i, m4);
     }
     dashes.frustumCulled = false;
@@ -121,10 +127,13 @@ export class Building {
     headGeo.translate(0, 3.05, -0.62);
     const poleMat = mat(0x6b6478, { metal: 0.6, rough: 0.4 });
     for (const [geo, material] of [[poleGeo, poleMat], [armGeo, poleMat], [headGeo, glow(0xffe2a8, 2.6)]] as const) {
-      const im = new THREE.InstancedMesh(geo, material, spots.length);
+      const im = new THREE.InstancedMesh(geo, material, spots.length * 2);
+      const turn = new THREE.Matrix4().makeRotationY(Math.PI);
       spots.forEach((x, i) => {
         m4.makeTranslation(x, 0, SIDEWALK_Z1 + 0.85);
-        im.setMatrixAt(i, m4);
+        im.setMatrixAt(i * 2, m4);
+        m4.makeTranslation(x, 0, 2 * ROAD_MID - (SIDEWALK_Z1 + 0.85)).multiply(turn);
+        im.setMatrixAt(i * 2 + 1, m4);
       });
       im.frustumCulled = false;
       this.group.add(im);

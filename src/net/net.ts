@@ -291,7 +291,7 @@ export class Net {
     this.game.extraLots = lots;
     this.game.refreshStreet();
     // If the casino you're in vanished from the street, head home.
-    if (this.game.visit?.lot.kind === 'player' && !this.game.street.get(this.game.visit.lot.id)) this.game.returnHome(0, true);
+    if (this.game.visit?.lot.kind === 'player' && !this.game.street.get(this.game.visit.lot.id)) this.game.returnHome(true);
   }
 
   // ------------------------------------------------------------------ queries used by the game
@@ -480,7 +480,7 @@ export class Net {
     if (until > Date.now()) {
       g.events.emit('toast', { text: `${v.lot.owner} blacklisted you for ${Math.ceil((until - Date.now()) / 60000)} minutes. Security walks you out.`, kind: 'bad' });
       this.hud.modals.closeAll();
-      g.returnHome(g.street.offsetOf('me'), true);
+      g.returnHome(true);
     }
   }
 
@@ -493,12 +493,14 @@ export class Net {
       const lotId = r.lot === this.pid ? 'me' : r.lot;
       const known = !!g.street.get(lotId);
       const outside = r.tz >= FACADE_Z + 0.2 && r.floor === 0;
-      const wx = known ? CENTER_X + g.street.offsetOf(lotId) + r.tx : 0;
+      const wp = known ? g.street.toActive(lotId, CENTER_X + r.tx, r.tz) : { x: 0, z: 0 };
+      const wx = wp.x;
+      const wz = wp.z;
       let visible = known && (outside || (lotId === g.street.activeId && g.inside && r.floor === g.viewFloor));
       if (visible && Math.abs(wx - g.player.x) > 70) visible = false;
       if (visible && !r.visible) {
         r.x = wx;
-        r.z = r.tz;
+        r.z = wz;
       }
       r.visible = visible;
       r.model.root.visible = visible;
@@ -506,10 +508,10 @@ export class Net {
       if (!visible) continue;
       const k = 1 - Math.exp(-dt * 10);
       r.x += (wx - r.x) * k;
-      r.z += (r.tz - r.z) * k;
+      r.z += (wz - r.z) * k;
       const m = r.model;
       m.root.position.set(r.x, 0, r.z);
-      m.root.rotation.y = dampAngle(m.root.rotation.y, r.yaw, 12, dt);
+      m.root.rotation.y = dampAngle(m.root.rotation.y, r.yaw + (known ? g.street.rotOf(lotId) : 0), 12, dt);
       if (r.moving) {
         m.moveSpeed = 2.6;
         m.setPose('walk');

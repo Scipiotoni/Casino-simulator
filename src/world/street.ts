@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Exterior, type LotLook } from './exterior';
-import { CENTER_X, DOOR_TILES, FACADE_Z, LOT_STRIDE, SIDEWALK_Z0, SIDEWALK_Z1 } from './grid';
+import { CENTER_X, DOOR_TILES, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z0 } from './grid';
+export { ROAD_MID } from './grid';
 
 export type LotKind = 'me' | 'rival' | 'player';
 
@@ -18,12 +19,25 @@ export interface StreetLot {
   online: boolean;
 }
 
-/** How far either side of the player exteriors are built. */
-const VIEW_LOTS = 3;
+/** How many columns either side of the player exteriors are built. */
+const VIEW_COLS = 3;
+
+/** Tile rows of the whole street: north sidewalk, road, south sidewalk. */
+export const STREET_Z0 = SIDEWALK_Z0;
+export const STREET_Z1 = 2 * ROAD_MID - 1 - SIDEWALK_Z0;
+
+export interface Vec2 {
+  x: number;
+  z: number;
+}
 
 /**
- * The row of casinos along the street. The lot whose interior is loaded ("active") always
- * sits at CENTER_X; every other lot is drawn as an exterior at a multiple of LOT_STRIDE.
+ * The casinos on both sides of one road. Lots alternate north / south and fill columns
+ * LOT_STRIDE apart, so neighbours face each other across the street.
+ *
+ * Every lot has its own local frame (the one its floor plan is built in: facade at
+ * FACADE_Z, facing +z, door at CENTER_X). The global frame is the street itself; the
+ * world is always drawn in the frame of the lot whose interior is loaded ("active").
  */
 export class Street {
   readonly group = new THREE.Group();
@@ -44,45 +58,95 @@ export class Street {
     return i < 0 ? 0 : i;
   }
 
-  /** World x offset of a lot relative to the active one. */
-  offsetOf(id: string): number {
-    return (this.slotOf(id) - this.slotOf(this.activeId)) * LOT_STRIDE;
+  /** Column along the road and side (0 = north, 1 = south) of a lot. */
+  placeOf(id: string): { col: number; side: 0 | 1 } {
+    const i = this.slotOf(id);
+    return { col: Math.floor(i / 2), side: (i % 2) as 0 | 1 };
   }
 
-  /** Lot whose frontage covers world x (null past either end of the street). */
-  lotAt(x: number): StreetLot | null {
-    const slot = Math.round((x - CENTER_X) / LOT_STRIDE) + this.slotOf(this.activeId);
-    return this.lots[slot] ?? null;
+  get columns(): number {
+    return Math.max(1, Math.ceil(this.lots.length / 2));
   }
 
-  /** Is (tx,tz) the front door of a lot other than the active one? Returns that lot. */
+  /** Lot-local point → street (global) frame. */
+  toGlobal(id: string, x: number, z: number): Vec2 {
+    const { col, side } = this.placeOf(id);
+    return side === 0 ? { x: x + col * LOT_STRIDE, z } : { x: 2 * CENTER_X + col * LOT_STRIDE - x, z: 2 * ROAD_MID - z };
+  }
+
+  /** Street (global) point → a lot's local frame (the transform is its own inverse per side). */
+  fromGlobal(id: string, x: number, z: number): Vec2 {
+    const { col, side } = this.placeOf(id);
+    return side === 0 ? { x: x - col * LOT_STRIDE, z } : { x: 2 * CENTER_X + col * LOT_STRIDE - x, z: 2 * ROAD_MID - z };
+  }
+
+  /** A point in one lot's frame expressed in another's. */
+  map(from: string, to: string, x: number, z: number): Vec2 {
+    const g = this.toGlobal(from, x, z);
+    return this.fromGlobal(to, g.x, g.z);
+  }
+
+  /** Lot-local point → the world as drawn now. */
+  toActive(id: string, x: number, z: number): Vec2 {
+    return this.map(id, this.activeId, x, z);
+  }
+
+  /** Extra yaw of a lot's frame in the world as drawn now (0 or π). */
+  rotOf(id: string): number {
+    return this.placeOf(id).side === this.placeOf(this.activeId).side ? 0 : Math.PI;
+  }
+
+  /** The world as drawn now → global frame. */
+  worldToGlobal(x: number, z: number): Vec2 {
+    return this.toGlobal(this.activeId, x, z);
+  }
+
+  globalToWorld(x: number, z: number): Vec2 {
+    return this.fromGlobal(this.activeId, x, z);
+  }
+
+  /** Global x range of the street (a little past the first and last column). */
+  get extent(): [number, number] {
+    return [CENTER_X - LOT_STRIDE / 2, (this.columns - 1) * LOT_STRIDE + CENTER_X + LOT_STRIDE / 2];
+  }
+
+  /** The lot whose frontage is nearest a world point (on the side of the road it's on). */
+  lotAt(x: number, z: number): StreetLot | null {
+    const g = this.worldToGlobal(x, z);
+    const col = Math.round((g.x - CENTER_X) / LOT_STRIDE);
+    if (col < 0) return null;
+    return this.lots[col * 2 + (g.z < ROAD_MID ? 0 : 1)] ?? null;
+  }
+
+  private tileTo(id: string, tx: number, tz: number): [number, number] {
+    const p = this.toGlobal(this.activeId, tx + 0.5, tz + 0.5);
+    const l = this.fromGlobal(id, p.x, p.z);
+    return [Math.floor(l.x), Math.floor(l.z)];
+  }
+
+  /** Is world tile (tx,tz) the front door of a lot other than the active one? Returns that lot. */
   doorAt(tx: number, tz: number): StreetLot | null {
-    if (tz !== FACADE_Z) return null;
-    for (const l of this.lots) {
-      if (l.id === this.activeId) continue;
-      const o = this.offsetOf(l.id);
-      if (DOOR_TILES.some(([dx]) => dx + o === tx)) return l;
-    }
-    return null;
+    const lot = this.lotAt(tx + 0.5, tz + 0.5);
+    if (!lot || lot.id === this.activeId) return null;
+    const [lx, lz] = this.tileTo(lot.id, tx, tz);
+    return lz === FACADE_Z && DOOR_TILES.some(([dx]) => dx === lx) ? lot : null;
   }
 
-  /** The player may stroll the whole sidewalk and step into any lot's doorway. */
+  /** The player may stroll both sidewalks, cross the road and step into any lot's doorway. */
   isStreetWalkable(tx: number, tz: number): boolean {
-    if (tz >= SIDEWALK_Z0 && tz <= SIDEWALK_Z1) {
-      const first = -this.slotOf(this.activeId) * LOT_STRIDE + CENTER_X - LOT_STRIDE / 2;
-      const last = (this.lots.length - 1 - this.slotOf(this.activeId)) * LOT_STRIDE + CENTER_X + LOT_STRIDE / 2;
-      return tx >= first && tx <= last;
-    }
+    const g = this.worldToGlobal(tx + 0.5, tz + 0.5);
+    const [x0, x1] = this.extent;
+    if (g.z > STREET_Z0 && g.z < STREET_Z1 + 1 && g.x >= x0 && g.x <= x1) return true;
     return this.doorAt(tx, tz) !== null;
   }
 
-  /** Build/refresh exteriors near `focusX`; the active lot's shell hides while you're inside. */
-  update(dt: number, focusX: number, inside: boolean): void {
-    const activeSlot = this.slotOf(this.activeId);
-    const focusSlot = Math.round((focusX - CENTER_X) / LOT_STRIDE) + activeSlot;
+  /** Build/refresh exteriors near the focus point; the active lot's shell hides while you're inside. */
+  update(dt: number, focusX: number, focusZ: number, inside: boolean): void {
+    const f = this.worldToGlobal(focusX, focusZ);
+    const focusCol = Math.round((f.x - CENTER_X) / LOT_STRIDE);
     const keep = new Set<string>();
     this.lots.forEach((l, slot) => {
-      if (Math.abs(slot - focusSlot) > VIEW_LOTS && l.id !== this.activeId) return;
+      if (Math.abs(Math.floor(slot / 2) - focusCol) > VIEW_COLS && l.id !== this.activeId) return;
       keep.add(l.id);
       const key = JSON.stringify(l.info);
       let b = this.built.get(l.id);
@@ -92,7 +156,9 @@ export class Street {
         this.built.set(l.id, b);
         this.group.add(b.ext.group);
       }
-      b.ext.group.position.x = (slot - activeSlot) * LOT_STRIDE;
+      const o = this.toActive(l.id, 0, 0);
+      b.ext.group.position.set(o.x, 0, o.z);
+      b.ext.group.rotation.y = this.rotOf(l.id);
       b.ext.shell.visible = !(inside && l.id === this.activeId);
       b.ext.update(dt);
     });

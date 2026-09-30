@@ -43,6 +43,12 @@ export class Player {
     return Math.hypot(this.vx, this.vz) > 0.3;
   }
 
+  /** Kill any momentum (after a teleport). */
+  halt(): void {
+    this.vx = 0;
+    this.vz = 0;
+  }
+
   private blocked(walk: (tx: number, tz: number) => boolean, x: number, z: number): boolean {
     const x0 = Math.floor(x - RADIUS);
     const x1 = Math.floor(x + RADIUS);

@@ -471,11 +471,11 @@ export class Game implements World, ItemHost {
   /** Walk through another casino's door (or back through your own). */
   enterLot(lot: StreetLot): boolean {
     if (this.state !== 'playing' || lot.id === this.street.activeId) return false;
-    const offset = this.street.offsetOf(lot.id);
     if (lot.kind === 'me') {
-      this.returnHome(offset);
+      this.returnHome();
       return true;
     }
+    const at = this.street.map(this.street.activeId, lot.id, this.player.x, this.player.z);
     const block = this.entryBlock(lot);
     if (block) {
       audio.play('error');
@@ -491,7 +491,7 @@ export class Game implements World, ItemHost {
     this.select(null);
     this.loadCasino(snap, true);
     this.street.activeId = lot.id;
-    this.shiftPlayer(-offset, FACADE_Z - 1.5);
+    this.shiftPlayer(at.x, FACADE_Z - 1.5);
     audio.play('doorbell');
     this.events.emit('toast', { text: `Welcome to ${snap.name}! Walk up to any game and press Space to play.`, kind: 'event' });
     this.events.emit('visit', undefined);
@@ -500,10 +500,14 @@ export class Game implements World, ItemHost {
   }
 
   /** Back to your own casino; it catches up on the time you were out. */
-  returnHome(offset = 0, kicked = false): void {
+  returnHome(kicked = false): void {
     const v = this.visit;
     if (!v) return;
     this.standUp();
+    const from = this.street.activeId;
+    // Where you are (or the door you're thrown out of), seen from your own casino.
+    const at = kicked ? this.street.map(from, 'me', CENTER_X, FACADE_Z + 2.4) : this.street.map(from, 'me', this.player.x, this.player.z);
+    const turn = this.street.placeOf(from).side === this.street.placeOf('me').side ? 0 : Math.PI;
     const money = this.money;
     this.visit = null;
     this.street.activeId = 'me';
@@ -512,12 +516,13 @@ export class Game implements World, ItemHost {
     this.money = money;
     if (kicked) {
       // Escorted out onto the sidewalk in front of the casino that threw you out.
-      this.player.x = CENTER_X - offset;
-      this.player.z = FACADE_Z + 2.4;
+      this.player.x = at.x;
+      this.player.z = at.z;
+      this.player.yaw = turn;
       this.player.floor = 0;
       this.cam.snap(this.player.x, this.player.z);
       this.doorCooldown = 2;
-    } else this.shiftPlayer(-offset, FACADE_Z - 1.5);
+    } else this.shiftPlayer(at.x, FACADE_Z - 1.5);
     const earned = this.catchUp(v.away);
     if (Math.abs(earned) >= 1) {
       this.events.emit('toast', { text: `While you were out your casino made ${earned >= 0 ? '+' : ''}${formatMoney(earned)}.`, kind: earned >= 0 ? 'money' : 'bad' });
@@ -529,9 +534,9 @@ export class Game implements World, ItemHost {
     this.saveNow();
   }
 
-  private shiftPlayer(dx: number, z: number): void {
+  private shiftPlayer(localX: number, z: number): void {
     // Line up with the doorway of the casino you're stepping into (or out of).
-    this.player.x = CENTER_X + clamp(this.player.x + dx - CENTER_X, -0.8, 0.8);
+    this.player.x = CENTER_X + clamp(localX - CENTER_X, -0.8, 0.8);
     this.player.z = z;
     this.player.floor = 0;
     this.player.yaw = Math.PI;
@@ -1387,6 +1392,34 @@ export class Game implements World, ItemHost {
     this.events.emit('floor', f);
   }
 
+  /**
+   * Minimap teleport to a point of the street (global frame). Only the sidewalks and the
+   * road are allowed; you can never land inside a casino.
+   */
+  teleportTo(gx: number, gz: number): boolean {
+    if (this.state !== 'playing' || this.photoMode) return false;
+    const w = this.street.globalToWorld(gx, gz);
+    const tx = Math.floor(w.x);
+    const tz = Math.floor(w.z);
+    if (!this.street.isStreetWalkable(tx, tz) || this.street.doorAt(tx, tz) || tz <= FACADE_Z) return false;
+    const g = this.gridAt(0);
+    if (g.inBounds(tx, tz) && g.occupant(tx, tz)) return false;
+    this.standUp();
+    if (this.build.active) this.build.cancel();
+    this.select(null);
+    const wasUp = this.player.floor;
+    this.player.floor = 0;
+    this.player.x = w.x;
+    this.player.z = w.z;
+    this.player.halt();
+    this.cam.snap(w.x, w.z);
+    this.doorCooldown = 1;
+    this.transitionT = 0.3;
+    audio.play('whoosh');
+    if (wasUp) this.events.emit('floor', 0);
+    return true;
+  }
+
   // ------------------------------------------------------------------ selection & interaction
 
   select(sel: Selection | null): void {
@@ -1628,14 +1661,15 @@ export class Game implements World, ItemHost {
     }
     // Out on the street: the doors of the other casinos
     if (!target && !this.inside) {
-      const lot = this.street.lotAt(p.x);
+      const lot = this.street.lotAt(p.x, p.z);
       if (lot && lot.id !== this.street.activeId) {
-        const o = this.street.offsetOf(lot.id);
-        if (Math.abs(p.x - (CENTER_X + o)) < 3 && p.z < FACADE_Z + 3.2) {
+        const l = this.street.map(this.street.activeId, lot.id, p.x, p.z);
+        if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2) {
           const block = this.entryBlock(lot);
+          const a = this.street.toActive(lot.id, CENTER_X, FACADE_Z + 0.8);
           target = {
             kind: `door${lot.id}`, label: block ? `🚫 ${lot.info.look.name}` : lot.kind === 'me' ? `Back to ${lot.info.look.name}` : `Enter ${lot.info.look.name}`, hold: false,
-            anchor: () => new THREE.Vector3(CENTER_X + o, 3.6, FACADE_Z + 0.8),
+            anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
             act: () => this.enterLot(lot),
           };
         }
@@ -1785,7 +1819,7 @@ export class Game implements World, ItemHost {
     this.rival.banUntil = Date.now() + RIVAL_BAN_MS;
     this.events.emit('toast', { text: `${RIVAL_NAME}'s security escorts you out: "You're winning a little too much, pal." Banned for 5 minutes.`, kind: 'bad' });
     audio.play('bust');
-    this.returnHome(this.street.offsetOf('me'), true);
+    this.returnHome(true);
     return true;
   }
 
@@ -2029,7 +2063,7 @@ export class Game implements World, ItemHost {
     const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
     this.cam.update(dt, fx, fz);
     this.building.update(dt, this.cam.yaw, this.cam.low);
-    this.street.update(dt, this.player.x, this.inside);
+    this.street.update(dt, this.player.x, this.player.z, this.inside);
     // Neon pops a little more after dark
     const hour = this.clockMinutes / 60;
     const night = hour >= 20 || hour < 5 ? 1 : hour >= 17 ? (hour - 17) / 3 : hour < 8 ? 1 - (hour - 5) / 3 : 0;

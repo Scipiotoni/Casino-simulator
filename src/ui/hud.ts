@@ -12,6 +12,7 @@ import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
 import { openTableGame } from './games';
+import { Minimap } from './minimap';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
 export class Hud {
@@ -41,6 +42,7 @@ export class Hud {
   private refreshT = 0;
   readonly shop: ShopDrawer;
   readonly modals: Modals;
+  readonly minimap: Minimap;
   private bannerQueue: { title: string; text: string; kind: string }[] = [];
   private bannerBusy = false;
   private goalsCollapsed = false;
@@ -55,6 +57,7 @@ export class Hud {
     parent.appendChild(this.root);
     this.modals = new Modals(this.root, game, this);
     this.shop = new ShopDrawer(this.root, game, this);
+    this.minimap = new Minimap(game);
     this.build();
     this.bind();
     this.goalsCollapsed = window.innerWidth < 700;
@@ -148,7 +151,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.toastsEl, this.bannerEl, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.toastsEl, this.bannerEl, this.minimap.el, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -548,7 +551,7 @@ export class Hud {
         ),
         h('button', {
           class: 'btn small gold', html: `${icon('casino', 14)} Head home`,
-          onClick: () => { g.returnHome(g.street.offsetOf('me')); audio.play('whoosh'); },
+          onClick: () => { g.returnHome(); audio.play('whoosh'); },
           title: home ? `Back to ${home.info.look.name}` : 'Back home',
         }),
       );
@@ -579,6 +582,7 @@ export class Hud {
   update(dt: number): void {
     const g = this.game;
     this.floorBar.hidden = g.floors < 2 || !g.inside;
+    this.minimap.update(dt);
     // Animated money counter
     const diff = g.money - this.shownMoney;
     this.shownMoney += Math.abs(diff) < 1 ? diff : diff * Math.min(1, dt * 8);
