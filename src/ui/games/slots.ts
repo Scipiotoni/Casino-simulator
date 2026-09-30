@@ -67,6 +67,7 @@ export function openSlots(ctx: GameCtx): void {
     spinning = true;
     spinBtn.disabled = true;
     const o = resolveSlot(bet, item.def.rtp, false, item.def.jackpot ? g.jackpotPot : 0, low ? 'low' : 'normal');
+    s.spinMachine(o, 2.0);
     if (o.visual.kind !== 'slot') return;
     const target = o.visual.symbols;
     audio.play('spin');

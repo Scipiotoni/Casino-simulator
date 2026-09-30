@@ -1,7 +1,7 @@
 import type { Game } from '../../game/game';
 import type { Modals } from '../modals';
 import type { PlacedItem } from '../../items/placedItem';
-import type { Card } from '../../items/types';
+import type { Card, Outcome, SharedVisual } from '../../items/types';
 import { h } from '../dom';
 import { formatMoney } from '../../core/math';
 import { audio } from '../../core/audio';
@@ -35,7 +35,12 @@ export class Session {
   closed = false;
   private offMoney: () => void;
 
+  /** The seat your character took at this table. */
+  readonly seat: number;
+  private roundStake = 0;
+
   constructor(readonly ctx: GameCtx) {
+    this.seat = Math.max(0, ctx.game.sitAt(ctx.item));
     this.head = h('div', { class: 'tg-head' },
       h('span', { class: 'tg-where', text: `${ctx.game.hereName} · min ${formatMoney(this.min)} · no max bet` }),
       h('span', {}, 'Bank ', this.bankEl, ' ', this.netEl),
@@ -72,13 +77,32 @@ export class Session {
       return false;
     }
     audio.play('chips');
+    // Your chips go down on the real table.
+    this.roundStake += amount;
+    this.ctx.item.model.event({ type: 'bet', seat: this.seat, amount: this.roundStake });
     return true;
+  }
+
+  /** Play the round out on the 3D table (spin, roll or deal). */
+  animate(shared: SharedVisual, duration: number, outcome?: Outcome): void {
+    const outcomes = new Map<number, Outcome>();
+    if (outcome) outcomes.set(this.seat, outcome);
+    this.ctx.item.model.event({ type: 'tableStart', seats: outcome ? [this.seat] : [], outcomes, shared, duration });
+  }
+
+  /** Spin the reels of the machine you're sitting at. */
+  spinMachine(outcome: Outcome, duration: number): void {
+    this.ctx.item.model.event({ type: 'start', seat: this.seat, outcome, duration });
+    window.setTimeout(() => this.ctx.item.model.event({ type: 'result', seat: this.seat, outcome }), duration * 1000);
   }
 
   /** `stake` is everything you put down this round, `payout` everything handed back. */
   settle(stake: number, payout: number): void {
     if (this.closed) return;
     this.net += payout - stake;
+    const oc: Outcome = { bet: stake, payout, label: '', tier: payout > stake ? 'win' : payout === stake ? 'push' : 'lose', visual: { kind: 'none' } };
+    this.ctx.item.model.event({ type: 'tableResult', seats: [this.seat], outcomes: new Map([[this.seat, oc]]), shared: { kind: 'none' } });
+    this.roundStake = 0;
     this.ctx.game.visitorSettle(stake, payout, this.ctx.item);
     const d = payout - stake;
     if (d > 0) audio.play(d >= stake * 5 ? 'bigwin' : 'win');
@@ -92,6 +116,8 @@ export class Session {
   dispose(): void {
     this.closed = true;
     this.offMoney();
+    this.ctx.item.model.event({ type: 'clear', seat: this.seat });
+    this.ctx.game.standUp();
   }
 }
 
@@ -176,4 +202,19 @@ export function resultLine(): HTMLElement {
 export function setResult(el: HTMLElement, text: string, kind: '' | 'win' | 'big' | 'jackpot' | 'lose' = ''): void {
   el.textContent = text;
   el.className = `mg-result ${kind}`;
+}
+
+/** A betting spot on a layout: label, payout line and the chips riding on it. */
+export function betSpot(label: string, sub: string, amount: number, onClick: () => void, cls = '', disabled = false): HTMLElement {
+  return h('button', { class: `bet-spot ${cls}${amount ? ' on' : ''}`, disabled, onClick },
+    h('span', { text: label }),
+    sub ? h('small', { text: sub }) : null,
+    amount ? h('span', { class: 'rb-chip', text: amount >= 1000 ? `${Math.round(amount / 100) / 10}K` : String(amount) }) : null);
+}
+
+/** Total of all the chips in a bet map. */
+export function sumBets<K>(bets: Map<K, number>): number {
+  let t = 0;
+  bets.forEach((v) => (t += v));
+  return t;
 }

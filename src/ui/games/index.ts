@@ -6,6 +6,11 @@ import { openRoulette } from './roulette';
 import { openCraps } from './craps';
 import { openWheel } from './wheel';
 import { openQuick } from './quick';
+import { openBaccarat } from './baccarat';
+import { openVideoPoker } from './videopoker';
+import { openThreeCard } from './threecard';
+import { openSicBo } from './sicbo';
+import { openKeno } from './keno';
 
 export type { GameCtx } from './common';
 
@@ -24,6 +29,16 @@ export function openTableGame(ctx: GameCtx): void {
       return openCraps(ctx);
     case 'wheel':
       return openWheel(ctx);
+    case 'baccarat':
+      return openBaccarat(ctx);
+    case 'videopoker':
+      return openVideoPoker(ctx);
+    case 'threecard':
+      return openThreeCard(ctx);
+    case 'sicbo':
+      return openSicBo(ctx);
+    case 'keno':
+      return openKeno(ctx);
     default:
       return openQuick(ctx);
   }

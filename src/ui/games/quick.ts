@@ -24,6 +24,7 @@ export function openQuick(ctx: GameCtx): void {
     busy = true;
     setResult(result, '');
     const o = claw ? resolveClaw(bet, false) : resolvePachinko(bet, ctx.item.def.rtp, false);
+    s.spinMachine(o, claw ? 1.6 : 1.5);
     audio.play(claw ? 'claw' : 'spin');
     ball.className = claw ? 'qk-claw drop' : 'qk-ball fall';
     ball.style.left = `${20 + Math.random() * 60}%`;

@@ -20,6 +20,8 @@ export class Player {
   name = 'Boss';
   /** Floor of the casino the manager is on. */
   floor = 0;
+  /** Set while playing at a table or machine. */
+  seat: { x: number; z: number; yaw: number; sit: boolean; height: number } | null = null;
 
   constructor(public appearance: Appearance, x: number, z: number) {
     this.model = new CharacterModel(appearance, { castShadow: false });
@@ -65,6 +67,27 @@ export class Player {
     dt: number, ix: number, iz: number, sprint: boolean, basis: { fx: number; fz: number; rx: number; rz: number },
     walk: (tx: number, tz: number) => boolean, tank = false,
   ): void {
+    if (this.seat) {
+      // Sitting (or standing) at a table: stay put and play.
+      const st = this.seat;
+      this.x = st.x;
+      this.z = st.z;
+      this.yaw = st.yaw;
+      this.vx = 0;
+      this.vz = 0;
+      const m = this.model;
+      m.seatHeight = st.height;
+      m.setPose(this.emote ?? (st.sit ? 'sitPlay' : 'standPlay'));
+      if (this.emoteT > 0) {
+        this.emoteT -= dt;
+        if (this.emoteT <= 0) this.emote = null;
+      }
+      m.root.position.set(this.x, 0, this.z);
+      m.root.rotation.y = this.yaw;
+      m.update(dt);
+      this.pos.set(this.x, 0, this.z);
+      return;
+    }
     const len = Math.hypot(ix, iz);
     const maxSpeed = sprint ? 5.6 : 3.7;
     let tvx = 0;

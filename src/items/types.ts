@@ -11,7 +11,7 @@ export type Visual =
   | { kind: 'pachinko'; mult: number }
   | { kind: 'roulette'; number: number; bet: string }
   | { kind: 'wheel'; segment: number; bet: number }
-  | { kind: 'craps'; dice: [number, number]; bet: string }
+  | { kind: 'craps'; dice: number[]; bet: string }
   | { kind: 'blackjack'; player: Card[]; dealer: Card[] }
   | { kind: 'poker'; hole: Card[]; board: Card[]; hand: string }
   | { kind: 'service' }
@@ -31,9 +31,9 @@ export interface Outcome {
 export type SharedVisual =
   | { kind: 'roulette'; number: number }
   | { kind: 'wheel'; segment: number }
-  | { kind: 'craps'; dice: [number, number] }
-  | { kind: 'blackjack'; dealer: Card[] }
-  | { kind: 'poker'; board: Card[] }
+  | { kind: 'craps'; dice: number[] }
+  | { kind: 'blackjack'; dealer: Card[]; player?: Card[]; note?: string }
+  | { kind: 'poker'; board: Card[]; dealer3?: Card[] }
   | { kind: 'none' };
 
 export type ModelEvent =

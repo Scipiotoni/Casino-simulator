@@ -2,11 +2,12 @@ import { h } from '../dom';
 import { formatMoney } from '../../core/math';
 import { audio } from '../../core/audio';
 import { WHEEL_SEGMENTS, bigWheelTexture } from '../../render/textures';
+import { bigSixPays } from '../../items/rules';
 import { type GameCtx, Session, chipRow, chipValues, resultLine, setResult, sleep } from './common';
 
 let url: string | null = null;
 
-/** Big Six wheel: bet on a symbol, it pays its number to one (the star pays 20:1). */
+/** Big Six (Money Wheel): 54 stops; bet on a symbol, it pays its number to one; Joker and Logo pay 40:1. */
 export function openWheel(ctx: GameCtx): void {
   const s = new Session(ctx);
   const chips = chipValues(s.min);
@@ -17,8 +18,8 @@ export function openWheel(ctx: GameCtx): void {
   url ??= (bigWheelTexture().image as HTMLCanvasElement).toDataURL();
   const img = h('img', { class: 'rw-img', src: url, alt: 'Big wheel' });
   const result = resultLine();
-  const opts = [1, 2, 5, 10, 20, 40];
-  const pays = (m: number) => (m === 40 ? 20 : m);
+  const opts = [1, 2, 5, 10, 20, 40, 41];
+  const pays = bigSixPays;
   const row = h('div', { class: 'bw-opts' });
   const render = () => {
     row.replaceChildren(...opts.map((m) => {
@@ -44,6 +45,7 @@ export function openWheel(ctx: GameCtx): void {
     busy = true;
     setResult(result, '');
     const seg = Math.floor(Math.random() * WHEEL_SEGMENTS.length);
+    s.animate({ kind: 'wheel', segment: seg }, 3.4);
     rot = Math.floor(rot / 360) * 360 - (4 * 360 + (seg / WHEEL_SEGMENTS.length) * 360);
     img.style.transition = 'transform 3.2s cubic-bezier(0.15, 0.7, 0.2, 1)';
     img.style.transform = `rotate(${rot}deg)`;
@@ -68,5 +70,5 @@ export function openWheel(ctx: GameCtx): void {
     chipRow(chips, () => chip, (v) => (chip = v), { min: s.min, bank: () => s.bank }),
     spin,
   );
-  ctx.modals.open('Big Wheel', body, { cls: 'minigame table-game', onClose: () => s.dispose() });
+  ctx.modals.open('Big Six Wheel', body, { cls: 'minigame table-game', onClose: () => s.dispose() });
 }

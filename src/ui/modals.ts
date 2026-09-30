@@ -44,7 +44,9 @@ export class Modals {
       h('div', { class: 'modal-body' }, body),
       opts.foot ? h('footer', { class: 'modal-foot' }, opts.foot) : null,
     );
-    const layer = h('div', { class: 'modal-layer' }, modal);
+    // Game screens dock to the side so the table stays in view.
+    const docked = /table-game|minigame/.test(opts.cls ?? '');
+    const layer = h('div', { class: `modal-layer${docked ? ' docked' : ''}` }, modal);
     layer.addEventListener('pointerdown', (e) => {
       if (e.target === layer) this.close();
     });

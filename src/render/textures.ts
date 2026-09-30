@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BIG_SIX_LAYOUT } from '../items/rules';
 
 /** Deterministic PRNG so procedural textures look identical every run. */
 export function seeded(seed: number): () => number {
@@ -828,8 +829,8 @@ export function rouletteWheelTexture(): THREE.CanvasTexture {
 
 const feltCache = new Map<string, THREE.CanvasTexture>();
 
-export function feltTexture(kind: 'roulette' | 'blackjack' | 'craps' | 'poker' | 'plain', feltColor: string): THREE.CanvasTexture {
-  const key = kind + feltColor;
+export function feltTexture(kind: 'roulette' | 'blackjack' | 'craps' | 'poker' | 'plain', feltColor: string, variant = ''): THREE.CanvasTexture {
+  const key = kind + feltColor + variant;
   const cached = feltCache.get(key);
   if (cached) return cached;
   const W = 512;
@@ -898,6 +899,23 @@ export function feltTexture(kind: 'roulette' | 'blackjack' | 'craps' | 'poker' |
       }
       ctx.strokeRect(x, y, cw * 2, ch * 0.8);
     }
+  } else if (kind === 'blackjack' && variant === 'baccarat') {
+    const cx = W / 2;
+    const cy = H / 2;
+    ctx.lineWidth = 3;
+    for (const r of [0.28, 0.4]) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, W * r, 0.08 * Math.PI, 0.92 * Math.PI);
+      ctx.stroke();
+    }
+    ctx.font = `400 ${W * 0.05}px Bungee, "Arial Black", sans-serif`;
+    ctx.fillText('BACCARAT', cx, cy + H * 0.1);
+    ctx.font = `700 ${W * 0.024}px Nunito, Arial, sans-serif`;
+    ctx.fillText('BANKER PAYS 19 TO 20 · TIE PAYS 8 TO 1', cx, cy + H * 0.16);
+    ctx.font = `800 ${W * 0.026}px Nunito, Arial, sans-serif`;
+    ctx.fillText('PLAYER', cx - W * 0.2, cy + H * 0.26);
+    ctx.fillText('BANKER', cx + W * 0.2, cy + H * 0.26);
+    ctx.fillText('TIE', cx, cy + H * 0.36);
   } else if (kind === 'blackjack') {
     // Mapped onto a half-disc: only the lower half of the square canvas is visible,
     // with the dealer at the top edge (canvas y = H/2) and players around the arc.
@@ -926,6 +944,28 @@ export function feltTexture(kind: 'roulette' | 'blackjack' | 'craps' | 'poker' |
       ctx.stroke();
       ctx.restore();
     }
+  } else if (kind === 'craps' && variant === 'sicbo') {
+    ctx.lineWidth = 4;
+    ctx.strokeRect(12, 12, W - 24, H - 24);
+    ctx.font = `400 ${H * 0.12}px Bungee, "Arial Black", sans-serif`;
+    ctx.fillText('SMALL', W * 0.2, H * 0.2);
+    ctx.fillText('BIG', W * 0.8, H * 0.2);
+    ctx.font = `400 ${H * 0.1}px Bungee, "Arial Black", sans-serif`;
+    ctx.fillText('SIC BO', W / 2, H * 0.2);
+    ctx.font = `800 ${H * 0.07}px Nunito, Arial, sans-serif`;
+    ctx.fillText('4 – 10  1:1', W * 0.2, H * 0.32);
+    ctx.fillText('11 – 17  1:1', W * 0.8, H * 0.32);
+    ctx.fillText('ANY TRIPLE 30:1', W / 2, H * 0.32);
+    for (let i = 0; i < 14; i++) {
+      const x = 24 + i * ((W - 48) / 14);
+      ctx.strokeRect(x, H * 0.44, (W - 48) / 14 - 4, H * 0.2);
+      ctx.fillText(String(i + 4), x + (W - 48) / 28 - 2, H * 0.54);
+    }
+    for (let i = 0; i < 6; i++) {
+      const x = 40 + i * ((W - 80) / 6);
+      ctx.strokeRect(x, H * 0.7, (W - 80) / 6 - 8, H * 0.2);
+      ctx.fillText(['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'][i], x + (W - 80) / 12 - 4, H * 0.8);
+    }
   } else if (kind === 'craps') {
     ctx.lineWidth = 4;
     ctx.strokeRect(12, 12, W - 24, H - 24);
@@ -949,7 +989,11 @@ export function feltTexture(kind: 'roulette' | 'blackjack' | 'craps' | 'poker' |
     ctx.ellipse(W / 2, H / 2, W * 0.34, H * 0.3, 0, 0, Math.PI * 2);
     ctx.stroke();
     ctx.font = `400 ${H * 0.09}px Bungee, "Arial Black", sans-serif`;
-    ctx.fillText("HOLD'EM", W / 2, H / 2);
+    if (variant === 'threecard') {
+      ctx.fillText('3 CARD POKER', W / 2, H * 0.44);
+      ctx.font = `800 ${H * 0.06}px Nunito, Arial, sans-serif`;
+      ctx.fillText('PAIR PLUS · ANTE · PLAY', W / 2, H * 0.58);
+    } else ctx.fillText("HOLD'EM", W / 2, H / 2);
   }
   const t = canvasTexture(canvas);
   feltCache.set(key, t);
@@ -1036,10 +1080,10 @@ export function coinTexture(): THREE.CanvasTexture {
 }
 
 let wheelTex: THREE.CanvasTexture | null = null;
+/** The standard 54-stop Big Six wheel (40 = Joker, 41 = Logo). */
 export const WHEEL_SEGMENTS: { label: string; mult: number; color: string }[] = (() => {
-  const pattern = [1, 2, 1, 5, 1, 2, 1, 10, 1, 2, 1, 5, 1, 2, 20, 1, 2, 1, 5, 10, 1, 2, 1, 40];
-  const colors: Record<number, string> = { 1: '#f5c542', 2: '#2e9df7', 5: '#9b59ff', 10: '#2ecc71', 20: '#ff7a1a', 40: '#e8132d' };
-  return pattern.map((m) => ({ label: m === 40 ? '★' : `$${m}`, mult: m, color: colors[m] }));
+  const colors: Record<number, string> = { 1: '#f5c542', 2: '#2e9df7', 5: '#9b59ff', 10: '#2ecc71', 20: '#ff7a1a', 40: '#e8132d', 41: '#ff3fa4' };
+  return BIG_SIX_LAYOUT.map((m) => ({ label: m === 40 ? '★' : m === 41 ? '♛' : `$${m}`, mult: m, color: colors[m] }));
 })();
 
 export function bigWheelTexture(): THREE.CanvasTexture {
@@ -1067,7 +1111,7 @@ export function bigWheelTexture(): THREE.CanvasTexture {
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = 'rgba(0,0,0,0.5)';
     ctx.lineWidth = 4;
-    ctx.font = `400 ${S * 0.05}px Bungee, "Arial Black", sans-serif`;
+    ctx.font = `400 ${S * Math.min(0.05, 1.1 / n)}px Bungee, "Arial Black", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.strokeText(WHEEL_SEGMENTS[i].label, 0, 0);

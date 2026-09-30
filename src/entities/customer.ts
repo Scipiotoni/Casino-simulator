@@ -15,7 +15,7 @@ export type CustomerType = 'regular' | 'vip' | 'cheater' | 'tourist';
 
 type CState = 'decide' | 'toSeat' | 'seated' | 'wander' | 'idle' | 'toWatch' | 'watch' | 'leave' | 'busted' | 'react';
 
-const GAMBLE_KINDS: GameKind[] = ['slot', 'claw', 'pachinko', 'roulette', 'blackjack', 'poker', 'craps', 'wheel'];
+const GAMBLE_KINDS: GameKind[] = ['slot', 'claw', 'pachinko', 'roulette', 'blackjack', 'poker', 'craps', 'wheel', 'baccarat', 'threecard', 'sicbo', 'videopoker', 'keno'];
 const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
 const MOOD_EMOJI = (m: number) => (m > 82 ? '😍' : m > 66 ? '😀' : m > 48 ? '🙂' : m > 32 ? '😐' : m > 18 ? '😒' : '😡');
 
@@ -84,6 +84,7 @@ export class Customer extends Walker implements SeatUser {
       this.prefs.roulette = (this.prefs.roulette ?? 1) * 1.6;
       this.prefs.poker = (this.prefs.poker ?? 1) * 1.8;
       this.prefs.blackjack = (this.prefs.blackjack ?? 1) * 1.5;
+      this.prefs.baccarat = (this.prefs.baccarat ?? 1) * 2;
       this.prefs.claw = 0.2;
     }
     if (type === 'tourist') {

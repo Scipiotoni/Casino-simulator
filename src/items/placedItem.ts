@@ -3,6 +3,7 @@ import { type ItemDef, footprintCenter, footprintTiles, localPosToWorld, localTi
 import { buildModel } from './models';
 import type { Card, ItemModel, ModelCtx, Outcome, SharedVisual } from './types';
 import * as G from './games';
+import type { SicBoBet } from './rules';
 import { CharacterModel } from '../entities/characterModel';
 import { type Appearance, randomStaffAppearance } from '../entities/appearance';
 import { badgeTexture } from '../render/textures';
@@ -72,7 +73,7 @@ interface TableState {
   shared: SharedVisual;
 }
 
-const GAMBLING = new Set(['slot', 'claw', 'pachinko', 'roulette', 'blackjack', 'poker', 'craps', 'wheel']);
+const GAMBLING = new Set(['slot', 'claw', 'pachinko', 'roulette', 'blackjack', 'poker', 'craps', 'wheel', 'baccarat', 'threecard', 'sicbo', 'videopoker', 'keno']);
 export const MAX_LEVEL = 5;
 
 export class PlacedItem {
@@ -99,6 +100,8 @@ export class PlacedItem {
   private smokeT = 0;
   private status: THREE.Sprite | null = null;
   private statusKind = '';
+  /** Seat the visiting player is using (guests wait while a visitor plays a shared table). */
+  visitorSeat: number | null = null;
   /** Claimed by a staff member so two workers don't chase the same job. */
   repairClaim: number | null = null;
   tiles: [number, number][] = [];
@@ -343,6 +346,10 @@ export class PlacedItem {
       }
       case 'claw':
         return G.resolveClaw(bet, user.isCheater);
+      case 'videopoker':
+        return G.resolveVideoPoker(bet);
+      case 'keno':
+        return G.resolveKeno(bet);
       case 'pachinko':
         return G.resolvePachinko(bet, d.rtp, user.isCheater);
       case 'bar':
@@ -372,7 +379,9 @@ export class PlacedItem {
     this.model.update(dt, ctx);
     if (this.staff) this.updateStaff(dt);
     if (!this.broken) {
-      if (this.table) this.updateTable(dt);
+      if (this.table && this.visitorSeat !== null) {
+        // Hold the table's own rounds while a visitor plays here.
+      } else if (this.table) this.updateTable(dt);
       else this.updateSeats(dt);
     }
     this.updateStatus();
@@ -439,6 +448,8 @@ export class PlacedItem {
           if (this.def.kind === 'roulette') choice = G.pickRouletteBet(u.risk);
           else if (this.def.kind === 'wheel') choice = G.pickWheelBet(u.risk);
           else if (this.def.kind === 'craps') choice = G.pickCrapsBet(u.risk);
+          else if (this.def.kind === 'baccarat') choice = G.pickBaccaratBet(u.risk);
+          else if (this.def.kind === 'sicbo') choice = G.pickSicBoBet(u.risk);
           t.bets.set(s.index, { amount, user: u, choice });
           this.takeBet(amount);
           this.model.event({ type: 'bet', seat: s.index, amount });
@@ -505,7 +516,13 @@ export class PlacedItem {
       case 'wheel':
         return G.resolveWheelBet(b.amount, b.choice as number, (shared as { segment: number }).segment, b.user.isCheater);
       case 'craps':
-        return G.resolveCrapsBet(b.amount, b.choice as G.CrapsBet, (shared as { dice: [number, number] }).dice, b.user.isCheater);
+        return G.resolveCrapsBet(b.amount, b.choice as G.CrapsBet, (shared as unknown as { dice: [number, number] }).dice, b.user.isCheater);
+      case 'baccarat':
+        return G.resolveBaccaratSeat(b.amount, b.choice as 'player' | 'banker' | 'tie', shared);
+      case 'threecard':
+        return G.resolveThreeCardSeat(b.amount, shared);
+      case 'sicbo':
+        return G.resolveSicBoSeat(b.amount, b.choice as SicBoBet, shared);
       case 'blackjack':
         return G.resolveBlackjackSeat(b.amount, (shared as { dealer: Card[] }).dealer, b.user.isCheater);
       case 'poker': {

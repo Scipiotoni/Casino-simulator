@@ -62,6 +62,8 @@ export function openHoldem(ctx: GameCtx): void {
     dealerHand.textContent = dh.name;
     await sleep(500);
     const stake = called ? ante * 3 : ante;
+    // Play the hand out on the real table too.
+    s.animate({ kind: 'poker', board }, 2.4, { bet: stake, payout: 0, label: '', tier: 'lose', visual: { kind: 'poker', hole, board, hand: me.name } });
     if (!called) {
       s.settle(stake, 0);
       setResult(result, `Folded. Dealer had ${dh.name.toLowerCase()}.`, 'lose');

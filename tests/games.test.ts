@@ -83,7 +83,8 @@ describe('table games keep a house edge', () => {
   it('big wheel segments and payouts', () => {
     const counts = new Map<number, number>();
     for (const s of WHEEL_SEGMENTS) counts.set(s.mult, (counts.get(s.mult) ?? 0) + 1);
-    expect(counts.get(1)).toBe(11);
+    expect(WHEEL_SEGMENTS.length).toBe(54);
+    expect([1, 2, 5, 10, 20, 40, 41].map((m) => counts.get(m))).toEqual([24, 15, 7, 4, 2, 1, 1]);
     const r = rtp(300_000, () => resolveWheelBet(10, 1, Math.floor(Math.random() * WHEEL_SEGMENTS.length), false));
     expect(r).toBeLessThan(1);
   });

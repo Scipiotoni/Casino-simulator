@@ -1,4 +1,9 @@
 import { ROULETTE_ORDER, WHEEL_SEGMENTS, rouletteColor } from '../render/textures';
+import {
+  bigSixPays, dealBaccarat, baccaratReturn, jacksOrBetter, simpleHold, kenoDraw, kenoReturn, threeCardScore,
+  threeCardReturn, TCP_NAMES, rollThree, sicBoReturn, type BaccaratSide, type SicBoBet,
+} from './rules';
+import { Shoe } from './cards';
 import type { Card, Outcome, SharedVisual, Tier } from './types';
 
 /**
@@ -187,7 +192,7 @@ export function rouletteNumberExists(n: number): boolean {
 // ------------------------------------------------------------------ big wheel
 
 const WHEEL_BET_WEIGHTS: [number, number][] = [
-  [1, 50], [2, 20], [5, 15], [10, 8], [20, 4], [40, 3],
+  [1, 50], [2, 20], [5, 15], [10, 8], [20, 4], [40, 2], [41, 2],
 ];
 
 export function pickWheelBet(risk: number): number {
@@ -208,11 +213,11 @@ export function resolveWheelBet(bet: number, betOn: number, segment: number, che
   const seg = WHEEL_SEGMENTS[segment];
   let win = seg.mult === betOn;
   if (!win && cheat && Math.random() < 0.3) win = true;
-  const payMult = betOn === 40 ? 21 : betOn + 1;
+  const payMult = bigSixPays(betOn) + 1;
   return {
     bet,
     payout: win ? Math.round(bet * payMult) : 0,
-    label: win ? (betOn === 40 ? 'STAR SEGMENT!!' : `${seg.label} pays!`) : `Landed on ${seg.label}`,
+    label: win ? (betOn >= 40 ? `${seg.label} pays 40 to 1!!` : `${seg.label} pays!`) : `Landed on ${seg.label}`,
     tier: win ? tierFor(payMult) : 'lose',
     visual: { kind: 'wheel', segment, bet: betOn },
   };
@@ -398,6 +403,12 @@ export function dealBoard(): Card[] {
 
 export function sharedFor(kind: string): SharedVisual {
   switch (kind) {
+    case 'baccarat':
+      return sharedBaccarat();
+    case 'threecard':
+      return sharedThreeCard();
+    case 'sicbo':
+      return sharedSicBo();
     case 'blackjack':
       return { kind: 'blackjack', dealer: dealDealerHand() };
     case 'poker':
@@ -409,4 +420,124 @@ export function sharedFor(kind: string): SharedVisual {
     default:
       return { kind: 'none' };
   }
+}
+
+// ------------------------------------------------------------------ guests at the newer games (real rules)
+
+/** A guest plays a hand of Jacks or Better with a simple hold strategy. */
+export function resolveVideoPoker(bet: number): Outcome {
+  const deck = new Shoe(1);
+  const hand = [deck.draw(), deck.draw(), deck.draw(), deck.draw(), deck.draw()];
+  const hold = simpleHold(hand);
+  const final = hand.map((c, i) => (hold[i] ? c : deck.draw()));
+  const r = jacksOrBetter(final);
+  const payout = bet * r.pays;
+  // The cabinet shows reels: three matching symbols for a paying hand.
+  const sym = r.pays >= 800 ? SEVEN : r.pays >= 25 ? 6 : r.pays >= 4 ? 7 : r.pays >= 2 ? 4 : 1;
+  const a = randSym();
+  const symbols: [number, number, number] = r.pays ? [sym, sym, sym] : [a, randSym([a]), randSym([a])];
+  return { bet, payout, label: r.pays ? `${r.name}!` : r.name, tier: r.pays >= 800 ? 'jackpot' : tierFor(r.pays), visual: { kind: 'slot', symbols } };
+}
+
+/** A guest marks 4–8 spots on a keno ticket. */
+export function resolveKeno(bet: number): Outcome {
+  const spots = 4 + Math.floor(Math.random() * 5);
+  const picks: number[] = [];
+  while (picks.length < spots) {
+    const n = 1 + Math.floor(Math.random() * 80);
+    if (!picks.includes(n)) picks.push(n);
+  }
+  const r = kenoReturn(picks, kenoDraw(), bet);
+  const mult = r.total / bet;
+  const a = randSym();
+  const symbols: [number, number, number] = mult > 0 ? [5, 5, 5] : [a, randSym([a]), randSym([a])];
+  return { bet, payout: r.total, label: `Caught ${r.hits} of ${spots}`, tier: mult >= 100 ? 'jackpot' : tierFor(mult), visual: { kind: 'slot', symbols } };
+}
+
+export function pickBaccaratBet(risk: number): BaccaratSide {
+  const r = Math.random();
+  return r < 0.05 + risk * 0.06 ? 'tie' : r < 0.55 ? 'banker' : 'player';
+}
+
+/** One coup for the whole table: the dealer deals punto banco with the real tableau. */
+export function sharedBaccarat(): SharedVisual {
+  const r = dealBaccarat(drawCard);
+  const note = `Player ${r.playerTotal} · Banker ${r.bankerTotal}`;
+  return { kind: 'blackjack', dealer: r.banker, player: r.player, note: `${r.winner}|${note}|${r.playerPair ? 1 : 0}|${r.bankerPair ? 1 : 0}` };
+}
+
+export function resolveBaccaratSeat(bet: number, side: BaccaratSide, shared: SharedVisual): Outcome {
+  const s = shared as { dealer: Card[]; player: Card[]; note: string };
+  const [winner, text] = s.note.split('|');
+  const round = {
+    player: s.player, banker: s.dealer, playerTotal: 0, bankerTotal: 0, natural: false,
+    winner: winner as BaccaratSide, playerPair: false, bankerPair: false,
+  };
+  const payout = Math.round(baccaratReturn(side, bet, round));
+  const label = payout > bet ? `${side === 'tie' ? 'Tie' : side === 'banker' ? 'Banker' : 'Player'} wins! ${text}` : payout === bet ? `Tie: push. ${text}` : `${winner === 'tie' ? 'Tie' : winner === 'banker' ? 'Banker' : 'Player'} wins. ${text}`;
+  return { bet, payout, label, tier: side === 'tie' && payout ? 'big' : tierFor(payout / bet), visual: { kind: 'blackjack', player: s.player, dealer: s.dealer } };
+}
+
+/** The dealer's three cards (shown as the board's first three). */
+export function sharedThreeCard(): SharedVisual {
+  const d = [drawCard(), drawCard(), drawCard()];
+  return { kind: 'poker', board: [...d, drawCard(), drawCard()], dealer3: d };
+}
+
+/** A guest's stake is Ante + Play (half each); they play Q-6-4 or better, else fold. */
+export function resolveThreeCardSeat(bet: number, shared: SharedVisual): Outcome {
+  const dealer = (shared as { dealer3: Card[] }).dealer3;
+  const hand = [drawCard(), drawCard(), drawCard()];
+  const me = threeCardScore(hand);
+  const plays = me[0] > 0 || me[1] > 12 || (me[1] === 12 && (me[2] > 6 || (me[2] === 6 && me[3] >= 4)));
+  const ante = bet / 2;
+  const r = threeCardReturn(ante, plays, me, threeCardScore(dealer));
+  // Folding keeps the unplayed Play half.
+  const payout = Math.round(plays ? r.total : ante);
+  return {
+    bet, payout, label: plays ? `${TCP_NAMES[me[0]]}: ${r.note}` : 'Folded',
+    tier: me[0] >= 4 ? 'big' : tierFor(payout / bet), visual: { kind: 'poker', hole: hand.slice(0, 2), board: [], hand: TCP_NAMES[me[0]] },
+  };
+}
+
+export function pickSicBoBet(risk: number): SicBoBet {
+  const r = Math.random();
+  if (r < 0.62 - risk * 0.3) return Math.random() < 0.5 ? { kind: 'small' } : { kind: 'big' };
+  if (r < 0.8) return { kind: 'total', n: 4 + Math.floor(Math.random() * 14) };
+  if (r < 0.92) return { kind: 'single', n: 1 + Math.floor(Math.random() * 6) };
+  if (r < 0.97) return { kind: 'double', n: 1 + Math.floor(Math.random() * 6) };
+  return Math.random() < 0.5 ? { kind: 'anyTriple' } : { kind: 'triple', n: 1 + Math.floor(Math.random() * 6) };
+}
+
+export function sicBoLabel(b: SicBoBet): string {
+  switch (b.kind) {
+    case 'small':
+      return 'Small';
+    case 'big':
+      return 'Big';
+    case 'total':
+      return `Total ${b.n}`;
+    case 'single':
+      return `Single ${b.n}`;
+    case 'double':
+      return `Double ${b.n}s`;
+    case 'triple':
+      return `Triple ${b.n}s`;
+    case 'anyTriple':
+      return 'Any triple';
+  }
+}
+
+export function sharedSicBo(): SharedVisual {
+  return { kind: 'craps', dice: rollThree() };
+}
+
+export function resolveSicBoSeat(bet: number, choice: SicBoBet, shared: SharedVisual): Outcome {
+  const dice = (shared as { dice: number[] }).dice as [number, number, number];
+  const payout = Math.round(sicBoReturn(choice, bet, dice));
+  const sum = dice[0] + dice[1] + dice[2];
+  return {
+    bet, payout, label: `${dice.join('-')} (${sum}) · ${sicBoLabel(choice)} ${payout ? 'wins' : 'loses'}`,
+    tier: tierFor(payout / bet), visual: { kind: 'craps', dice, bet: sicBoLabel(choice) },
+  };
 }

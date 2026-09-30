@@ -74,7 +74,7 @@ export function generateRival(r: RivalState): CasinoSnapshot {
     });
     return true;
   };
-  const slotIds = ['slot_lucky7', 'slot_fruit', 'slot_diamond', 'slot_diamond', 'slot_fruit'];
+  const slotIds = ['slot_lucky7', 'slot_fruit', 'videopoker', 'slot_diamond', 'keno', 'slot_fruit', 'videopoker'];
   const cabinet = [0x17151f, 0xc8102e, 0xf2b632, 0x6a2cc2];
   for (let f = 0; f < tier.floors; f++) {
     // Slot row along the back wall
@@ -88,7 +88,7 @@ export function generateRival(r: RivalState): CasinoSnapshot {
       put(slotIds[z % slotIds.length], f, rect.x1 - 1, z, 1, cabinet[(z + 2) % cabinet.length]);
     }
     // Table pits in the middle
-    const tables = f % 2 === 0 ? ['blackjack', 'roulette', 'craps', 'blackjack', 'wheel', 'poker'] : ['poker', 'blackjack', 'roulette', 'wheel', 'craps', 'blackjack'];
+    const tables = f % 2 === 0 ? ['blackjack', 'roulette', 'baccarat', 'craps', 'threecard', 'wheel', 'sicbo', 'poker'] : ['poker', 'baccarat', 'blackjack', 'sicbo', 'roulette', 'threecard', 'wheel', 'craps'];
     let ti = 0;
     for (let z = rect.z0 + 4; z <= rect.z1 - 8; z += 6) {
       for (let x = rect.x0 + 4; x <= rect.x1 - 6; x += 6) {

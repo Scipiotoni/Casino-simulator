@@ -119,7 +119,7 @@ export function handTotal(cards: Card[]): number {
 export function blackjackModel(o: BuildOpts): ItemModel {
   const root = new THREE.Group();
   const dyn = new Dyn();
-  const felt = feltTexture('blackjack', hexCss(o.color));
+  const felt = feltTexture('blackjack', hexCss(o.color), String(o.params.felt ?? ''));
   const feltMat = mat(0xffffff, { map: felt, rough: 0.95 });
   const wood = mat(TABLE_WOOD, { rough: 0.45 });
   const cz = -0.55;
@@ -526,7 +526,7 @@ export function crapsModel(o: BuildOpts): ItemModel {
   const root = new THREE.Group();
   const dyn = new Dyn();
   const wood = mat(TABLE_WOOD, { rough: 0.45 });
-  const felt = feltTexture('craps', hexCss(o.color));
+  const felt = feltTexture('craps', hexCss(o.color), String(o.params.felt ?? ''));
   const feltMat = mat(0xffffff, { map: felt, rough: 0.95 });
   const tz = -0.1;
   rbox(root, 3.7, 0.72, 1.36, 0.1, wood, 0, 0.4, tz);
@@ -542,7 +542,7 @@ export function crapsModel(o: BuildOpts): ItemModel {
   stick.rotation.z = Math.PI / 2;
   stick.rotation.y = 0.4;
   const diceGeo = new THREE.BoxGeometry(0.075, 0.075, 0.075);
-  const dice = [0, 1].map(() => {
+  const dice = Array.from({ length: Number(o.params.dice ?? 2) }, () => {
     const d = new THREE.Mesh(diceGeo, diceMaterials());
     d.userData.sharedGeo = true;
     d.position.set(0, 0.81, tz);
@@ -554,11 +554,11 @@ export function crapsModel(o: BuildOpts): ItemModel {
   bake(root, dyn);
   let throwT0 = -1;
   let dur = 5;
-  let values: [number, number] = [3, 4];
+  let values: number[] = [3, 4, 5];
   const from = new THREE.Vector3();
   let t = 0;
   let clearAt = Infinity;
-  const finalQ = [new THREE.Quaternion(), new THREE.Quaternion()];
+  const finalQ = dice.map(() => new THREE.Quaternion());
   const spinQ = new THREE.Quaternion();
   const axis = new THREE.Vector3();
   return {
@@ -628,7 +628,7 @@ export function pokerModel(o: BuildOpts): ItemModel {
   const root = new THREE.Group();
   const dyn = new Dyn();
   const wood = mat(TABLE_WOOD, { rough: 0.45 });
-  const felt = feltTexture('poker', hexCss(o.color));
+  const felt = feltTexture('poker', hexCss(o.color), String(o.params.felt ?? ''));
   const feltMat = mat(0xffffff, { map: felt, rough: 0.95 });
   const cz = -0.05;
   const sx = 1.6;

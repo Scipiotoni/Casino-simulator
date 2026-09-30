@@ -1,6 +1,7 @@
 export type Category = 'slots' | 'tables' | 'services' | 'decor';
 export type GameKind =
   | 'slot' | 'claw' | 'pachinko' | 'roulette' | 'blackjack' | 'poker' | 'craps' | 'wheel'
+  | 'baccarat' | 'threecard' | 'sicbo' | 'videopoker' | 'keno'
   | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor' | 'elevator';
 
 export interface SeatDef {
@@ -298,6 +299,53 @@ export const ITEMS: ItemDef[] = [
     ...base, id: 'diamond', name: 'Giant Diamond', category: 'decor', kind: 'decor', price: 30000, unlock: 10, size: [2, 2],
     appeal: 8, appealRadius: 7, description: 'A spinning, glittering diamond the size of a car. The ultimate flex.',
     colors: [0x7ff3ff, 0xff9fcf, 0xfff4b0, 0xb9a0ff], model: 'giantdiamond',
+  },
+  // ------------------------------------------------------------------ more classics
+  {
+    ...base, id: 'videopoker', name: 'Video Poker', category: 'slots', kind: 'videopoker', price: 1800, unlock: 3, size: [1, 2],
+    seats: slotSeat, minBet: 5, maxBet: 100, roundTime: 3.2, rtp: 0.96, appeal: 0.5, fun: 1.25, breakChance: 1 / 300,
+    description: 'Jacks or Better, 9/6 paytable. Hold your cards and draw.',
+    colors: [0x17151f, 0x1f4fbf, 0xc8102e, 0x6a2cc2], model: 'slot', params: { topper: 'VIDEO POKER', topColor: '#7ff3ff', deco: 'diamond' },
+  },
+  {
+    ...base, id: 'keno', name: 'Keno Lounge', category: 'slots', kind: 'keno', price: 1200, unlock: 3, size: [1, 2],
+    seats: slotSeat, minBet: 2, maxBet: 50, roundTime: 4, rtp: 0.75, appeal: 0.45, fun: 1.0, breakChance: 1 / 320,
+    description: 'Pick up to ten numbers of 80 and watch twenty balls drop.',
+    colors: [0xf2b632, 0x1e7a46, 0x17151f, 0xc8102e], model: 'slot', params: { topper: 'KENO', topColor: '#ffd24a', deco: 'candle', volatility: 'low' },
+  },
+  {
+    ...base, id: 'baccarat', name: 'Baccarat', category: 'tables', kind: 'baccarat', price: 8000, unlock: 6, size: [3, 3],
+    seats: arcSeats(0, -0.55, 1.62, [-0.8, 0, 0.8], [[0, 2], [1, 2], [2, 2]], 'sit'),
+    staff: { pos: [0, -1.05], face: 0, role: 'dealer' },
+    minBet: 25, maxBet: 1000, roundTime: 7, rtp: 0.99, upkeep: 160, appeal: 1.2, appealRadius: 3, fun: 1.55, breakChance: 0,
+    shared: true, description: 'Punto banco: bet on the player, the banker or a tie. A high-roller favourite.',
+    colors: [0x8a1030, 0x0f7a45, 0x1a1a24, 0x1d4fa0], model: 'blackjack', params: { felt: 'baccarat' },
+  },
+  {
+    ...base, id: 'threecard', name: 'Three Card Poker', category: 'tables', kind: 'threecard', price: 5000, unlock: 5, size: [4, 3],
+    seats: [
+      { tile: [1, 2], pos: [-0.62, 1.2], face: Math.PI, pose: 'sit', seatY: 0.66 },
+      { tile: [2, 2], pos: [0.62, 1.2], face: Math.PI, pose: 'sit', seatY: 0.66 },
+      { tile: [0, 1], pos: [-1.75, 0.15], face: Math.PI / 2, pose: 'sit', seatY: 0.66 },
+      { tile: [3, 1], pos: [1.75, 0.15], face: -Math.PI / 2, pose: 'sit', seatY: 0.66 },
+    ],
+    staff: { pos: [0, -1.15], face: 0, role: 'dealer' },
+    minBet: 10, maxBet: 500, roundTime: 8, rtp: 0.97, upkeep: 150, appeal: 1.2, appealRadius: 3.2, fun: 1.6,
+    shared: true, description: 'Ante, Play and Pair Plus against the dealer\'s three cards.',
+    colors: FELT_COLORS, model: 'poker', params: { felt: 'threecard' },
+  },
+  {
+    ...base, id: 'sicbo', name: 'Sic Bo', category: 'tables', kind: 'sicbo', price: 5500, unlock: 6, size: [4, 3],
+    seats: [
+      { tile: [0, 2], pos: [-1.45, 0.95], face: Math.PI, pose: 'stand' },
+      { tile: [1, 2], pos: [-0.5, 0.95], face: Math.PI, pose: 'stand' },
+      { tile: [2, 2], pos: [0.5, 0.95], face: Math.PI, pose: 'stand' },
+      { tile: [3, 2], pos: [1.45, 0.95], face: Math.PI, pose: 'stand' },
+    ],
+    staff: { pos: [0, -1.05], face: 0, role: 'dealer' },
+    minBet: 10, maxBet: 500, roundTime: 6, rtp: 0.93, upkeep: 150, appeal: 1.2, appealRadius: 3.5, fun: 1.6,
+    shared: true, description: 'Three dice under a glass shaker: big, small, totals and triples.',
+    colors: [0x8a1030, ...FELT_COLORS], model: 'craps', params: { felt: 'sicbo', dice: 3 },
   },
   {
     ...base, id: 'elevator', name: 'Elevator', category: 'services', kind: 'elevator', price: 0, unlock: 99, size: [2, 3],

@@ -95,6 +95,7 @@ export function openRoulette(ctx: GameCtx): void {
     setResult(result, 'No more bets!');
     audio.play('tick');
     const n = Math.floor(Math.random() * 37);
+    s.animate({ kind: 'roulette', number: n }, 3.6);
     const idx = ROULETTE_ORDER.indexOf(n);
     const turns = 5 + Math.floor(Math.random() * 3);
     const target = -(turns * 360 + (idx / ROULETTE_ORDER.length) * 360);

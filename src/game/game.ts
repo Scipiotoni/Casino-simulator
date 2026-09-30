@@ -503,6 +503,7 @@ export class Game implements World, ItemHost {
   returnHome(offset = 0, kicked = false): void {
     const v = this.visit;
     if (!v) return;
+    this.standUp();
     const money = this.money;
     this.visit = null;
     this.street.activeId = 'me';
@@ -791,7 +792,8 @@ export class Game implements World, ItemHost {
     if (this.state !== 'playing') return;
     const k = item.def.kind;
     const name: SfxName | null =
-      k === 'slot' || k === 'pachinko' ? 'spin' : k === 'claw' ? 'claw' : k === 'roulette' || k === 'wheel' ? 'tick' : k === 'craps' ? 'dice' : k === 'blackjack' || k === 'poker' ? 'cards' : null;
+      k === 'slot' || k === 'pachinko' || k === 'videopoker' || k === 'keno' ? 'spin' : k === 'claw' ? 'claw' : k === 'roulette' || k === 'wheel' ? 'tick'
+        : k === 'craps' || k === 'sicbo' ? 'dice' : k === 'blackjack' || k === 'poker' || k === 'baccarat' || k === 'threecard' ? 'cards' : null;
     if (name) this.sfxAt(name, item.cx, item.cz, 0.45);
   }
 
@@ -1696,6 +1698,48 @@ export class Game implements World, ItemHost {
 
   // ------------------------------------------------------------------ gambling as a visitor
 
+  private tableFocus: { item: PlacedItem; seat: number; dist: number; mode: CamMode } | null = null;
+
+  /**
+   * Take a seat to play: the manager sits (or stands) at the table, the camera closes in on
+   * it and the house's own rounds there wait. Returns the seat index.
+   */
+  sitAt(item: PlacedItem): number {
+    this.standUp();
+    const seat = item.seats.find((s) => s.reachable && !s.occupant && !s.reserved) ?? item.seats.find((s) => s.reachable) ?? item.seats[0];
+    if (!seat) return -1;
+    const other = seat.occupant ?? seat.reserved;
+    if (other && other !== VISITOR) other.forceLeave('Someone else wanted this seat', 2);
+    item.release(VISITOR);
+    seat.occupant = null;
+    seat.reserved = VISITOR;
+    item.visitorSeat = seat.index;
+    this.player.seat = { x: seat.x, z: seat.z, yaw: seat.face, sit: seat.pose === 'sit', height: seat.seatY };
+    this.tableFocus = { item, seat: seat.index, dist: this.cam.distTarget, mode: this.cam.mode };
+    this.cam.setMode('top');
+    this.cam.distTarget = item.def.size[0] * item.def.size[1] > 4 ? 9.5 : 7.5;
+    return seat.index;
+  }
+
+  standUp(): void {
+    const f = this.tableFocus;
+    if (!f) return;
+    this.tableFocus = null;
+    const seat = f.item.seats[f.seat];
+    if (seat && seat.reserved === VISITOR) seat.reserved = null;
+    f.item.visitorSeat = null;
+    this.player.seat = null;
+    const g = this.gridAt(this.player.floor);
+    const near = seat ? g.nearestWalkable(seat.tileX, seat.tileZ) : null;
+    if (near) {
+      this.player.x = near[0] + 0.5;
+      this.player.z = near[1] + 0.5;
+    }
+    this.player.unstick(g);
+    this.cam.distTarget = f.dist;
+    this.cam.setMode(f.mode);
+  }
+
   /** Money you bet at someone else's table (returns false if you can't cover it). */
   visitorBet(amount: number): boolean {
     if (!this.visit || amount <= 0 || this.money < amount) return false;
@@ -1981,8 +2025,8 @@ export class Game implements World, ItemHost {
     audio.listener.yaw = this.cam.yaw;
     audio.bustle = clamp(this.customers.filter((c) => c.floor === this.viewFloor).length / 40, 0, 1) * (this.paused ? 0 : 1) * (this.inside ? 1 : 0.35);
 
-    const fx = this.camFocus?.x ?? this.player.x;
-    const fz = this.camFocus?.z ?? this.player.z;
+    const fx = this.tableFocus ? this.tableFocus.item.cx : this.camFocus?.x ?? this.player.x;
+    const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
     this.cam.update(dt, fx, fz);
     this.building.update(dt, this.cam.yaw, this.cam.low);
     this.street.update(dt, this.player.x, this.inside);
@@ -2158,6 +2202,12 @@ export class Game implements World, ItemHost {
     this.renderer.setQuality(q);
   }
 }
+
+/** The visiting player, as far as a machine's seat bookkeeping is concerned. */
+const VISITOR: SeatUser = {
+  uid: -1, isCheater: false, risk: 0.5,
+  nextBet: () => null, roundStarted: () => undefined, roundResult: () => undefined, forceLeave: () => undefined,
+};
 
 export function floorName(f: number): string {
   return f === 0 ? 'Ground floor' : `Floor ${f + 1}`;
