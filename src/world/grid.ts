@@ -63,6 +63,13 @@ export const PORTAL: [number, number] = [CENTER_X - 5, FACADE_Z - 3];
 export interface Layout {
   width: number; // index into WIDTHS
   depth: number; // number of depth steps bought
+  /** Top-left tile of the elevator (defaults to STAIR_TILE). */
+  lift?: [number, number];
+}
+
+/** The tile walkers step onto to ride an elevator standing at `lift`. */
+export function portalOf(lift: [number, number]): [number, number] {
+  return [lift[0] + PORTAL[0] - STAIR_TILE[0], lift[1] + PORTAL[1] - STAIR_TILE[1]];
 }
 
 export interface Rect {
@@ -101,9 +108,11 @@ export class Grid {
   rect: Rect = layoutRect({ width: 0, depth: 0 });
   /** Where walkers enter this floor: the front door on the ground floor, the stairs above. */
   entries: [number, number][] = DOOR_TILES;
+  /** Elevator footprint origin and its door tile on this floor. */
+  lift: [number, number] = STAIR_TILE;
+  portal: [number, number] = PORTAL;
 
   constructor(readonly level: number, layout: Layout = { width: 0, depth: 0 }) {
-    this.entries = level === 0 ? DOOR_TILES : [PORTAL];
     this.setLayout(layout);
   }
 
@@ -151,7 +160,16 @@ export class Grid {
     }
   }
 
+  /** Put the elevator (and its door) somewhere else on this floor. */
+  setLift(lift: [number, number]): void {
+    this.lift = [lift[0], lift[1]];
+    this.portal = portalOf(this.lift);
+    this.entries = this.level === 0 ? DOOR_TILES : [this.portal];
+    this.version++;
+  }
+
   setLayout(layout: Layout): void {
+    this.setLift(layout.lift ?? STAIR_TILE);
     this.rect = layoutRect(layout);
     this.ensure(this.rect);
     this.flags.fill(0);

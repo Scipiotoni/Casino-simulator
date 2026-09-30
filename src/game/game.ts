@@ -7,10 +7,10 @@ import { Emitter } from '../core/events';
 import { clamp, damp, distToRect, formatMoney } from '../core/math';
 import { pick, rand, randInt } from '../core/rng';
 import {
-  Grid, CENTER_X, FACADE_Z, DOOR_TILES, PORTAL, WIDTHS, MAX_WIDTH, depthCost, depthLevel, floorCost, floorLevel, type Layout,
+  Grid, CENTER_X, FACADE_Z, DOOR_TILES, WIDTHS, MAX_WIDTH, depthCost, depthLevel, floorCost, floorLevel, type Layout,
 } from '../world/grid';
 import { FloorRenderer } from '../world/floor';
-import { Building, type CasinoLook } from '../world/building';
+import { Building, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
 import { CameraRig, type CamMode } from '../world/camera';
 import { TrashManager } from '../world/trash';
@@ -1297,7 +1297,8 @@ export class Game implements World, ItemHost {
     const blockers = this.floors === 1 ? this.items.elevatorBlockers(0) : [];
     if (blockers.length) {
       const b = blockers[0];
-      this.items.selection.show(PORTAL[0] - 2, PORTAL[1] - 1, PORTAL[0] + 1, PORTAL[1] + 2, 0xff4d5e);
+      const lp = this.gridAt(0).portal;
+      this.items.selection.show(lp[0] - 2, lp[1] - 1, lp[0] + 1, lp[1] + 2, 0xff4d5e);
       this.notify(`Move the ${b.def.name} first: the elevator goes next to the entrance (marked in red).`, 'bad');
       audio.play('error');
       return false;
@@ -1379,17 +1380,28 @@ export class Game implements World, ItemHost {
   /** Ride the elevator to a floor (instantly, with a little flourish). */
   goToFloor(f: number): void {
     if (f < 0 || f >= this.floors || f === this.player.floor) return;
-    if (this.build.active) this.build.cancel();
-    this.select(null);
+    // Carrying something to another floor keeps the move going.
+    if (this.build.active && !this.build.movingItem) this.build.cancel();
+    if (!this.build.movingItem) this.select(null);
+    const pt = this.gridAt(f).portal;
     this.player.floor = f;
-    this.player.x = PORTAL[0] + 0.5;
-    this.player.z = PORTAL[1] + 0.5;
+    this.player.x = pt[0] + 0.5;
+    this.player.z = pt[1] + 0.5;
     this.player.yaw = Math.PI / 2;
     this.player.unstick(this.gridAt(f));
     this.cam.snap(this.player.x, this.player.z);
     this.transitionT = 0.3;
     audio.play('doorbell', { volume: 0.5, pitch: 1.3 });
     this.events.emit('floor', f);
+  }
+
+  /** Relocate the elevator shaft (all floors at once). */
+  moveLift(tx: number, tz: number): void {
+    this.items.moveLift(tx, tz);
+    this.layout.lift = [tx, tz];
+    for (const l of this.levels) l.grid.setLift([tx, tz]);
+    this.afterLayoutChange();
+    this.notify('Elevator moved on every floor.', 'good');
   }
 
   /**
@@ -1650,12 +1662,13 @@ export class Game implements World, ItemHost {
       }
     }
     // The elevator
-    if (!target && this.floors > 1 && Math.hypot(p.x - (PORTAL[0] + 0.5), p.z - (PORTAL[1] + 0.5)) < 1.2) {
+    const lp = this.gridAt(pf).portal;
+    if (!target && this.floors > 1 && Math.hypot(p.x - (lp[0] + 0.5), p.z - (lp[1] + 0.5)) < 1.2) {
       const up = pf + 1 < this.floors;
       const to = up ? pf + 1 : 0;
       target = {
         kind: `lift${pf}`, label: `Elevator ${up ? '▲' : '▼'} ${floorName(to)}`, hold: false,
-        anchor: () => new THREE.Vector3(PORTAL[0] - 0.5, 2.6, PORTAL[1] + 0.5),
+        anchor: () => new THREE.Vector3(lp[0] - 0.5, 2.6, lp[1] + 0.5),
         act: () => this.goToFloor(to),
       };
     }
@@ -2077,6 +2090,8 @@ export class Game implements World, ItemHost {
   }
 
   private itemsInside = true;
+  /** How far the street is drawn below you (you're upstairs). */
+  streetDrop = 0;
 
   /** Only the floor you're on is drawn, and the inside of the building only while you're in it. */
   private updateVisibility(): void {
@@ -2086,10 +2101,19 @@ export class Game implements World, ItemHost {
     if (this.items.viewFloor !== vf || this.itemsInside !== inside) {
       this.itemsInside = inside;
       this.items.setViewFloor(vf, inside);
+      const mv = this.build.movingItem;
+      if (mv) mv.root.visible = false;
     }
     this.trash.setViewFloor(vf);
     this.trash.group.visible = inside;
     this.building.interior.visible = inside;
+    const storey = inside && this.state === 'playing' ? vf : 0;
+    if (-storey * STORY_DROP !== this.streetDrop) {
+      this.streetDrop = -storey * STORY_DROP;
+      this.building.setStorey(storey);
+      this.street.group.position.y = this.streetDrop;
+      this.renderer.markShadowsDirty(4);
+    }
     for (const c of this.customers) {
       c.model.root.visible = !c.inElevator && c.floor === vf && (inside || !c.inside);
     }

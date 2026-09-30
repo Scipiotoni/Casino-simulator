@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { type ItemDef, footprintTiles, localTileToWorld, itemDef } from './catalog';
 import { PlacedItem, type ItemHost, type SavedItem } from './placedItem';
-import { DOOR_TILES, PORTAL, STAIR_TILE, type Grid } from '../world/grid';
+import { DOOR_TILES, portalOf, type Grid } from '../world/grid';
 import type { Effects } from '../render/effects';
 
 /** Tiles just inside the front door: always kept clear so guests can get in. */
@@ -124,7 +124,8 @@ export class ItemManager {
   /** Tiles that must stay free on a floor: the entrance and, with several floors, the elevator door. */
   private isReserved(floor: number, x: number, z: number): boolean {
     if (floor === 0 && ENTRY_TILES.some(([ex, ez]) => ex === x && ez === z)) return true;
-    return this.floors > 1 && x === PORTAL[0] && z === PORTAL[1];
+    const pt = this.grid(floor).portal;
+    return this.floors > 1 && x === pt[0] && z === pt[1];
   }
 
   /** Full placement validation including "can every guest still reach a seat?". */
@@ -157,7 +158,7 @@ export class ItemManager {
       return o === 0 || o === ignoreUid;
     };
     const reach = g.flood(walk);
-    if (floor === 0 && this.floors > 1 && !reach[g.idx(PORTAL[0], PORTAL[1])]) {
+    if (floor === 0 && this.floors > 1 && !reach[g.idx(g.portal[0], g.portal[1])]) {
       return { ok: false, reason: 'That would block the elevator' };
     }
     const seatReachable = (sx: number, sz: number, own: Set<number>): boolean => {
@@ -221,10 +222,12 @@ export class ItemManager {
     this.recompute();
   }
 
-  move(item: PlacedItem, tx: number, tz: number, rot: number): void {
+  move(item: PlacedItem, tx: number, tz: number, rot: number, floor = item.floor): void {
     item.evict('The manager is moving this machine', 2);
     this.occupy(item, false);
+    item.floor = floor;
     item.setPosition(tx, tz, rot);
+    item.root.visible = floor === this.viewFloor;
     this.occupy(item, true);
     item.playDropIn();
     this.recompute();
@@ -240,16 +243,67 @@ export class ItemManager {
     if (!want) return;
     for (let f = 0; f < this.floors; f++) {
       if (this.items.some((i) => i.floor === f && i.def.id === 'elevator')) continue;
-      this.add(def, f, STAIR_TILE[0], STAIR_TILE[1], 0, def.colors[0]);
+      const lift = this.grid(f).lift;
+      this.add(def, f, lift[0], lift[1], 0, def.colors[0]);
     }
+  }
+
+  /**
+   * Could the elevator shaft stand at (tx,tz)? It runs through every floor, so the spot
+   * (and its door tile) must be free and inside the walls on all of them.
+   */
+  canPlaceLift(tx: number, tz: number): PlaceCheck {
+    const def = itemDef('elevator');
+    const tiles = footprintTiles(def, tx, tz, 0);
+    const portal = portalOf([tx, tz]);
+    for (let f = 0; f < this.floors; f++) {
+      const g = this.grid(f);
+      const own = this.items.find((i) => i.floor === f && i.def.id === 'elevator');
+      for (const [x, z] of [...tiles, portal]) {
+        if (!g.isOwned(x, z)) return { ok: false, reason: 'The elevator must stay inside your walls on every floor' };
+        const o = g.occ[g.idx(x, z)];
+        if (o && o !== own?.uid) return { ok: false, reason: `Something is in the way on ${f === 0 ? 'the ground floor' : `floor ${f + 1}`}` };
+        if (f === 0 && ENTRY_TILES.some(([ex, ez]) => ex === x && ez === z)) return { ok: false, reason: 'Keep the entrance clear' };
+      }
+    }
+    // Guests must still be able to walk from the front door to the new elevator door.
+    const g0 = this.grid(0);
+    const block = new Set(tiles.map(([x, z]) => g0.idx(x, z)));
+    const own0 = this.items.find((i) => i.floor === 0 && i.def.id === 'elevator')?.uid ?? -1;
+    const reach = g0.flood((x, z) => {
+      if (!g0.inBounds(x, z)) return false;
+      const i = g0.idx(x, z);
+      if (block.has(i)) return false;
+      if (!g0.isSidewalk(x, z) && !g0.isDoor(x, z) && !g0.isOwned(x, z)) return false;
+      const o = g0.occ[i];
+      return o === 0 || o === own0;
+    });
+    if (!reach[g0.idx(portal[0], portal[1])]) return { ok: false, reason: 'Guests couldn’t reach the elevator door there' };
+    return { ok: true };
+  }
+
+  /** Move the elevator on every floor at once. */
+  moveLift(tx: number, tz: number): void {
+    const lifts = this.items.filter((i) => i.def.id === 'elevator');
+    for (const it of lifts) {
+      it.evict('The elevator is moving', 1);
+      this.occupy(it, false);
+    }
+    for (let f = 0; f < this.floors; f++) this.grid(f).setLift([tx, tz]);
+    for (const it of lifts) {
+      it.setPosition(tx, tz, 0);
+      this.occupy(it, true);
+      it.playDropIn();
+    }
+    this.recompute();
   }
 
   /** Items standing where the elevator has to go (they block building a new floor). */
   elevatorBlockers(floor: number): PlacedItem[] {
     const def = itemDef('elevator');
-    const tiles = footprintTiles(def, STAIR_TILE[0], STAIR_TILE[1], 0);
-    tiles.push(PORTAL);
     const g = this.grid(floor);
+    const tiles = footprintTiles(def, g.lift[0], g.lift[1], 0);
+    tiles.push(g.portal);
     const out = new Set<PlacedItem>();
     for (const [x, z] of tiles) {
       const uid = g.occupant(x, z);

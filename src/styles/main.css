@@ -3563,3 +3563,33 @@ p.small {
     transform-origin: top right;
   }
 }
+
+.card-floors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.card-floors .btn.small {
+  min-width: 36px;
+}
+
+/* Big "you are upstairs" banner */
+.floor-tag {
+  position: absolute;
+  top: 88px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 6px 16px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #6a2cc2, #ff3fa4);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}

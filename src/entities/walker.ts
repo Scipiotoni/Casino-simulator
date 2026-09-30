@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CharacterModel } from './characterModel';
 import type { Appearance } from './appearance';
 import { findPath, smoothPath } from '../world/pathfinding';
-import { PORTAL, type Grid } from '../world/grid';
+import type { Grid } from '../world/grid';
 import { dampAngle } from '../core/math';
 import { badgeTexture } from '../render/textures';
 
@@ -86,7 +86,8 @@ export class Walker {
   travel(floors: (f: number) => Grid, floorCount: number, floor: number, tx: number, tz: number, final: [number, number] | null = null): boolean {
     this.leg = null;
     if (floor === this.floor || floorCount < 2) return this.walkTo(floors(this.floor), tx, tz, final);
-    if (!this.walkTo(floors(this.floor), PORTAL[0], PORTAL[1], [PORTAL[0] + 0.5, PORTAL[1] + 0.5])) return false;
+    const pt = floors(this.floor).portal;
+    if (!this.walkTo(floors(this.floor), pt[0], pt[1], [pt[0] + 0.5, pt[1] + 0.5])) return false;
     this.leg = { floor, tx, tz, final };
     return true;
   }
@@ -115,8 +116,9 @@ export class Walker {
       this.leg = null;
       if (!leg) return 'arrived';
       this.floor = leg.floor;
-      this.x = PORTAL[0] + 0.5;
-      this.z = PORTAL[1] + 0.5;
+      const pt = floors(this.floor).portal;
+      this.x = pt[0] + 0.5;
+      this.z = pt[1] + 0.5;
       this.yaw = Math.PI / 2;
       if (!this.walkTo(floors(this.floor), leg.tx, leg.tz, leg.final)) return 'blocked';
       return 'moving';

@@ -184,6 +184,7 @@ export function sanitizeSnapshot(raw: unknown, fonts: string[], sanitizeLook: (a
   };
   const lay = (s.layout ?? {}) as Record<string, unknown>;
   const layout: Layout = { width: num(lay.width, 0, 2, 0), depth: num(lay.depth, 0, 120, 0) };
+  if (Array.isArray(lay.lift) && lay.lift.length === 2) layout.lift = [num(lay.lift[0], 0, 47, 17), num(lay.lift[1], -600, 45, 36)];
   const floors = num(s.floors, 1, 12, 1);
   const items: SavedItem[] = [];
   for (const it of Array.isArray(s.items) ? s.items.slice(0, 1500) : []) {

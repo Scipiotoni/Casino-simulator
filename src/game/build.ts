@@ -7,6 +7,7 @@ import type { PlacedItem } from '../items/placedItem';
 import { FLOOR_STYLES } from '../render/textures';
 import { audio } from '../core/audio';
 import { formatMoney } from '../core/math';
+import { floorName } from './game';
 
 export type Mode =
   | { kind: 'play' }
@@ -82,8 +83,13 @@ export class BuildController {
     }
   }
 
+  /** The item being moved, if any. */
+  get movingItem(): PlacedItem | null {
+    return this.mode.kind === 'place' ? this.mode.moving : null;
+  }
+
   cancel(emit = true): void {
-    if (this.mode.kind === 'place' && this.mode.moving) this.mode.moving.root.visible = true;
+    if (this.mode.kind === 'place' && this.mode.moving) this.mode.moving.root.visible = this.mode.moving.floor === this.g.viewFloor;
     this.disposeGhost();
     this.mode = { kind: 'play' };
     this.tile = null;
@@ -94,7 +100,7 @@ export class BuildController {
   }
 
   rotate(): void {
-    if (this.mode.kind !== 'place') return;
+    if (this.mode.kind !== 'place' || this.mode.def.id === 'elevator') return;
     this.mode.rot = (this.mode.rot + 1) % 4;
     this.lastRot = this.mode.rot;
     this.checkKey = '';
@@ -160,7 +166,10 @@ export class BuildController {
     if (key === this.checkKey) return;
     this.checkKey = key;
     const m = this.mode;
-    const check = this.g.items.canPlace(m.def, m.moving ? m.moving.floor : this.g.viewFloor, this.tile[0], this.tile[1], m.rot, m.moving ?? undefined);
+    // Moving works across floors: the item lands on whichever floor you're looking at.
+    const check = m.def.id === 'elevator'
+      ? this.g.items.canPlaceLift(this.tile[0], this.tile[1])
+      : this.g.items.canPlace(m.def, this.g.viewFloor, this.tile[0], this.tile[1], m.rot, m.moving && m.moving.floor === this.g.viewFloor ? m.moving : undefined);
     const affordable = m.moving || this.g.money >= m.def.price;
     this.valid = check.ok && !!affordable;
     this.reason = !check.ok ? check.reason ?? 'Can’t place here' : !affordable ? `Need ${formatMoney(m.def.price)}` : '';
@@ -193,7 +202,12 @@ export class BuildController {
     const [tx, tz] = this.tile;
     if (m.moving) {
       const item = m.moving;
-      this.g.items.move(item, tx, tz, m.rot);
+      if (item.def.id === 'elevator') this.g.moveLift(tx, tz);
+      else {
+        const from = item.floor;
+        this.g.items.move(item, tx, tz, m.rot, this.g.viewFloor);
+        if (from !== item.floor) this.g.notify(`${item.def.name} moved to the ${floorName(item.floor).toLowerCase()}.`, 'good');
+      }
       item.root.visible = true;
       this.g.afterLayoutChange();
       audio.play('place');

@@ -510,14 +510,14 @@ export class Net {
       r.x += (wx - r.x) * k;
       r.z += (wz - r.z) * k;
       const m = r.model;
-      m.root.position.set(r.x, 0, r.z);
+      m.root.position.set(r.x, outside ? g.streetDrop : 0, r.z);
       m.root.rotation.y = dampAngle(m.root.rotation.y, r.yaw + (known ? g.street.rotOf(lotId) : 0), 12, dt);
       if (r.moving) {
         m.moveSpeed = 2.6;
         m.setPose('walk');
       } else m.setPose('idle');
       m.update(dt);
-      tmp.set(r.x, m.height + 0.45, r.z).project(cam);
+      tmp.set(r.x, m.root.position.y + m.height + 0.45, r.z).project(cam);
       if (tmp.z > 1) r.label.hidden = true;
       else r.label.style.transform = `translate(${((tmp.x + 1) / 2) * w}px, ${((1 - tmp.y) / 2) * hh}px) translate(-50%, -100%)`;
       views.push({ pid: r.pid, name: r.name, x: r.x, z: r.z });

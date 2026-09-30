@@ -49,6 +49,7 @@ export class Hud {
   private visitBar!: HTMLElement;
   private floorBar!: HTMLElement;
   private camBtn!: HTMLButtonElement;
+  private floorTag = h('div', { class: 'floor-tag', hidden: true });
   /** Extra card for another player you clicked (filled in by the multiplayer layer). */
   remoteCard: ((pid: string, el: HTMLElement) => void) | null = null;
 
@@ -151,7 +152,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.toastsEl, this.bannerEl, this.minimap.el, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -377,6 +378,10 @@ export class Hud {
     const actions = h('div', { class: 'card-actions' });
     if (def.fixed) {
       this.cardEl.appendChild(h('p', { class: 'muted small', text: g.floors > 1 ? `Walk to its door and press Space, or use the floor buttons, to ride between ${g.floors} floors.` : def.description }));
+      if (def.id === 'elevator' && !g.visit) {
+        actions.appendChild(h('button', { class: 'btn', html: `${icon('move', 16)} Move elevator`, title: 'The shaft moves on every floor at once', onClick: () => g.build.startMove(item) }));
+        this.cardEl.appendChild(actions);
+      }
       return;
     }
     if (item.upgradable && item.level < MAX_LEVEL) {
@@ -384,6 +389,22 @@ export class Hud {
     }
     actions.appendChild(h('button', { class: 'btn', html: `${icon('move', 16)} Move`, onClick: () => { g.build.startMove(item); } }));
     actions.appendChild(h('button', { class: 'btn', html: `${icon('rotate', 16)} Rotate`, onClick: () => this.quickRotate(item) }));
+    if (g.floors > 1 && !item.outdoor) {
+      // Carry it to another floor: pick it up, ride the elevator, then drop it where you like.
+      const floorsRow = h('div', { class: 'card-floors' }, h('span', { class: 'muted small', text: 'Move to floor' }));
+      for (let f = 0; f < g.floors; f++) {
+        if (f === item.floor) continue;
+        floorsRow.appendChild(h('button', {
+          class: 'btn small', text: f === 0 ? 'G' : String(f + 1), title: `Carry it to the ${floorName(f).toLowerCase()}`,
+          onClick: () => {
+            g.build.startMove(item);
+            g.goToFloor(f);
+            g.notify(`Now on the ${floorName(f).toLowerCase()}: click where it should go.`, 'info');
+          },
+        }));
+      }
+      this.cardEl.appendChild(floorsRow);
+    }
     actions.appendChild(h('button', {
       class: 'btn danger', dataset: { live: 'sell' },
       // Right after buying, selling is an instant, no-questions-asked undo.
@@ -583,6 +604,12 @@ export class Hud {
     const g = this.game;
     this.floorBar.hidden = g.floors < 2 || !g.inside;
     this.minimap.update(dt);
+    const up = g.inside && g.player.floor > 0;
+    this.floorTag.hidden = !up;
+    if (up) {
+      const t = `▲ ${floorName(g.player.floor).toUpperCase()} · ${g.player.floor * 3} m above the street`;
+      if (this.floorTag.textContent !== t) this.floorTag.textContent = t;
+    }
     // Animated money counter
     const diff = g.money - this.shownMoney;
     this.shownMoney += Math.abs(diff) < 1 ? diff : diff * Math.min(1, dt * 8);
