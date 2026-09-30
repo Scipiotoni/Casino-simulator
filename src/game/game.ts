@@ -12,6 +12,8 @@ import {
 import { FloorRenderer } from '../world/floor';
 import { Building, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
+import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
+import { PlayerFx } from '../cosmetics/playerFx';
 import { CameraRig, type CamMode } from '../world/camera';
 import { TrashManager } from '../world/trash';
 import { FLOOR_STYLES } from '../render/textures';
@@ -65,6 +67,7 @@ export interface GameEvents {
   day: DayReport;
   look: void;
   staff: void;
+  cosmetics: void;
   expansion: number;
   jackpot: { amount: number; machine: string };
   event: { title: string; text: string };
@@ -417,11 +420,55 @@ export class Game implements World, ItemHost {
 
   /** Lots the net layer adds (other players); the street is rival + you + these. */
   extraLots: StreetLot[] = [];
+  /** Bought and switched-on cosmetics (they follow you, not a casino). */
+  cosmetics: CosmeticState = emptyCosmetics();
+  private playerFx: PlayerFx | null = null;
+
+  /** Buy a cosmetic (it's switched on right away). */
+  buyCosmetic(id: string): boolean {
+    const c = cosmetic(id);
+    if (!c || this.cosmetics.owned.includes(id)) return false;
+    if (this.visit) {
+      this.notify('Buy cosmetics at home.', 'bad');
+      return false;
+    }
+    if (this.money < c.price) {
+      audio.play('error');
+      this.notify(`${c.name} costs ${formatMoney(c.price)}.`, 'bad');
+      return false;
+    }
+    this.spend(c.price, 'cosmetic');
+    this.cosmetics = { owned: [...this.cosmetics.owned, id], on: [...this.cosmetics.on, id] };
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 1.5, this.player.z);
+    this.notify(`${c.icon} ${c.name} is yours!`, 'good');
+    this.applyCosmetics();
+    this.saveNow();
+    return true;
+  }
+
+  /** Switch an owned cosmetic on or off. */
+  toggleCosmetic(id: string): void {
+    if (!this.cosmetics.owned.includes(id)) return;
+    const on = this.cosmetics.on.includes(id);
+    this.cosmetics = { ...this.cosmetics, on: on ? this.cosmetics.on.filter((x) => x !== id) : [...this.cosmetics.on, id] };
+    audio.play('click');
+    this.applyCosmetics();
+    this.requestSave();
+  }
+
+  /** Put the switched-on cosmetics on your character and your casino. */
+  applyCosmetics(): void {
+    this.playerFx ??= new PlayerFx(this.player.model);
+    this.playerFx.set(equipped(this.cosmetics, 'player'));
+    this.refreshStreet();
+    this.events.emit('cosmetics', undefined);
+  }
 
   refreshStreet(): void {
     const me: StreetLot = {
       id: 'me', kind: 'me', owner: this.player.name, order: this.createdAt, online: true,
-      info: { look: this.visit ? this.visit.home.look : { ...this.building.look }, width: this.homeLayout.width, depth: this.homeLayout.depth, floors: this.homeFloors, tagline: 'OPEN 24/7' },
+      info: { look: this.visit ? this.visit.home.look : { ...this.building.look }, width: this.homeLayout.width, depth: this.homeLayout.depth, floors: this.homeFloors, tagline: 'OPEN 24/7', cos: equipped(this.cosmetics, 'casino') },
     };
     const ri = rivalLotInfo(this.rival);
     const rival: StreetLot = {
@@ -1995,6 +2042,7 @@ export class Game implements World, ItemHost {
     }
     this.cam.followYaw = this.player.yaw;
     this.player.model.root.visible = playing;
+    this.playerFx?.update(dt, playing && !this.player.seat);
     this.playerPos.set(this.player.x, 0, this.player.z);
     const wasInside = this.inside;
     this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && Math.abs(this.player.x - CENTER_X) < 16);
@@ -2160,6 +2208,7 @@ export class Game implements World, ItemHost {
         stats: { ...this.stats },
         rival: { ...this.rival },
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
+        cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
       };
     }
     return {
@@ -2190,6 +2239,7 @@ export class Game implements World, ItemHost {
       speed: this.speed,
       rival: { ...this.rival },
       createdAt: this.createdAt,
+      cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
     };
   }
 
@@ -2211,6 +2261,8 @@ export class Game implements World, ItemHost {
     this.paused = false;
     this.rival = { ...newRival(), ...s.rival };
     this.createdAt = s.createdAt || Date.now();
+    this.cosmetics = sanitizeCosmetics(s.cosmetics);
+    this.applyCosmetics();
     this.player.floor = 0;
     const before = s.items.length;
     this.loadCasino(s, false);

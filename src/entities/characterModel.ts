@@ -861,6 +861,11 @@ export class CharacterModel {
     this.refreshFace();
   }
 
+  /** Group that follows the head (for hats, crowns and halos). */
+  get headAnchor(): THREE.Group {
+    return this.headPivot;
+  }
+
   get height(): number {
     return this.dims.neckY + 0.5;
   }

@@ -66,6 +66,8 @@ export interface SaveData extends CasinoSnapshot {
   speed: number;
   rival: RivalState;
   createdAt: number;
+  /** Cosmetics bought and switched on (see src/cosmetics). */
+  cosmetics?: { owned: string[]; on: string[] };
 }
 
 export function emptyNet(): NetState {

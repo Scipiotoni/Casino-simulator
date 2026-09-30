@@ -3593,3 +3593,38 @@ p.small {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   pointer-events: none;
 }
+
+/* ------------------------------------------------------------------ luxury shop */
+.cos-head {
+  margin: 6px 0 0;
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 15px;
+  color: var(--gold);
+}
+
+.cos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.cos-card {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.cos-card.owned {
+  border-color: var(--gold);
+  background: rgba(255, 197, 61, 0.08);
+}
+
+.cos-icon {
+  font-size: 30px;
+  line-height: 1;
+}

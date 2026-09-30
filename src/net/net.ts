@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { PlayerFx } from '../cosmetics/playerFx';
+import { cleanCosmetics, equipped } from '../cosmetics/catalog';
 import type { Game } from '../game/game';
 import type { Hud } from '../ui/hud';
 import { CharacterModel } from '../entities/characterModel';
@@ -78,7 +80,7 @@ interface LotDoc {
   since: number;
   snap: CasinoSnapshot | null;
   bans: Record<string, number>;
-  info: { look: CasinoLook; layout: Layout; floors: number };
+  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[] };
 }
 
 interface Remote {
@@ -101,6 +103,7 @@ interface Remote {
   owes: Record<string, number>;
   casino: LotDoc['info'] | null;
   since: number;
+  fx: PlayerFx;
 }
 
 const tmp = new THREE.Vector3();
@@ -201,7 +204,7 @@ export class Net {
         since: typeof raw.since === 'number' ? raw.since : Date.now(),
         snap: snapData,
         bans: cleanNumbers(raw.bans),
-        info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors },
+        info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos) },
       });
     }
     this.syncStreet();
@@ -234,7 +237,7 @@ export class Net {
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(),
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model),
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -255,10 +258,12 @@ export class Net {
       r.since = num(pr.since) || r.since;
       const c = pr.casino as Record<string, unknown> | undefined;
       const snap = c ? sanitizeSnapshot({ ...c, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null;
-      r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors } : null;
+      r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos) } : null;
+      r.fx.set(cleanCosmetics(pr.cos));
     }
     for (const [k, r] of this.remotes) {
       if (seen.has(k)) continue;
+      r.fx.dispose();
       r.model.root.removeFromParent();
       r.model.dispose();
       r.label.remove();
@@ -274,7 +279,11 @@ export class Net {
     for (const [pid, l] of this.lots) {
       lots.push({
         id: pid, kind: 'player', owner: l.owner, order: l.since, online: online.has(pid),
-        info: { look: l.info.look, width: l.info.layout.width, depth: l.info.layout.depth, floors: l.info.floors, tagline: `${l.owner.toUpperCase()}'S PLACE` },
+        info: {
+          look: l.info.look, width: l.info.layout.width, depth: l.info.layout.depth, floors: l.info.floors, tagline: `${l.owner.toUpperCase()}'S PLACE`,
+          // Live presence beats the stored copy (cosmetics switched on since the last save).
+          cos: [...this.remotes.values()].find((r) => r.pid === pid)?.casino?.cos ?? l.info.cos ?? [],
+        },
       });
     }
     // Players who can't publish still show their casino on the street while they're online.
@@ -282,7 +291,7 @@ export class Net {
       if (this.lots.has(r.pid) || !r.casino || lots.some((l) => l.id === r.pid)) continue;
       lots.push({
         id: r.pid, kind: 'player', owner: r.name, order: r.since, online: true,
-        info: { look: r.casino.look, width: r.casino.layout.width, depth: r.casino.layout.depth, floors: r.casino.floors, tagline: `${r.name.toUpperCase()}'S PLACE` },
+        info: { look: r.casino.look, width: r.casino.layout.width, depth: r.casino.layout.depth, floors: r.casino.floors, tagline: `${r.name.toUpperCase()}'S PLACE`, cos: r.casino.cos ?? [] },
       });
     }
     const key = JSON.stringify(lots);
@@ -387,7 +396,9 @@ export class Net {
       bans,
       owes: g.net.owes,
       since: g.createdAt,
+      cos: equipped(g.cosmetics, 'player'),
       casino: {
+        cos: equipped(g.cosmetics, 'casino'),
         look: home ? home.look : g.building.look,
         layout: g.homeLayout,
         floors: g.homeFloors,
@@ -419,6 +430,7 @@ export class Net {
       since: g.createdAt,
       bans: { ...g.net.bans },
       snap: JSON.parse(JSON.stringify(snap)) as Record<string, unknown>,
+      cos: equipped(g.cosmetics, 'casino'),
       updated: Date.now(),
     };
     const key = JSON.stringify({ ...doc, updated: 0 });
@@ -505,12 +517,16 @@ export class Net {
       r.visible = visible;
       r.model.root.visible = visible;
       r.label.hidden = !visible;
-      if (!visible) continue;
+      if (!visible) {
+        r.fx.update(0, false);
+        continue;
+      }
       const k = 1 - Math.exp(-dt * 10);
       r.x += (wx - r.x) * k;
       r.z += (wz - r.z) * k;
       const m = r.model;
       m.root.position.set(r.x, outside ? g.streetDrop : 0, r.z);
+      r.fx.update(dt, true);
       m.root.rotation.y = dampAngle(m.root.rotation.y, r.yaw + (known ? g.street.rotOf(lotId) : 0), 12, dt);
       if (r.moving) {
         m.moveSpeed = 2.6;

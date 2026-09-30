@@ -109,6 +109,7 @@ export class Hud {
       ['staff', 'Staff', () => this.modals.openStaff()],
       ['casino', 'Casino', () => this.modals.openCasino()],
       ['you', 'You', () => this.modals.openCreator('player')],
+      ['upgrade', 'Luxe', () => this.modals.openCosmetics()],
       ['stats', 'Stats', () => this.modals.openStats()],
     ];
     this.toolbar = h('nav', { class: 'toolbar', 'aria-label': 'Tools' });

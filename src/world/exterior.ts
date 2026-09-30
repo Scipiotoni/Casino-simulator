@@ -16,6 +16,8 @@ export interface LotLook {
   floors: number;
   /** Small text under the name on the roof sign ("OPEN 24/7", "RIVAL", an owner name…). */
   tagline?: string;
+  /** Casino cosmetics switched on (searchlights, fireworks, gold facade, rainbow neon). */
+  cos?: string[];
 }
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
@@ -76,9 +78,14 @@ export class Exterior {
     const H = floors * STORY_H;
     const s = this.shell;
     const dyn = new Dyn();
-    const wall = mat(look.wallColor, { rough: 0.75 });
-    const wallDark = mat(shade(look.wallColor, 0.7), { rough: 0.8 });
-    const trim = mat(look.trimColor, { emissive: look.trimColor, emissiveIntensity: 0.9, rough: 0.4 });
+    const cos = this.info.cos ?? [];
+    const golden = cos.includes('goldfacade');
+    const wall = golden ? gold() : mat(look.wallColor, { rough: 0.75 });
+    const wallDark = golden ? mat(0xb8861b, { metal: 0.8, rough: 0.32, emissive: 0x3a2200, emissiveIntensity: 0.3 }) : mat(shade(look.wallColor, 0.7), { rough: 0.8 });
+    // Rainbow neon needs its own material (the shared cache would recolour every casino).
+    const trim = cos.includes('rainbow')
+      ? (this.rainbow = new THREE.MeshStandardMaterial({ color: look.trimColor, emissive: look.trimColor, emissiveIntensity: 1.3, roughness: 0.4 }))
+      : mat(look.trimColor, { emissive: look.trimColor, emissiveIntensity: 0.9, rough: 0.4 });
     const g = gold();
     const lit = mat(0x3a2a20, { emissive: 0xffb45a, emissiveIntensity: 0.32, rough: 0.15, metal: 0.3 });
     const dim = mat(0x1a1428, { emissive: 0x3b2a66, emissiveIntensity: 0.25, rough: 0.15, metal: 0.3 });
@@ -226,6 +233,8 @@ export class Exterior {
     }
     bulbGeo.dispose();
     this.buildYard(x0, x1);
+    if (cos.includes('searchlights')) this.buildSearchlights(x0, x1, H, (z0 + z1) / 2);
+    if (cos.includes('fireworks')) this.buildFireworks(H, (z0 + z1) / 2);
   }
 
   /** Red carpet to the curb, planters along the facade and gold rope posts. */
@@ -273,8 +282,92 @@ export class Exterior {
     });
   }
 
+  private rainbow: THREE.MeshStandardMaterial | null = null;
+  private beams: THREE.Object3D[] = [];
+  private rockets: { pts: THREE.Points; vel: Float32Array; t: number; origin: THREE.Vector3 }[] = [];
+  private fwBase = new THREE.Vector3();
+
+  private buildSearchlights(x0: number, x1: number, H: number, zc: number): void {
+    const beamGeo = new THREE.ConeGeometry(1.4, 26, 20, 1, true);
+    beamGeo.translate(0, 13, 0);
+    const beamMat = new THREE.MeshBasicMaterial({ color: 0xfff1c4, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    for (const [x, ph] of [[x0 + 1.5, 0], [x1 - 1.5, Math.PI]] as const) {
+      const base = new THREE.Group();
+      base.position.set(x, H + 0.3, zc);
+      const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 0.5, 14), mat(0x2b2b35, { metal: 0.6, rough: 0.4 }));
+      base.add(lamp);
+      const pivot = new THREE.Group();
+      pivot.position.y = 0.3;
+      pivot.userData.phase = ph;
+      const beam = new THREE.Mesh(beamGeo, beamMat);
+      pivot.add(beam);
+      base.add(pivot);
+      this.shell.add(base);
+      this.beams.push(pivot);
+    }
+  }
+
+  private buildFireworks(H: number, zc: number): void {
+    this.fwBase.set(CENTER_X, H + 1, zc);
+    const N = 60;
+    for (let i = 0; i < 3; i++) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+      const m = new THREE.PointsMaterial({ color: 0xffffff, size: 0.35, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const pts = new THREE.Points(geo, m);
+      pts.frustumCulled = false;
+      this.shell.add(pts);
+      this.rockets.push({ pts, vel: new Float32Array(N * 3), t: -i * 0.9, origin: new THREE.Vector3() });
+    }
+  }
+
+  private updateEffects(dt: number): void {
+    const t = this.t;
+    if (this.rainbow) {
+      const c = new THREE.Color().setHSL((t * 0.12) % 1, 1, 0.55);
+      this.rainbow.color.copy(c);
+      this.rainbow.emissive.copy(c);
+    }
+    for (const b of this.beams) {
+      const ph = b.userData.phase as number;
+      b.rotation.set(Math.sin(t * 0.7 + ph) * 0.45, 0, Math.cos(t * 0.5 + ph) * 0.4);
+    }
+    for (const r of this.rockets) {
+      r.t += dt;
+      const pos = r.pts.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const m = r.pts.material as THREE.PointsMaterial;
+      if (r.t < 0) {
+        m.opacity = 0;
+        continue;
+      }
+      if (r.t > 2.4) {
+        // New burst: random colour, spot and size.
+        r.t = -Math.random() * 1.2;
+        r.origin.set(this.fwBase.x + (Math.random() - 0.5) * 12, this.fwBase.y + 6 + Math.random() * 6, this.fwBase.z + (Math.random() - 0.5) * 6);
+        m.color.setHSL(Math.random(), 1, 0.62);
+        const sp = 3 + Math.random() * 3;
+        for (let i = 0; i < r.vel.length / 3; i++) {
+          const u = Math.random() * 2 - 1;
+          const a = Math.random() * Math.PI * 2;
+          const q = Math.sqrt(1 - u * u);
+          r.vel[i * 3] = q * Math.cos(a) * sp;
+          r.vel[i * 3 + 1] = u * sp;
+          r.vel[i * 3 + 2] = q * Math.sin(a) * sp;
+        }
+        continue;
+      }
+      const k = r.t;
+      for (let i = 0; i < r.vel.length / 3; i++) {
+        pos.setXYZ(i, r.origin.x + r.vel[i * 3] * k, r.origin.y + r.vel[i * 3 + 1] * k - 2.2 * k * k, r.origin.z + r.vel[i * 3 + 2] * k);
+      }
+      pos.needsUpdate = true;
+      m.opacity = Math.max(0, 1 - k / 2.4);
+    }
+  }
+
   update(dt: number): void {
     this.t += dt;
+    this.updateEffects(dt);
     const phase = Math.floor(this.t * 8);
     this.bulbGroups.forEach((m, i) => (m.material = (i + phase) % 3 === 0 ? this.bulbOff : this.bulbOn));
   }
@@ -282,6 +375,7 @@ export class Exterior {
   dispose(): void {
     this.group.removeFromParent();
     disposeTree(this.group);
+    this.rainbow?.dispose();
     this.signTex.dispose();
   }
 }

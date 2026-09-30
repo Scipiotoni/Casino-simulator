@@ -1,4 +1,5 @@
 import type { Game, DayReport } from '../game/game';
+import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
 import { h, clear, icon, swatch, stars } from './dom';
 import { formatMoney, formatNumber } from '../core/math';
@@ -211,6 +212,35 @@ export class Modals {
   }
 
   // ------------------------------------------------------------------ stats
+
+  /** Luxury shop: very expensive, purely for show. */
+  openCosmetics(): void {
+    const g = this.game;
+    const body = h('div', { class: 'stack' });
+    const render = () => {
+      clear(body);
+      body.appendChild(h('p', { class: 'muted small', text: 'Nothing here makes money. It just makes everyone on the street jealous. Character items show on you, casino items on your building, and other players see both.' }));
+      for (const target of ['player', 'casino'] as const) {
+        body.appendChild(h('h3', { class: 'cos-head', text: target === 'player' ? 'For you' : 'For your casino' }));
+        const grid = h('div', { class: 'cos-grid' });
+        for (const c of COSMETICS.filter((x) => x.target === target)) {
+          const owned = g.cosmetics.owned.includes(c.id);
+          const on = g.cosmetics.on.includes(c.id);
+          const btn = owned
+            ? h('button', { class: `btn small${on ? ' gold' : ''}`, text: on ? 'On' : 'Off', onClick: () => { g.toggleCosmetic(c.id); render(); } })
+            : h('button', { class: 'btn small gold', disabled: g.money < c.price, html: `Buy <b>${formatMoney(c.price, true)}</b>`, onClick: () => { if (g.buyCosmetic(c.id)) render(); } });
+          grid.appendChild(h('div', { class: `cos-card${owned ? ' owned' : ''}` },
+            h('div', { class: 'cos-icon', text: c.icon }),
+            h('b', { text: c.name }),
+            h('span', { class: 'muted small', text: c.description }),
+            btn));
+        }
+        body.appendChild(grid);
+      }
+    };
+    render();
+    this.open('Luxury Shop', body, { wide: true });
+  }
 
   openStats(): void {
     const g = this.game;
