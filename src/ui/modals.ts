@@ -1,4 +1,5 @@
 import type { Game, DayReport } from '../game/game';
+import { exportFileName, exportSave, parseImport } from '../game/transfer';
 import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
 import { h, clear, icon, swatch, stars } from './dom';
@@ -213,6 +214,86 @@ export class Modals {
 
   // ------------------------------------------------------------------ stats
 
+  /** Save your casino to a file (or text) and load one back, yours or a friend's. */
+  openTransfer(): void {
+    const g = this.game;
+    const body = h('div', { class: 'stack' });
+    const save = g.serialize();
+    const text = exportSave(save);
+    const status = h('p', { class: 'muted small' });
+    // Export
+    body.appendChild(h('h3', { class: 'cos-head', text: 'Export' }));
+    body.appendChild(h('p', { class: 'muted small', text: 'Your casino, money, level and cosmetics in one file. Keep it as a backup or send it to a friend.' }));
+    body.appendChild(h('div', { class: 'btn-row wrap' },
+      h('button', {
+        class: 'btn gold', html: `${icon('save', 16)} Download file`,
+        onClick: () => {
+          const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = exportFileName(save);
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+          status.textContent = `Saved ${a.download}.`;
+        },
+      }),
+      h('button', {
+        class: 'btn', text: 'Copy as text',
+        onClick: async () => {
+          try {
+            await navigator.clipboard.writeText(text);
+            status.textContent = 'Copied! Paste it anywhere to keep it.';
+          } catch {
+            area.value = text;
+            area.select();
+            status.textContent = 'Couldn’t reach the clipboard, so the save is in the box below: copy it from there.';
+          }
+        },
+      }),
+    ));
+    // Import
+    body.appendChild(h('h3', { class: 'cos-head', text: 'Import' }));
+    body.appendChild(h('p', { class: 'muted small', text: 'Load a casino file, or paste the text. It replaces the casino you have now (export it first if you want to keep it).' }));
+    const file = h('input', { type: 'file', class: 'text-input' }) as HTMLInputElement;
+    file.accept = '.json,application/json,text/plain';
+    const area = h('textarea', { class: 'text-input transfer-area', placeholder: 'Paste an exported casino here…', 'aria-label': 'Casino save text' }) as HTMLTextAreaElement;
+    area.addEventListener('keydown', (e) => e.stopPropagation());
+    file.addEventListener('change', async () => {
+      const f = file.files?.[0];
+      if (!f) return;
+      if (f.size > 8_000_000) {
+        status.textContent = 'That file is too big to be a casino save.';
+        return;
+      }
+      area.value = await f.text();
+      status.textContent = `Loaded ${f.name}. Press Import to use it.`;
+    });
+    const doImport = () => {
+      const r = parseImport(area.value);
+      if ('error' in r) {
+        audio.play('error');
+        status.textContent = r.error;
+        return;
+      }
+      const s = r.save;
+      this.confirm(
+        'Replace your casino?',
+        `Load “${s.name}” (level ${s.level}, ${formatMoney(s.money)}, ${s.items.length} items on ${s.floors} ${s.floors === 1 ? 'floor' : 'floors'})? Your current casino will be replaced.`,
+        'Import',
+        () => {
+          g.load(s);
+          g.saveNow();
+          this.closeAll();
+          g.notify(`Welcome to ${s.name}!`, 'good');
+        },
+      );
+    };
+    body.append(file, area, h('button', { class: 'btn gold', text: 'Import', onClick: doImport }), status);
+    this.open('Export / import casino', body, { wide: true });
+  }
+
   /** Luxury shop: very expensive, purely for show. */
   openCosmetics(): void {
     const g = this.game;
@@ -303,6 +384,7 @@ export class Modals {
       h('button', { class: 'btn gold', html: `${icon('play', 16)} Resume`, onClick: () => this.close() }),
       h('button', { class: 'btn', html: `${icon('save', 16)} Save now`, onClick: () => { g.saveNow(); g.notify('Game saved', 'good'); } }),
       h('button', { class: 'btn', html: `${icon('help', 16)} How to play`, onClick: () => this.openHelp() }),
+      h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));
     body.appendChild(slider('Sound effects', st.sfx, (v) => { st.sfx = v; this.onSettingsChanged?.(); }));

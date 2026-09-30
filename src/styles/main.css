@@ -3628,3 +3628,10 @@ p.small {
   font-size: 30px;
   line-height: 1;
 }
+
+.transfer-area {
+  min-height: 110px;
+  resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
