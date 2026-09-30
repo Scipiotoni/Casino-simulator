@@ -76,7 +76,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 | Street map | Click the map to teleport to the sidewalk or road; `M` enlarges it | Tap the map |
 | Select | Click a machine, guest or staff member | Tap |
 | Emotes | `1`–`4` (wave, dance, cheer, clap) | |
-| Pause | `P` or the speed buttons | Speed buttons |
+| Pause | `P` or the pause / play buttons | Pause / play buttons |
 | Photo mode | `H` | Camera button |
 
 ## Getting started

@@ -80,7 +80,7 @@ export class Hud {
     this.rateEl = h('span', { class: 'rate' });
     const bank = h('div', { class: 'pill bank' }, this.moneyEl, h('div', { class: 'sub' }, this.starsEl, this.rateEl));
     this.timeEl = h('div', { class: 'time' });
-    const speeds: [number, string, string][] = [[0, 'pause', 'Pause'], [1, 'play', 'Normal speed'], [2, 'ff', 'Fast'], [3, 'fff', 'Fastest']];
+    const speeds: [number, string, string][] = [[0, 'pause', 'Pause'], [1, 'play', 'Play']];
     const speedRow = h('div', { class: 'speed', role: 'group', 'aria-label': 'Game speed' });
     for (const [s, ic, label] of speeds) {
       const b = h('button', { class: 'spd', html: icon(ic, 16), title: label, 'aria-label': label, onClick: () => this.setSpeed(s) });

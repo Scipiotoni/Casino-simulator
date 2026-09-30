@@ -2259,7 +2259,8 @@ export class Game implements World, ItemHost {
     this.renamed = !!s.renamed;
     this.history = s.history ?? [];
     this.netLog = [];
-    this.speed = s.speed || 1;
+    // Time always runs at normal speed (the fast-forward buttons were removed).
+    this.speed = 1;
     this.paused = false;
     this.rival = { ...newRival(), ...s.rival };
     this.createdAt = s.createdAt || Date.now();
