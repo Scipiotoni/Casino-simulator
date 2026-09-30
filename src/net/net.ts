@@ -5,7 +5,7 @@ import type { Game } from '../game/game';
 import type { Hud } from '../ui/hud';
 import { CharacterModel } from '../entities/characterModel';
 import { sanitizeAppearance } from '../entities/appearance';
-import { sanitizeSnapshot, type CasinoSnapshot } from '../game/save';
+import { migrateSave, sanitizeSnapshot, type CasinoSnapshot, type SaveData } from '../game/save';
 import { SIGN_FONTS, type CasinoLook } from '../world/building';
 import { CENTER_X, FACADE_Z, type Layout } from '../world/grid';
 import type { StreetLot } from '../world/street';
@@ -26,6 +26,7 @@ interface QuerySnap {
 }
 interface DocRef {
   set(d: Record<string, unknown>): Promise<void>;
+  get?(): Promise<DocSnap>;
 }
 interface CollRef {
   doc(id: string): DocRef;
@@ -33,6 +34,7 @@ interface CollRef {
 }
 interface Db {
   collection(path: string): CollRef;
+  doc?(path: string): DocRef;
 }
 interface Peer {
   peer: string;
@@ -178,6 +180,7 @@ export class Net {
     this.game.pid = this.pid;
     this.db = id ? db : null;
     this.room = room;
+    if (id && db) void this.loadCloud(db, id);
     if (!this.db && !this.room) return;
     this.online = true;
     this.status = 'Connected: casinos from everyone playing this page line the street.';
@@ -274,6 +277,64 @@ export class Net {
     this.syncStreet();
   }
 
+  // ------------------------------------------------------------------ cloud save
+
+  /** Your whole save, kept in your private slot of the page's database (artifact viewer only). */
+  private cloudRef: DocRef | null = null;
+  /** The newest save found in the cloud when the game opened. */
+  cloudSave: SaveData | null = null;
+  /** Called once a cloud save has been read (so the title screen can offer Continue). */
+  onCloud: ((s: SaveData) => void) | null = null;
+  private cloudPending: SaveData | null = null;
+  private cloudLast = '';
+  private cloudT = 0;
+  private cloudBusy = false;
+
+  private async loadCloud(db: Db, id: string): Promise<void> {
+    const ref = db.doc ? db.doc(`data/users/${id}/save`) : db.collection(`data/users/${id}`).doc('save');
+    this.cloudRef = ref;
+    try {
+      const snap = await ref.get?.();
+      const raw = snap?.exists ? snap.data() : undefined;
+      if (raw && typeof raw.json === 'string') {
+        const s = migrateSave(JSON.parse(raw.json));
+        if (s) {
+          this.cloudSave = s;
+          this.cloudLast = raw.json;
+          this.onCloud?.(s);
+        }
+      }
+    } catch {
+      /* no cloud copy yet (or unreadable): local storage still works */
+    }
+    if (this.cloudPending) this.cloudT = 0;
+  }
+
+  /** Queue a save for the cloud; it's written at most every 15 seconds. */
+  pushCloud(s: SaveData, now = false): void {
+    this.cloudPending = s;
+    if (now) void this.flushCloud();
+  }
+
+  private async flushCloud(): Promise<void> {
+    const s = this.cloudPending;
+    if (!s || !this.cloudRef || this.cloudBusy) return;
+    this.cloudPending = null;
+    let json = JSON.stringify(s);
+    if (json.length > 240_000) json = JSON.stringify({ ...s, trash: [], history: [] });
+    if (json === this.cloudLast || json.length > 250_000) return;
+    this.cloudBusy = true;
+    try {
+      await this.cloudRef.set({ json, t: s.savedAt ?? Date.now() });
+      this.cloudLast = json;
+      this.cloudSave = s;
+    } catch {
+      this.cloudPending ??= s;
+    } finally {
+      this.cloudBusy = false;
+    }
+  }
+
   /** Every published casino (and every online player's casino) joins the street. */
   private syncStreet(): void {
     const online = new Set([...this.remotes.values()].map((r) => r.pid));
@@ -355,6 +416,11 @@ export class Net {
     if (this.presenceT <= 0) {
       this.presenceT = 0.12;
       void this.sendPresence();
+    }
+    this.cloudT -= dt;
+    if (this.cloudT <= 0 && this.cloudPending) {
+      this.cloudT = 15;
+      void this.flushCloud();
     }
     this.publishT -= dt;
     if (this.publishT <= 0) {

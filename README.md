@@ -57,7 +57,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - Synthesized sound effects and an optional lounge-jazz music loop.
 - **Third-person camera** (`V`): the camera sits behind your manager and turns with them.
 - **Photo mode** (`H` or the camera button) hides the HUD so you can admire your casino.
-- Autosaves to your browser, with Continue on the title screen.
+- Autosaves everything (your casino, character, money, level, goals and every purchase, cosmetics included) to your browser, with Continue on the title screen. In the Claude artifact the save is also kept in your own private slot of the page's database, so a reload or another device picks up where you left off; the newer copy wins.
 - **Export and import** your casino from the menu: download it as a file or copy it as text, and load a file or pasted text back (yours or a friend's). Imported files are checked and clamped like any other player's casino.
 
 ![Character creator](docs/screenshot-creator.jpg)

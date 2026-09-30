@@ -80,17 +80,30 @@ async function start(hotData: unknown): Promise<void> {
   app.appendChild(stage);
   const game = new Game(stage, settings);
   const hud = new Hud(app, game);
-  const readSave = () => migrateSave(loadJSON<unknown>(SAVE_KEY));
-  const title = new TitleScreen(hud.root, game, readSave);
-
   game.net = { ...emptyNet(), ...(loadJSON<NetState>(NET_KEY) ?? {}) };
   const net = new Net(game, hud);
+  // Your save lives in this browser and, inside the Claude artifact viewer, in your own
+  // private slot of the page's database too (browser storage there can come back empty).
+  // Whichever copy is newer wins.
+  const readSave = (): SaveData | null => {
+    const local = migrateSave(loadJSON<unknown>(SAVE_KEY));
+    const cloud = net.cloudSave;
+    if (!cloud) return local;
+    if (!local) return cloud;
+    return (cloud.savedAt ?? 0) > (local.savedAt ?? 0) ? cloud : local;
+  };
+  const title = new TitleScreen(hud.root, game, readSave);
+  net.onCloud = () => {
+    if (game.state !== 'playing') title.refreshHome();
+  };
   void net.start();
   let lastSave: SaveData | null = null;
+  let flushNow = false;
   game.onSave = (d) => {
     lastSave = d;
     saveJSON(SAVE_KEY, d);
     saveJSON(NET_KEY, game.net);
+    net.pushCloud(d, flushNow);
   };
   hotApi()?.snapshot?.(() => (game.state === 'playing' ? game.serialize() : lastSave));
   game.settings = settings;
@@ -146,6 +159,7 @@ async function start(hotData: unknown): Promise<void> {
   hud.modals.onMainMenu = showTitle;
   hud.modals.onNewCasino = () => {
     removeKey(SAVE_KEY);
+    net.cloudSave = null;
     showTitle();
   };
   game.events.on('camera', () => saveJSON(SETTINGS_KEY, settings));
@@ -154,7 +168,12 @@ async function start(hotData: unknown): Promise<void> {
     saveJSON(SETTINGS_KEY, settings);
   };
 
-  const save = () => game.saveNow();
+  const save = () => {
+    if (game.state !== 'playing') return;
+    flushNow = true;
+    game.saveNow();
+    flushNow = false;
+  };
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) save();
   });

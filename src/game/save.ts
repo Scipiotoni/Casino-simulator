@@ -68,6 +68,8 @@ export interface SaveData extends CasinoSnapshot {
   createdAt: number;
   /** Cosmetics bought and switched on (see src/cosmetics). */
   cosmetics?: { owned: string[]; on: string[] };
+  /** When this save was written (epoch ms): the newest of the local and cloud copies wins. */
+  savedAt?: number;
 }
 
 export function emptyNet(): NetState {

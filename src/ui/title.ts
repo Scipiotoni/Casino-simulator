@@ -30,6 +30,11 @@ export class TitleScreen {
     this.renderHome();
   }
 
+  /** Redraw the start screen if it's showing (e.g. a cloud save just arrived). */
+  refreshHome(): void {
+    if (!this.el.hidden && this.card.classList.contains('home')) this.renderHome();
+  }
+
   hide(): void {
     this.creator?.dispose();
     this.creator = null;

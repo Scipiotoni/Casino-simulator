@@ -2209,6 +2209,7 @@ export class Game implements World, ItemHost {
         rival: { ...this.rival },
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
+        savedAt: Date.now(),
       };
     }
     return {
@@ -2240,6 +2241,7 @@ export class Game implements World, ItemHost {
       rival: { ...this.rival },
       createdAt: this.createdAt,
       cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
+      savedAt: Date.now(),
     };
   }
 
