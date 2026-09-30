@@ -55,6 +55,7 @@ interface ClaudeUse {
 /**
  * Capabilities to declare when publishing the page as an artifact. Everyone reads every
  * lot and ledger; each player writes only their own `lots/<id>` and `ledger/<id>`.
+ * `downloads` lets the Export button save a casino file from inside the viewer.
  */
 export const ARTIFACT_CAPABILITIES = {
   db: {
@@ -67,6 +68,7 @@ export const ARTIFACT_CAPABILITIES = {
   },
   room: {},
   user: {},
+  downloads: true,
 };
 
 /** How long a blacklist lasts, and how long before you can blacklist that player again. */

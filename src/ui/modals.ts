@@ -227,16 +227,34 @@ export class Modals {
     body.appendChild(h('div', { class: 'btn-row wrap' },
       h('button', {
         class: 'btn gold', html: `${icon('save', 16)} Download file`,
-        onClick: () => {
+        onClick: async () => {
+          const name = exportFileName(save);
+          // Inside the Claude artifact viewer, files go through its downloads capability.
+          const claude = (window as unknown as { claude?: { use(n: string): Promise<unknown> } }).claude;
+          if (claude?.use) {
+            const dl = (await claude.use('downloads').catch(() => null)) as { save(r: { filename: string; data: string }): Promise<unknown> } | null;
+            if (!dl) {
+              status.textContent = 'Downloads aren’t available here: use Copy as text instead.';
+              return;
+            }
+            try {
+              await dl.save({ filename: name, data: text });
+              status.textContent = `Saved ${name}.`;
+            } catch (e) {
+              const code = (e as { code?: string }).code;
+              status.textContent = code === 'declined' ? 'Download cancelled.' : 'Couldn’t save the file here: use Copy as text instead.';
+            }
+            return;
+          }
           const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
           const a = document.createElement('a');
           a.href = url;
-          a.download = exportFileName(save);
+          a.download = name;
           document.body.appendChild(a);
           a.click();
           a.remove();
           window.setTimeout(() => URL.revokeObjectURL(url), 2000);
-          status.textContent = `Saved ${a.download}.`;
+          status.textContent = `Saved ${name}.`;
         },
       }),
       h('button', {
