@@ -19,8 +19,6 @@ export interface StreetLot {
   online: boolean;
   /** For a hotel: the id of the casino it belongs to (it stands right next to it). */
   hotelOf?: string;
-  /** For a hotel: its size and star tier (the interior is generated from these). */
-  hotel?: { floors: number; tier: number };
 }
 
 /** How many columns either side of the player exteriors are built. */

@@ -1,76 +1,36 @@
 import type { CasinoSnapshot } from './save';
-import type { SavedItem } from '../items/placedItem';
+import { sanitizeSnapshot } from './save';
 import type { CasinoLook } from '../world/building';
-import { CENTER_X, layoutRect, PORTAL, STAIR_TILE, type Layout } from '../world/grid';
-import { itemDef, rotatedSize } from '../items/catalog';
+import type { Layout } from '../world/grid';
+import { emptyStats, type LifetimeStats } from './objectives';
+import { itemDef } from '../items/catalog';
+import { roomRate, sanitizeSetup } from '../hotel/rooms';
+import type { Appearance } from '../entities/appearance';
+import { ROLES } from '../entities/staff';
 
-/** Your hotel tower next to the casino. */
+/**
+ * Your hotel: a second, separate tycoon next door. It has its own bank, level, goals and
+ * floor plan; while you're in the casino it keeps earning on an estimate from last time.
+ */
 export interface HotelState {
-  /** Storeys, lobby included (rooms are on every floor above it). */
-  floors: number;
-  /** Index into HOTEL_TIERS. */
-  tier: number;
-  /** Guests who slept here last night; they bring extra gamblers today. */
+  bank: number;
+  xp: number;
+  level: number;
+  snap: CasinoSnapshot;
+  objectives: string[];
+  stats: LifetimeStats;
+  history: number[];
+  /** Estimated earnings per game second while you're not inside. */
+  rate: number;
+  /** Guests sleeping there when you left (some come over to the casino). */
   staying: number;
-  /** Last night's result, for the panel. */
-  last: { guests: number; rooms: number; revenue: number; costs: number } | null;
 }
 
-export const HOTEL_PRICE = 120_000;
-export const HOTEL_LEVEL = 8;
-export const ROOMS_PER_FLOOR = 8;
-export const HOTEL_MAX_FLOORS = 20;
-/** The tower's footprint on its lot (narrowest width, one depth step). */
-export const HOTEL_LAYOUT: Layout = { width: 0, depth: 1 };
-
-export const HOTEL_TIERS: { name: string; stars: number; rate: number; cost: number; level: number }[] = [
-  { name: 'Budget Inn', stars: 1, rate: 90, cost: 0, level: HOTEL_LEVEL },
-  { name: 'Comfort Hotel', stars: 2, rate: 180, cost: 80_000, level: 10 },
-  { name: 'Deluxe Resort', stars: 3, rate: 360, cost: 250_000, level: 13 },
-  { name: 'Luxury Towers', stars: 4, rate: 750, cost: 700_000, level: 16 },
-  { name: 'Grand Palace Suites', stars: 5, rate: 1500, cost: 2_000_000, level: 20 },
-];
-
-export function newHotel(): HotelState {
-  return { floors: 2, tier: 0, staying: 0, last: null };
-}
-
-export function hotelRooms(h: HotelState): number {
-  return (h.floors - 1) * ROOMS_PER_FLOOR;
-}
-
-/** Price of the next storey. */
-export function hotelFloorCost(h: HotelState): number {
-  return Math.round((40_000 * Math.pow(1.35, h.floors - 2)) / 1000) * 1000;
-}
-
-/** Share of rooms booked tonight: a better casino fills more rooms, fancier rooms are harder to sell. */
-export function hotelOccupancy(tier: number, rating: number, rnd = Math.random()): number {
-  const occ = 0.3 + rating * 0.13 - tier * 0.05 + (rnd - 0.5) * 0.12;
-  return Math.max(0.05, Math.min(0.98, occ));
-}
-
-/** Nightly housekeeping and staff, per room. */
-export function hotelCostPerRoom(tier: number): number {
-  return Math.round(15 * (1 + tier * 0.8));
-}
-
-/** One night at the hotel: who checks in, what they pay, what it costs. Mutates the state. */
-export function hotelNight(h: HotelState, rating: number, rnd = Math.random()): { guests: number; revenue: number; costs: number } {
-  const rooms = hotelRooms(h);
-  const guests = Math.round(rooms * hotelOccupancy(h.tier, rating, rnd));
-  const revenue = guests * HOTEL_TIERS[h.tier].rate;
-  const costs = rooms * hotelCostPerRoom(h.tier);
-  h.staying = guests;
-  h.last = { guests, rooms, revenue, costs };
-  return { guests, revenue, costs };
-}
-
-/** Hotel guests visit the casino: more arrivals (up to double) and more high rollers. */
-export function hotelGuestBoost(h: HotelState | null): { spawn: number; vip: number } {
-  if (!h) return { spawn: 1, vip: 0 };
-  return { spawn: 1 + Math.min(1, h.staying / 80), vip: h.staying > 0 ? 0.01 + h.tier * 0.012 : 0 };
-}
+/** What the casino pays to build the hotel, and the hotel's own starting cash. */
+export const HOTEL_PRICE = 50_000;
+export const HOTEL_LEVEL = 6;
+export const HOTEL_START_CASH = 8_000;
+export const HOTEL_START_LAYOUT: Layout = { width: 0, depth: 0 };
 
 export function hotelName(casino: string): string {
   return `${casino} Hotel`.slice(0, 26);
@@ -80,71 +40,99 @@ export function hotelLook(casino: CasinoLook): CasinoLook {
   return { ...casino, name: hotelName(casino.name) };
 }
 
-export function sanitizeHotel(raw: unknown): HotelState | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const n = (v: unknown, lo: number, hi: number, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : d);
-  const h: HotelState = { floors: n(r.floors, 2, HOTEL_MAX_FLOORS, 2), tier: n(r.tier, 0, HOTEL_TIERS.length - 1, 0), staying: 0, last: null };
-  h.staying = n(r.staying, 0, hotelRooms(h), 0);
-  const l = r.last as Record<string, unknown> | null | undefined;
-  if (l && typeof l === 'object') {
-    h.last = { guests: n(l.guests, 0, 1e5, 0), rooms: n(l.rooms, 0, 1e5, 0), revenue: n(l.revenue, 0, 1e9, 0), costs: n(l.costs, 0, 1e9, 0) };
-  }
-  return h;
+export function newHotel(look: CasinoLook): HotelState {
+  const l = hotelLook(look);
+  return {
+    bank: HOTEL_START_CASH, xp: 0, level: 1,
+    snap: { name: l.name, look: l, layout: { ...HOTEL_START_LAYOUT }, floors: 1, paint: [''], items: [], staff: [], rating: 2 },
+    objectives: [], stats: emptyStats(), history: [], rate: 0, staying: 0,
+  };
+}
+
+/** Guests at the hotel spill over into the casino: more arrivals and more high rollers. */
+export function hotelGuestBoost(h: HotelState | null): { spawn: number; vip: number } {
+  if (!h || !h.staying) return { spawn: 1, vip: 0 };
+  return { spawn: 1 + Math.min(0.8, h.staying / 60), vip: Math.min(0.06, h.staying * 0.002) };
+}
+
+/** Share of rooms that sell each night at a given star rating. */
+export function hotelOccupancy(rating: number): number {
+  return Math.max(0.1, Math.min(0.95, 0.25 + rating * 0.13));
 }
 
 /**
- * The inside of the tower: a lobby with the front desk, lounge and greenery, and a floor
- * of made-up rooms on every storey above.
+ * Money per game second the hotel makes while you're not there: every room sells at the
+ * rating's occupancy, one guest after another. Needs a reception, and rooms only turn
+ * over quickly with housekeepers to make them up.
  */
-export function generateHotel(h: { floors: number; tier: number }, look: CasinoLook): CasinoSnapshot {
-  const rect = layoutRect(HOTEL_LAYOUT);
-  const items: SavedItem[] = [];
-  const taken = new Set<string>();
-  const put = (id: string, f: number, tx: number, tz: number, rot: number, color?: number): boolean => {
-    const def = itemDef(id);
-    const [w, d] = rotatedSize(def, rot);
-    const tiles: string[] = [];
-    for (let z = tz; z < tz + d; z++) {
-      for (let x = tx; x < tx + w; x++) {
-        if (x < rect.x0 || x > rect.x1 || z < rect.z0 || z > rect.z1) return false;
-        if (x >= STAIR_TILE[0] - 1 && x <= PORTAL[0] + 1 && z >= STAIR_TILE[1] - 1 && z <= STAIR_TILE[1] + 3) return false;
-        if (f === 0 && z >= rect.z1 - 3 && x >= CENTER_X - 2 && x <= CENTER_X + 1) return false;
-        const key = `${f}:${x},${z}`;
-        if (taken.has(key)) return false;
-        tiles.push(key);
-      }
+export function estimateHotelRate(snap: CasinoSnapshot): number {
+  const items = snap.items;
+  if (!items.some((i) => i.id === 'reception')) return 0;
+  const housekeepers = snap.staff.filter((s) => s.role === 'janitor').length;
+  const turnover = housekeepers ? Math.min(1, 0.55 + housekeepers * 0.15) : 0.15;
+  let perSec = 0;
+  for (const it of items) {
+    let def;
+    try {
+      def = itemDef(it.id);
+    } catch {
+      continue;
     }
-    tiles.forEach((k) => taken.add(k));
-    items.push({ id, f: f || undefined, tx, tz, rot, level: 1, color: color ?? itemDef(id).colors[0], broken: false, stats: { plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 } });
-    return true;
-  };
-  const bedColors = [0x8a1030, 0x1d4fa0, 0x0f7a45, 0x6a2cc2, 0xc89b3c];
-  const bed = bedColors[Math.max(0, Math.min(bedColors.length - 1, h.tier))];
-  // Lobby
-  put('frontdesk', 0, CENTER_X - 2, rect.z0 + 1, 0, look.wallColor);
-  put('rug', 0, CENTER_X - 1, rect.z0 + 5, 0, 0x8a1030);
-  put('rug', 0, CENTER_X - 1, rect.z0 + 7, 0, 0x8a1030);
-  put('bench', 0, rect.x0 + 1, rect.z0 + 6, 1, 0x5a1426);
-  put('bench', 0, rect.x1 - 1, rect.z0 + 6, 3, 0x5a1426);
-  put('bench', 0, rect.x1 - 1, rect.z0 + 9, 3, 0x5a1426);
-  put('fountain', 0, CENTER_X - 1, rect.z0 + 9, 0);
-  for (const [x, z, id] of [
-    [rect.x0, rect.z0, 'palm'], [rect.x1, rect.z0, 'palm'], [rect.x1, rect.z1, 'plant'], [CENTER_X - 3, rect.z1 - 1, 'pillar'],
-    [CENTER_X + 2, rect.z1 - 1, 'pillar'], [rect.x0 + 3, rect.z0, 'plant'], [rect.x1 - 3, rect.z0, 'plant'], [rect.x1, rect.z0 + 3, 'lamp'],
-  ] as [number, number, string][]) put(id, 0, x, z, 0);
-  if (h.tier >= 3) put('statue', 0, rect.x0 + 3, rect.z0 + 10, 0);
-  // Rooms: a row along the back wall and a row facing it
-  for (let f = 1; f < h.floors; f++) {
-    let n = 0;
-    for (let x = rect.x0 + 1; x <= rect.x1 - 1 && n < ROOMS_PER_FLOOR / 2; x += 3) if (put('hotelbed', f, x, rect.z0, 0, bed)) n++;
-    for (let x = rect.x1 - 2; x >= rect.x0 + 1 && n < ROOMS_PER_FLOOR; x -= 3) if (put('hotelbed', f, x, rect.z0 + 7, 0, bed)) n++;
-    put('plant', f, rect.x1, rect.z1, 0);
-    put('bench', f, rect.x1 - 1, rect.z1 - 3, 3, 0x5a1426);
-    put('rug', f, CENTER_X - 1, rect.z0 + 4, 1, 0x8a1030);
+    if (def.kind !== 'room') continue;
+    const suite = Number(def.params?.suite) === 1;
+    const rate = roomRate(sanitizeSetup(it.setup, suite), suite);
+    // A night plus the walk in, check-in and checkout.
+    perSec += rate / (def.roundTime * 2 + 30);
   }
+  return perSec * hotelOccupancy(snap.rating) * turnover;
+}
+
+/** The hotel's daily wages and upkeep (paid from its own bank). */
+export function hotelDailyCosts(snap: CasinoSnapshot): number {
+  let c = 0;
+  for (const s of snap.staff) c += ROLES.find((r) => r.role === s.role)?.wage ?? 0;
+  for (const it of snap.items) {
+    try {
+      c += itemDef(it.id).upkeep;
+    } catch {
+      /* unknown item */
+    }
+  }
+  return c;
+}
+
+export function hotelLotInfo(h: HotelState): { width: number; depth: number; floors: number } {
+  return { width: h.snap.layout.width, depth: h.snap.layout.depth, floors: h.snap.floors };
+}
+
+const num = (v: unknown, lo: number, hi: number, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d);
+
+/**
+ * Check a saved hotel. Hotels from before the hotel became its own tycoon (a tier and a
+ * floor count, no floor plan) turn into a fresh empty hotel with some cash to start over.
+ */
+export function sanitizeHotel(raw: unknown, look: CasinoLook, fonts: string[], sanitizeLook: (a: unknown) => Appearance): HotelState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (!r.snap) {
+    const h = newHotel(look);
+    h.bank = 20_000;
+    return h;
+  }
+  const snap = sanitizeSnapshot(r.snap, fonts, sanitizeLook);
+  if (!snap) return newHotel(look);
+  const stats = emptyStats();
+  const si = (r.stats ?? {}) as Record<string, unknown>;
+  for (const k of Object.keys(stats) as (keyof LifetimeStats)[]) stats[k] = num(si[k], -1e15, 1e15, 0);
   return {
-    name: look.name, look, layout: { ...HOTEL_LAYOUT }, floors: h.floors, paint: Array.from({ length: h.floors }, () => ''),
-    items, staff: [], rating: 3 + h.tier * 0.4,
+    bank: Math.round(num(r.bank, -1e12, 1e15, HOTEL_START_CASH)),
+    xp: Math.round(num(r.xp, 0, 1e12, 0)),
+    level: Math.round(num(r.level, 1, 99, 1)),
+    snap,
+    objectives: Array.isArray(r.objectives) ? r.objectives.filter((x): x is string => typeof x === 'string').slice(0, 200) : [],
+    stats,
+    history: Array.isArray(r.history) ? r.history.filter((x): x is number => typeof x === 'number' && Number.isFinite(x)).slice(-30) : [],
+    rate: num(r.rate, 0, 1e6, 0),
+    staying: Math.round(num(r.staying, 0, 5000, 0)),
   };
 }

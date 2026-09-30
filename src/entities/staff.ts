@@ -25,6 +25,16 @@ export const ROLES: RoleInfo[] = [
   { role: 'security', title: 'Security', wage: 300, unlock: 5, blurb: 'Spots and busts cheaters on the floor.' },
 ];
 
+/** A role as the business you're in calls it: in the hotel, janitors are housekeepers. */
+export function roleFor(role: WorkerRole, site: 'casino' | 'hotel'): RoleInfo {
+  const r = ROLES.find((x) => x.role === role)!;
+  if (site === 'hotel' && role === 'janitor') {
+    return { ...r, title: 'Housekeeper', unlock: 1, blurb: 'Makes up rooms after guests check out (a dirty room can’t be sold) and sweeps litter.' };
+  }
+  if (site === 'hotel' && role === 'doorman') return { ...r, title: 'Doorman', blurb: 'Greets guests at the entrance and keeps troublemakers out (max 2).' };
+  return r;
+}
+
 /** Where door guards stand: either side of the red carpet, facing the street. */
 export const DOOR_POSTS: [number, number][] = [
   [CENTER_X - 1.55, FACADE_Z + 1.35],
@@ -35,6 +45,7 @@ export const MAX_DOOR_GUARDS = DOOR_POSTS.length;
 type Task =
   | { kind: 'trash'; trash: Trash }
   | { kind: 'repair'; item: PlacedItem }
+  | { kind: 'room'; item: PlacedItem }
   | { kind: 'chase'; target: Customer }
   | null;
 
@@ -70,6 +81,8 @@ export class Worker extends Walker {
         return 'Cleaning up litter';
       case 'repair':
         return `Repairing the ${this.task.item.def.name}`;
+      case 'room':
+        return 'Making up a room';
       case 'chase':
         return 'Chasing a cheater!';
     }
@@ -84,7 +97,7 @@ export class Worker extends Walker {
     const t = this.task;
     if (!t) return;
     if (t.kind === 'trash' && t.trash.claimedBy === this.uid) t.trash.claimedBy = null;
-    if (t.kind === 'repair' && t.item.repairClaim === this.uid) t.item.repairClaim = null;
+    if ((t.kind === 'repair' || t.kind === 'room') && t.item.repairClaim === this.uid) t.item.repairClaim = null;
     this.task = null;
     this.working = false;
   }
@@ -118,6 +131,18 @@ export class Worker extends Walker {
   private findTask(w: World): void {
     const r = this.role;
     if (r === 'janitor') {
+      // Housekeeping first: a dirty room is a room nobody can sleep in.
+      const rooms = w.items.items.filter((i) => i.dirty && i.repairClaim === null);
+      if (rooms.length) {
+        const cost = (i: PlacedItem) => dist(i.cx, i.cz, this.x, this.z) + Math.abs(i.floor - this.floor) * 12;
+        const room = rooms.reduce((a, b) => (cost(a) < cost(b) ? a : b));
+        const seat = room.seats[0];
+        if (seat && this.go(w, room.floor, seat.tileX, seat.tileZ)) {
+          room.repairClaim = this.uid;
+          this.task = { kind: 'room', item: room };
+          return;
+        }
+      }
       const free = w.trash.list.filter((t) => t.claimedBy === null);
       if (!free.length) return;
       const cost = (t: Trash) => dist(t.x, t.z, this.x, this.z) + Math.abs(t.floor - this.floor) * 12;
@@ -227,9 +252,11 @@ export class Worker extends Walker {
         this.release();
       } else if (t.kind === 'repair' && !w.items.items.includes(t.item)) {
         this.release();
+      } else if (t.kind === 'room' && (!t.item.dirty || !w.items.items.includes(t.item))) {
+        this.release();
       } else if (r === 'arrived') {
         this.working = true;
-        this.workT = t.kind === 'repair' ? 3 : 1.1;
+        this.workT = t.kind === 'repair' ? 3 : t.kind === 'room' ? 3.5 : 1.1;
         if (t.kind !== 'trash') this.faceTowards(t.item.cx, t.item.cz);
       } else if (r === 'blocked' || r === 'idle') {
         this.release();
@@ -239,6 +266,7 @@ export class Worker extends Walker {
     }
     this.workT -= dt;
     const pose = t.kind === 'repair' ? 'repair' : 'sweep';
+    if (t.kind === 'room' && Math.random() < dt * 2) w.effects.sparkle(t.item.cx, 0.6, t.item.cz, 2, 0xbfe9ff, 0.8);
     if (t.kind === 'repair' && Math.random() < dt * 3) w.sfxAt('repair', this.x, this.z, 0.6);
     if (this.workT <= 0) {
       if (t.kind === 'trash') {
@@ -247,6 +275,13 @@ export class Worker extends Walker {
           w.onStaffClean();
         }
         w.effects.sparkle(this.x, 0.4, this.z, 5, 0xbfe9ff, 0.5);
+      } else if (t.kind === 'room') {
+        if (t.item.dirty) {
+          t.item.dirty = false;
+          w.effects.sparkle(t.item.cx, 1, t.item.cz, 16, 0xbfe9ff, 1.2);
+          w.floaters.text(t.item.root.position.clone().setY(2), 'Room ready!', 'good');
+          w.onStaffClean();
+        }
       } else if (t.kind === 'repair') {
         if (t.item.broken) {
           t.item.broken = false;

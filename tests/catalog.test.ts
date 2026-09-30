@@ -52,7 +52,8 @@ describe('catalog', () => {
             expect(set.has(`${x},${z}`)).toBe(true);
           }
         }
-        for (const s of d.seats) {
+        // A hotel guest walks to the room's doorway, then lies down in the bed inside.
+        for (const s of d.kind === 'room' ? [] : d.seats) {
           const [tx, tz] = localTileToWorld(d, 10, 20, rot, s.tile[0], s.tile[1]);
           const [px, pz] = localPosToWorld(d, 10, 20, rot, s.pos[0], s.pos[1]);
           // Seat positions stay close to their tile (within one tile).

@@ -4,6 +4,7 @@ import type { SavedItem } from '../items/placedItem';
 import type { WorkerRole } from '../entities/staff';
 import type { Appearance } from '../entities/appearance';
 import type { LifetimeStats } from './objectives';
+import { sanitizeSetup } from '../hotel/rooms';
 
 export interface SavedStaff {
   role: WorkerRole;
@@ -204,6 +205,8 @@ export function sanitizeSnapshot(raw: unknown, fonts: string[], sanitizeLook: (a
       level: num(r.level, 1, 5, 1), color: num(r.color, 0, 0xffffff, 0xffffff), broken: false,
       stats: { plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 },
       label: typeof r.label === 'string' ? r.label.slice(0, 14).toUpperCase() : undefined,
+      setup: r.setup && typeof r.setup === 'object' ? sanitizeSetup(r.setup) : undefined,
+      dirty: r.dirty === true || undefined,
     });
   }
   const roles = ['janitor', 'technician', 'security', 'doorman'];

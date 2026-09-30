@@ -10,6 +10,8 @@ export interface BuildOpts {
   params: Record<string, string | number>;
   /** Appearance data for the golden statue. */
   statueLook?: unknown;
+  /** How a hotel room is decorated. */
+  setup?: import('../../hotel/rooms').RoomSetup;
 }
 
 export function add<T extends THREE.Object3D>(parent: THREE.Object3D, obj: T, x = 0, y = 0, z = 0): T {

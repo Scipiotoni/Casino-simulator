@@ -27,7 +27,9 @@ describe('casino export / import', () => {
     expect(s.stats.visitors).toBe(12);
     expect(s.rival.banUntil).toBe(0);
     expect(s.cosmetics).toEqual({ owned: ['crown'], on: ['crown'] });
-    expect(s.hotel).toMatchObject({ floors: 5, tier: 2, staying: 12 });
+    // An old-style hotel (a tier, no floor plan) becomes a fresh one with cash to rebuild.
+    expect(s.hotel).toMatchObject({ bank: 20000, level: 1 });
+    expect(s.hotel?.snap.items).toEqual([]);
     expect(s.rebirths).toBe(3);
   });
 

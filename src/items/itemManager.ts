@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { type ItemDef, footprintTiles, localTileToWorld, itemDef } from './catalog';
-import { PlacedItem, type ItemHost, type SavedItem } from './placedItem';
+import { PlacedItem, loadSetup, type ItemHost, type SavedItem } from './placedItem';
 import { DOOR_TILES, portalOf, type Grid } from '../world/grid';
 import type { Effects } from '../render/effects';
 
@@ -481,7 +481,9 @@ export class ItemManager {
       it.level = Math.max(1, Math.min(5, s.level || 1));
       it.label = s.label ? String(s.label).slice(0, 14) : null;
       it.pendingXp = Math.max(0, Math.min(5000, Number(s.pxp) || 0));
-      if (it.level > 1 || it.label) it.rebuildModel();
+      loadSetup(it, s.setup);
+      it.dirty = s.dirty === true;
+      if (it.level > 1 || it.label || s.setup) it.rebuildModel();
       it.stats = Object.assign({ plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 }, s.stats);
       if (s.broken) it.broken = true;
     }

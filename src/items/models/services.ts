@@ -348,21 +348,3 @@ export function frontDeskModel(o: BuildOpts): ItemModel {
   bake(root, dyn);
   return { root, height: 2.3, update() {}, event() {}, dispose() { disposeTree(root); } };
 }
-
-/** A made-up hotel bed with pillows, a runner and a nightstand. */
-export function hotelBedModel(o: BuildOpts): ItemModel {
-  const root = new THREE.Group();
-  const dyn = new Dyn();
-  const frame = mat(0x2a1a12, { rough: 0.5 });
-  const sheet = mat(0xf6f3ee, { rough: 0.9 });
-  rbox(root, 1.7, 0.3, 2.3, 0.05, frame, 0, 0.15, 0.1);
-  rbox(root, 1.6, 0.25, 2.2, 0.08, sheet, 0, 0.42, 0.12);
-  rbox(root, 1.62, 0.08, 1.1, 0.04, mat(o.color, { rough: 0.8 }), 0, 0.56, 0.55);
-  for (const x of [-0.4, 0.4]) rbox(root, 0.62, 0.16, 0.34, 0.07, sheet, x, 0.6, -0.72);
-  rbox(root, 1.8, 1.1, 0.12, 0.04, mat(shadeHex(o.color, 0.55), { rough: 0.7 }), 0, 0.55, -1.05);
-  rbox(root, 0.34, 0.45, 0.34, 0.03, frame, 1.1, 0.23, -0.8);
-  cyl(root, 0.03, 0.05, 0.25, gold(), 1.1, 0.58, -0.8, 8);
-  sph(root, 0.1, glow(0xffe0a0, 1.2), 1.1, 0.76, -0.8, 12, 8);
-  bake(root, dyn);
-  return { root, height: 1.2, update() {}, event() {}, dispose() { disposeTree(root); } };
-}

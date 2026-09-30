@@ -9,6 +9,7 @@ import { type Appearance, randomStaffAppearance } from '../entities/appearance';
 import { badgeTexture } from '../render/textures';
 import { easeOutBack } from '../core/math';
 import { FACADE_Z as DOOR_Z } from '../world/grid';
+import { type RoomSetup, defaultSetup, roomRate, roomStars, sanitizeSetup, setupValue } from '../hotel/rooms';
 
 
 /** Seconds after buying during which selling refunds the full price. */
@@ -87,6 +88,17 @@ export class PlacedItem {
   color: number;
   /** Custom sign text chosen by the player (slot toppers, bar and snack signs). */
   label: string | null = null;
+  /** How a hotel room is decorated (rooms only). */
+  setup: RoomSetup | null = null;
+  /** A hotel room a guest just checked out of: no one can stay until housekeeping has been. */
+  dirty = false;
+  /** While the decorator previews a design: the setup actually paid for. */
+  previewOf: RoomSetup | null = null;
+
+  /** The decoration guests pay for and saves keep (not an unpaid preview). */
+  get paidSetup(): RoomSetup | null {
+    return this.previewOf ?? this.setup;
+  }
   /** Game time when bought: selling right away gives a full refund. */
   placedAt = -999;
   /** XP from buying/upgrading, held back until the refund window closes. */
@@ -118,6 +130,7 @@ export class PlacedItem {
     color?: number,
   ) {
     this.color = color ?? def.colors[0] ?? 0xffffff;
+    if (def.kind === 'room') this.setup = defaultSetup();
     if (def.shared) {
       this.table = { phase: 'idle', timer: 0, bets: new Map(), outcomes: new Map(), shared: { kind: 'none' } };
     }
@@ -136,7 +149,7 @@ export class PlacedItem {
   }
 
   get upgradable(): boolean {
-    return !this.def.fixed && this.def.kind !== 'decor' && this.def.kind !== 'bench' && this.def.kind !== 'stage';
+    return !this.def.fixed && !['decor', 'bench', 'stage', 'room', 'desk', 'pool'].includes(this.def.kind);
   }
 
   get minBet(): number {
@@ -160,8 +173,24 @@ export class PlacedItem {
     return Math.round(this.def.price * 0.6 * this.level);
   }
 
+  get isSuite(): boolean {
+    return this.def.kind === 'room' && Number(this.def.params?.suite) === 1;
+  }
+
+  /** Nightly rate of a hotel room (0 for anything else). */
+  get roomRate(): number {
+    const s = this.paidSetup;
+    return s ? roomRate(s, this.isSuite) : 0;
+  }
+
+  get roomStars(): number {
+    const s = this.paidSetup;
+    return s ? roomStars(s, this.isSuite) : 0;
+  }
+
   get invested(): number {
-    let invested = this.def.price;
+    const paid = this.paidSetup;
+    let invested = this.def.price + (paid ? setupValue(paid) : 0);
     for (let l = 1; l < this.level; l++) invested += Math.round(this.def.price * 0.6 * l);
     return invested;
   }
@@ -203,6 +232,7 @@ export class PlacedItem {
       level: this.level,
       params,
       statueLook: this.def.model === 'statue' ? this.host.statueLook() : undefined,
+      setup: this.setup ?? undefined,
     });
     this.root.add(this.model.root);
   }
@@ -571,7 +601,7 @@ export class PlacedItem {
   }
 
   private updateStatus(): void {
-    const kind = this.broken ? 'broken' : '';
+    const kind = this.broken ? 'broken' : this.dirty ? 'dirty' : '';
     if (kind === this.statusKind) {
       if (this.status) this.status.position.y = this.model.height + 0.45 + Math.sin(this.host.time * 4) * 0.08;
       return;
@@ -587,7 +617,7 @@ export class PlacedItem {
       this.status.renderOrder = 10;
       this.root.add(this.status);
     }
-    (this.status.material as THREE.SpriteMaterial).map = badgeTexture('broken');
+    (this.status.material as THREE.SpriteMaterial).map = badgeTexture(kind as 'broken' | 'dirty');
     (this.status.material as THREE.SpriteMaterial).needsUpdate = true;
     this.status.visible = true;
     this.status.position.set(0, this.model.height + 0.45, 0);
@@ -627,6 +657,8 @@ export class PlacedItem {
       id: this.def.id, f: this.floor || undefined, tx: this.tx, tz: this.tz, rot: this.rot, level: this.level, color: this.color,
       broken: this.broken, stats: { ...this.stats }, label: this.label ?? undefined,
       pxp: this.pendingXp || undefined,
+      setup: this.paidSetup ? { ...this.paidSetup, extras: [...this.paidSetup.extras] } : undefined,
+      dirty: this.dirty || undefined,
     };
   }
 }
@@ -647,8 +679,17 @@ export interface SavedItem {
   label?: string;
   /** XP still held back by the refund window when saved (paid out on load). */
   pxp?: number;
+  /** Hotel room decoration. */
+  setup?: RoomSetup;
+  dirty?: boolean;
 }
 
 function pickOf<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Apply a saved decoration to a room (checked, since saves and other players' casinos are untrusted). */
+export function loadSetup(item: PlacedItem, raw: unknown): void {
+  if (item.def.kind !== 'room' || !raw) return;
+  item.setup = sanitizeSetup(raw, item.isSuite);
 }

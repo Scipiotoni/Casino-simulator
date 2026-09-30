@@ -17,7 +17,7 @@ export type Expression = 'neutral' | 'happy' | 'excited' | 'sad' | 'angry' | 'su
 export type Pose =
   | 'idle' | 'walk' | 'run' | 'sneak' | 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'cheer' | 'celebrate' | 'dance'
   | 'angry' | 'sad' | 'repair' | 'sweep' | 'deal' | 'bartend' | 'drink' | 'wave' | 'clap' | 'point' | 'handsUp'
-  | 'sing' | 'think' | 'phone' | 'crouch';
+  | 'sing' | 'think' | 'phone' | 'crouch' | 'sleep';
 
 const MATTE = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0 });
 const SHINY = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.6 });
@@ -890,7 +890,7 @@ export class CharacterModel {
   }
 
   private refreshFace(): void {
-    const e = this.blinking > 0 && (this.expression === 'neutral' || this.expression === 'sad' || this.expression === 'angry') ? 'blink' : this.expression;
+    const e = this.pose === 'sleep' ? 'blink' : this.blinking > 0 && (this.expression === 'neutral' || this.expression === 'sad' || this.expression === 'angry') ? 'blink' : this.expression;
     this.face.geometry = faceGeometry(this.appearance.eyes, e);
   }
 
@@ -994,6 +994,14 @@ export class CharacterModel {
         T.armRz = -0.02;
         T.bodyRx = 0.1;
         T.bodyY = -0.015;
+        break;
+      case 'sleep':
+        // Flat on the back (the body pivots at the feet, so the head ends up toward -z).
+        T.bodyRx = -Math.PI / 2;
+        T.bodyY = this.seatHeight + 0.14;
+        T.armLz = -0.18;
+        T.armRz = 0.18;
+        T.headRx = -0.1 + Math.sin(t * 0.8) * 0.03;
         break;
       case 'repair':
       case 'crouch':

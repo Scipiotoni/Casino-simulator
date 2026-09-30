@@ -48,6 +48,19 @@ export class Customer extends Walker implements SeatUser {
   cheatRounds = 0;
   cheatWinnings = 0;
   comped = false;
+  // Hotel guests
+  /** Has been to reception. */
+  checkedIn = false;
+  /** The room this guest booked (reserved from check-in until they reach it). */
+  booked: PlacedItem | null = null;
+  /** Nights still to sleep. */
+  nightsLeft = randInt(1, 3);
+  /** Already slept and checked out of the room. */
+  stayed = false;
+  /** Pool, bar or restaurant visits left after checking out. */
+  outings = randInt(0, 2);
+  /** Most a guest will pay for a night. */
+  roomBudget = 0;
   exited = false;
   gone = false;
   netResult = 0;
@@ -59,7 +72,7 @@ export class Customer extends Walker implements SeatUser {
   private sparkleT = 0;
   private reactT = 0;
   private reactPose: 'cheer' | 'celebrate' | 'clap' | 'angry' | 'sad' | 'handsUp' | 'wave' | 'think' = 'cheer';
-  private seatPose: 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'drink' | 'idle' = 'idle';
+  private seatPose: 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'drink' | 'idle' | 'sleep' = 'idle';
   private playPoseT = 0;
   private watchTarget: PlacedItem | null = null;
   private exitPoint: [number, number];
@@ -77,6 +90,10 @@ export class Customer extends Walker implements SeatUser {
     this.bank = Math.round(this.wallet * rand(0.2, 1.1));
     this.startCash = this.wallet + this.bank;
     this.mood = type === 'vip' ? rand(55, 70) : rand(55, 72);
+    // What a night is worth to them: backpackers, regulars, business travellers, high rollers.
+    const budget = type === 'vip' ? rand(1500, 5000) : type === 'tourist' ? rand(70, 180) : chance(0.22) ? rand(420, 1200) : skewed(190, 0.5);
+    this.roomBudget = Math.round(budget * wealth);
+    if (type === 'vip') this.nightsLeft = randInt(2, 4);
     this.visitLeft = type === 'vip' ? rand(260, 480) : rand(170, 340);
     this.speed = rand(1.2, 1.55);
     for (const k of GAMBLE_KINDS) this.prefs[k] = rand(0.55, 1.45);
@@ -116,8 +133,12 @@ export class Customer extends Walker implements SeatUser {
   get statusLine(): string {
     switch (this.state) {
       case 'seated':
+        if (this.seatItem?.def.kind === 'room') return `Asleep in a ${this.seatItem.roomStars}★ room`;
+        if (this.seatItem?.def.kind === 'desk') return 'Checking in';
+        if (this.seatItem?.def.kind === 'pool') return 'Swimming';
         return this.seatItem ? `At the ${this.seatItem.def.name}` : 'Sitting';
       case 'toSeat':
+        if (this.seatItem?.def.kind === 'room') return 'Heading to their room';
         return this.seatItem ? `Heading to the ${this.seatItem.def.name}` : 'Walking';
       case 'watch':
       case 'toWatch':
@@ -145,7 +166,29 @@ export class Customer extends Walker implements SeatUser {
   nextBet(item: PlacedItem): number | null {
     if (this.state !== 'seated' || this.seatItem !== item) return null;
     const kind = item.def.kind;
-    if (kind === 'bench') {
+    if (kind === 'desk') {
+      if (this.checkedIn || this.roundsLeft-- <= 0) {
+        this.standUp();
+        return null;
+      }
+      return 0;
+    }
+    if (kind === 'room') {
+      const rate = item.roomRate;
+      if (this.wallet < rate) {
+        // Hotels take cards.
+        this.wallet += this.bank;
+        this.bank = 0;
+      }
+      if (this.nightsLeft <= 0 || this.wallet < rate) {
+        this.checkOut(item);
+        return null;
+      }
+      this.nightsLeft--;
+      this.wallet -= rate;
+      return rate;
+    }
+    if (kind === 'bench' || kind === 'pool') {
       if (this.roundsLeft-- <= 0) {
         this.standUp();
         return null;
@@ -193,7 +236,9 @@ export class Customer extends Walker implements SeatUser {
 
   roundStarted(item: PlacedItem, _o: Outcome, duration: number): void {
     const k = item.def.kind;
-    if (k === 'bar' || k === 'snack') this.seatPose = 'drink';
+    if (k === 'room') this.seatPose = 'sleep';
+    else if (k === 'desk') this.seatPose = 'idle';
+    else if (k === 'bar' || k === 'snack') this.seatPose = 'drink';
     else if (k === 'bench') this.seatPose = 'sit';
     else if (k === 'slot') this.seatPose = Math.random() < 0.3 ? 'lever' : 'sitPlay';
     else if (this.seat?.pose === 'sit') this.seatPose = 'sitPlay';
@@ -206,6 +251,38 @@ export class Customer extends Walker implements SeatUser {
     if (!w) return;
     const k = item.def.kind;
     this.seatPose = this.seat?.pose === 'sit' ? 'sit' : 'idle';
+    if (k === 'desk') {
+      this.checkedIn = true;
+      this.bubble(w, '🛎️');
+      this.thought = 'Checked in. Now, where’s my room?';
+      return;
+    }
+    if (k === 'room') {
+      // Waking up: how was the night, for the money?
+      const stars = item.roomStars;
+      const value = stars * 4 - 6 - Math.max(0, (item.roomRate - this.roomBudget * 0.6) / Math.max(40, this.roomBudget)) * 6;
+      this.mood = clamp(this.mood + value + w.items.appealAt(item.cx, item.cz, item.floor) * 0.6, 0, 100);
+      this.energy = 100;
+      this.seatPose = 'sleep';
+      if (stars >= 4) {
+        this.bubble(w, pick(['😍', '🥰', '✨']));
+        this.thought = 'This room is PALATIAL. Best sleep ever.';
+      } else if (value >= 2) {
+        this.bubble(w, pick(['😌', '😴', '🙂']));
+        this.thought = 'Slept like a baby.';
+      } else {
+        this.bubble(w, pick(['😒', '🥱']));
+        this.thought = stars <= 1 ? 'Bit bare in here, isn’t it?' : 'Pricey for what it is...';
+      }
+      return;
+    }
+    if (k === 'pool') {
+      this.energy = 100;
+      this.mood = clamp(this.mood + 7, 0, 100);
+      this.bubble(w, pick(['🏊', '💦', '😎']));
+      this.thought = 'The water is perfect!';
+      return;
+    }
     if (k === 'bar') {
       this.thirst = 0;
       this.mood += 7;
@@ -359,6 +436,7 @@ export class Customer extends Walker implements SeatUser {
   leave(reason: string): void {
     const w = this.world;
     this.leaveSeatSilently();
+    this.dropBooking();
     this.thought = reason;
     this.state = 'leave';
     if (!w) return;
@@ -428,6 +506,7 @@ export class Customer extends Walker implements SeatUser {
   }
 
   private decide(w: World): void {
+    if (w.site === 'hotel') return this.decideHotel(w);
     if (this.visitLeft <= 0) return this.leave('What a night! Time to head home.');
     if (this.mood < 15) return this.leave('I’ve had enough of this place.');
     if (this.wallet < 2 && this.bank < 10) return this.leave('I’m broke! See you next time.');
@@ -509,6 +588,140 @@ export class Customer extends Walker implements SeatUser {
   }
 
   private lastItem: PlacedItem | null = null;
+
+  private dropBooking(): void {
+    if (this.booked) {
+      this.booked.release(this);
+      this.booked = null;
+    }
+  }
+
+  /** Last night done: pay the tip, leave the room for housekeeping. */
+  private checkOut(room: PlacedItem): void {
+    const w = this.world;
+    this.stayed = true;
+    room.dirty = true;
+    if (w && this.mood > 68) {
+      const tip = Math.round(room.roomRate * (this.mood > 85 ? 0.25 : 0.1));
+      if (tip > 0) w.addMoney(tip, 'tip', this.headPos.clone());
+    }
+    this.thought = this.mood > 60 ? 'Lovely stay! I’ll be back.' : 'Checked out.';
+    this.standUp();
+  }
+
+  /** The best room this guest can afford right now (clean, free, reachable). */
+  private pickRoom(w: World): PlacedItem | null {
+    const rooms = w.items.items.filter((i) => i.def.kind === 'room' && !i.dirty && !i.broken && i.freeSeat() && i.roomRate <= this.roomBudget * 1.15);
+    return pickWeighted(rooms, (r) => {
+      const stars = r.roomStars;
+      const d = dist(r.cx, r.cz, this.x, this.z) + Math.abs(r.floor - this.floor) * 10;
+      return Math.pow(stars, this.type === 'vip' ? 2.5 : 1.5) * (0.6 + r.roomRate / Math.max(1, this.roomBudget)) / (1 + d * 0.02) * rand(0.7, 1.3);
+    });
+  }
+
+  private pickHotelService(w: World, kinds: GameKind[]): PlacedItem | null {
+    const opts = w.items.items.filter((i) => kinds.includes(i.def.kind) && !i.broken && i.freeSeat());
+    if (!opts.length) return null;
+    return opts.reduce((best, i) => (dist(i.cx, i.cz, this.x, this.z) + Math.abs(i.floor - this.floor) * 10 < dist(best.cx, best.cz, this.x, this.z) + Math.abs(best.floor - this.floor) * 10 ? i : best), opts[0]);
+  }
+
+  /** Head for a seat at `item` for `rounds` rounds; false if it can't be reached. */
+  private goSit(w: World, item: PlacedItem, rounds: number, seat = item.freeSeat()): boolean {
+    if (!seat) return false;
+    if (seat.reserved !== this) item.reserve(seat, this);
+    if (!this.go(w, item.floor, seat.tileX, seat.tileZ, [seat.x, seat.z])) {
+      item.release(this);
+      return false;
+    }
+    this.seatItem = item;
+    this.seat = seat;
+    this.roundsLeft = rounds;
+    this.lastItem = item;
+    this.state = 'toSeat';
+    return true;
+  }
+
+  /** A hotel guest's evening: reception, their room, a swim or a drink, home. */
+  private decideHotel(w: World): void {
+    const items = w.items.items;
+    const hasRooms = items.some((i) => i.def.kind === 'room');
+    if (this.mood < 12) return this.leave('Worst hotel on the Strip. I’m out.');
+    if (!this.stayed) {
+      if (!this.booked) {
+        const room = this.pickRoom(w);
+        if (!room) {
+          this.noOptions++;
+          this.mood -= 4;
+          if (!hasRooms) return this.leave('A hotel with no rooms?!');
+          const anyFree = items.some((i) => i.def.kind === 'room' && !i.dirty && i.freeSeat());
+          if (this.noOptions >= 3) {
+            return this.leave(anyFree ? 'Every room I can afford is taken.' : 'No clean rooms? Unbelievable.');
+          }
+          this.thought = anyFree ? 'Nothing in my price range...' : 'Waiting for housekeeping to finish a room...';
+          if (chance(0.6)) this.bubble(w, anyFree ? '💸' : '🧹');
+          this.wander(w);
+          return;
+        }
+        const seat = room.freeSeat()!;
+        room.reserve(seat, this);
+        this.booked = room;
+      }
+      if (!this.checkedIn) {
+        const desk = this.pickHotelService(w, ['desk']);
+        if (!desk) {
+          this.noOptions++;
+          if (!items.some((i) => i.def.kind === 'desk') || this.noOptions >= 4) return this.leave('Where do I even check in?');
+          this.thought = 'The line at reception is so long...';
+          this.wander(w);
+          return;
+        }
+        if (!this.goSit(w, desk, 1)) {
+          this.tries++;
+          if (this.tries > 3) return this.leave('I can’t get to reception!');
+          this.wander(w);
+        }
+        return;
+      }
+      const room = this.booked;
+      if (room && w.items.items.includes(room)) {
+        const seat = room.seats[0];
+        if (this.goSit(w, room, this.nightsLeft, seat)) {
+          this.booked = null;
+          this.thought = 'Can’t wait to see the room!';
+          return;
+        }
+      }
+      this.dropBooking();
+      this.tries++;
+      if (this.tries > 3) return this.leave('I couldn’t even find my room!');
+      this.state = 'decide';
+      this.timer = 1;
+      return;
+    }
+    // After checking out: maybe a swim, a drink or a meal on the way out.
+    if (this.outings > 0) {
+      this.outings--;
+      const want: GameKind[] = this.hunger > 50 ? ['snack', 'bar', 'pool'] : this.thirst > 50 ? ['bar', 'pool', 'snack'] : ['pool', 'bar', 'snack', 'bench'];
+      for (const k of want) {
+        const it = this.pickHotelService(w, [k]);
+        if (it && this.goSit(w, it, k === 'pool' ? randInt(1, 3) : 1)) return;
+      }
+    }
+    return this.leave(this.mood > 60 ? 'What a lovely stay!' : 'Checked out. Meh.');
+  }
+
+  /** Hotel guests say what they miss too. */
+  private hotelWish(w: World): [string, string] | null {
+    if (!chance(0.35)) return null;
+    const has = (kind: GameKind) => w.items.items.some((i) => i.def.kind === kind);
+    const wishes: [string, string][] = [];
+    if (!has('pool')) wishes.push(['🏊', 'A hotel without a pool? Come on.']);
+    if (!has('bar')) wishes.push(['🍸', 'Is there a bar in this hotel?']);
+    if (!has('snack') && this.hunger > 40) wishes.push(['🍽️', 'Room service? A restaurant? Anything?']);
+    if (!has('bench') && this.energy < 50) wishes.push(['🛋️', 'The lobby needs somewhere to sit.']);
+    if (this.type === 'vip' && !w.items.items.some((i) => i.def.kind === 'room' && i.roomStars >= 4)) wishes.push(['💎', 'Where are the luxury suites?']);
+    return wishes.length ? pick(wishes) : null;
+  }
 
   private findWatchSpot(w: World, stage: PlacedItem): [number, number] | null {
     for (let tries = 0; tries < 20; tries++) {
@@ -627,7 +840,10 @@ export class Customer extends Walker implements SeatUser {
       const dirt = w.trash.countNear(this.x, this.z, 2.5, this.floor);
       let e = this.moodEmoji;
       let wish: [string, string] | null;
-      if (dirt >= 2) {
+      if (this.state === 'seated' && this.seatPose === 'sleep') {
+        e = '💤';
+        this.thought = 'Zzz...';
+      } else if (dirt >= 2) {
         e = '🤢';
         this.thought = 'Ew, it’s so dirty around here.';
       } else if (this.thirst > 80) {
@@ -642,7 +858,7 @@ export class Customer extends Walker implements SeatUser {
       } else if (this.tipsy && chance(0.5)) {
         e = '🥴';
         this.thought = pick(['*hic* ...I love this place.', 'Is the floor moving? *hic*', 'Heyyy, the manager! My best friend!']);
-      } else if ((wish = this.wish(w))) {
+      } else if ((wish = w.site === 'hotel' ? this.hotelWish(w) : this.wish(w))) {
         e = wish[0];
         this.thought = wish[1];
       } else if (w.items.appealAt(this.x, this.z, this.floor) > 3) {

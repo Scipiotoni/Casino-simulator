@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { HOTEL_LAYOUT, HOTEL_TIERS, hotelLook, sanitizeHotel } from '../game/hotel';
+import type { HotelInfo } from '../game/game';
 import { roman } from '../game/game';
 import { PlayerFx } from '../cosmetics/playerFx';
 import { cleanCosmetics, equipped } from '../cosmetics/catalog';
@@ -86,7 +86,9 @@ interface LotDoc {
   since: number;
   snap: CasinoSnapshot | null;
   bans: Record<string, number>;
-  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: { floors: number; tier: number } | null; rb?: number };
+  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: HotelInfo | null; rb?: number };
+  /** The owner's hotel floor plan, for walking around in it. */
+  hotelSnap?: CasinoSnapshot | null;
 }
 
 interface Remote {
@@ -146,6 +148,7 @@ export class Net {
     this.labelRoot = h('div', { class: 'net-labels' });
     game.floaters.root.appendChild(this.labelRoot);
     game.playerLot = (pid) => this.lotSnapshot(pid);
+    game.playerHotel = (pid) => this.lots.get(pid)?.hotelSnap ?? null;
     game.bannedBy = (pid) => this.bannedBy(pid);
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.netStatus = () => `${this.status}${this.online ? ` ${this.remotes.size} other ${this.remotes.size === 1 ? 'player is' : 'players are'} online.` : ''}`;
@@ -213,6 +216,7 @@ export class Net {
         snap: snapData,
         bans: cleanNumbers(raw.bans),
         info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos), hotel: hotelInfo(raw.hotel), rb: rebirthsOf(raw.rb) },
+        hotelSnap: raw.hotelSnap ? sanitizeSnapshot(raw.hotelSnap, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null,
       });
     }
     this.syncStreet();
@@ -345,12 +349,11 @@ export class Net {
     const lots: StreetLot[] = [];
     const hotels: StreetLot[] = [];
     const tag = (owner: string, rb: number | undefined) => `${rb ? `REBIRTH ${roman(rb)} · ` : ''}${owner.toUpperCase()}'S PLACE`;
-    const addHotel = (pid: string, owner: string, look: CasinoLook, h: { floors: number; tier: number } | null | undefined, on: boolean) => {
+    const addHotel = (pid: string, owner: string, h: HotelInfo | null | undefined, on: boolean) => {
       if (!h) return;
-      const t = HOTEL_TIERS[h.tier];
       hotels.push({
-        id: `${pid}~hotel`, kind: 'hotel', hotelOf: pid, owner, order: 0, online: on, hotel: { floors: h.floors, tier: h.tier },
-        info: { look: hotelLook(look), width: HOTEL_LAYOUT.width, depth: HOTEL_LAYOUT.depth, floors: h.floors, tagline: `${'★'.repeat(t.stars)} ${t.name.toUpperCase()}`, style: 'hotel' },
+        id: `${pid}~hotel`, kind: 'hotel', hotelOf: pid, owner, order: 0, online: on,
+        info: { look: h.look, width: h.width, depth: h.depth, floors: h.floors, tagline: `${'★'.repeat(h.stars)} HOTEL`, style: 'hotel' },
       });
     };
     for (const [pid, l] of this.lots) {
@@ -363,7 +366,7 @@ export class Net {
           cos: live?.cos ?? l.info.cos ?? [],
         },
       });
-      addHotel(pid, l.owner, l.info.look, live ? live.hotel : l.info.hotel, online.has(pid));
+      addHotel(pid, l.owner, live ? live.hotel : l.info.hotel, online.has(pid));
     }
     // Players who can't publish still show their casino on the street while they're online.
     for (const r of this.remotes.values()) {
@@ -372,7 +375,7 @@ export class Net {
         id: r.pid, kind: 'player', owner: r.name, order: r.since, online: true,
         info: { look: r.casino.look, width: r.casino.layout.width, depth: r.casino.layout.depth, floors: r.casino.floors, tagline: tag(r.name, r.rb), cos: r.casino.cos ?? [] },
       });
-      addHotel(r.pid, r.name, r.casino.look, r.casino.hotel, true);
+      addHotel(r.pid, r.name, r.casino.hotel, true);
     }
     lots.push(...hotels);
     const key = JSON.stringify(lots);
@@ -466,10 +469,9 @@ export class Net {
   private presenceData(): Record<string, unknown> {
     const g = this.game;
     const p = g.player;
-    const lot = g.street.activeId === 'me' ? this.pid : g.street.activeId;
+    const lot = g.street.activeId === 'me' ? this.pid : g.street.activeId === 'hotel' ? `${this.pid}~hotel` : g.street.activeId;
     const bans: Record<string, number> = {};
     for (const [k, v] of Object.entries(g.net.bans)) if (v > Date.now()) bans[k] = v;
-    const home = g.visit ? g.visit.home : null;
     const data: Record<string, unknown> = {
       pid: this.pid,
       nm: p.name.slice(0, 20),
@@ -487,8 +489,8 @@ export class Net {
       rb: g.rebirths,
       casino: {
         cos: equipped(g.cosmetics, 'casino'),
-        hotel: g.hotel ? { floors: g.hotel.floors, tier: g.hotel.tier } : null,
-        look: home ? home.look : g.building.look,
+        hotel: g.hotelInfo(),
+        look: g.homeLook,
         layout: g.homeLayout,
         floors: g.homeFloors,
       },
@@ -520,7 +522,8 @@ export class Net {
       bans: { ...g.net.bans },
       snap: JSON.parse(JSON.stringify(snap)) as Record<string, unknown>,
       cos: equipped(g.cosmetics, 'casino'),
-      hotel: g.hotel ? { floors: g.hotel.floors, tier: g.hotel.tier } : null,
+      hotel: g.hotelInfo(),
+      hotelSnap: g.hotelSnapshot(),
       rb: g.rebirths,
       updated: Date.now(),
     };
@@ -578,8 +581,9 @@ export class Net {
   private checkBanned(): void {
     const g = this.game;
     const v = g.visit;
-    if (!v || v.lot.kind !== 'player') return;
-    const until = this.bannedBy(v.lot.id);
+    const owner = v?.lot.kind === 'player' ? v.lot.id : v?.lot.kind === 'hotel' ? v.lot.hotelOf : undefined;
+    if (!v || !owner) return;
+    const until = this.bannedBy(owner);
     if (until > Date.now()) {
       g.events.emit('toast', { text: `${v.lot.owner} blacklisted you for ${Math.ceil((until - Date.now()) / 60000)} minutes. Security walks you out.`, kind: 'bad' });
       this.hud.modals.closeAll();
@@ -593,7 +597,7 @@ export class Net {
     const cam = g.renderer.camera;
     const { w, h: hh } = g.renderer.size;
     for (const r of this.remotes.values()) {
-      const lotId = r.lot === this.pid ? 'me' : r.lot;
+      const lotId = r.lot === this.pid ? 'me' : r.lot === `${this.pid}~hotel` ? 'hotel' : r.lot;
       const known = !!g.street.get(lotId);
       const outside = r.tz >= FACADE_Z + 0.2 && r.floor === 0;
       const wp = known ? g.street.toActive(lotId, CENTER_X + r.tx, r.tz) : { x: 0, z: 0 };
@@ -638,8 +642,8 @@ export class Net {
     const g = this.game;
     const r = [...this.remotes.values()].find((x) => x.pid === pid);
     const name = r?.name ?? 'Player';
-    const lotId = r ? (r.lot === this.pid ? 'me' : r.lot) : '';
-    const where = !r ? 'Gone' : r.tz >= FACADE_Z ? 'Out on the street' : lotId === 'me' ? 'In your casino' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
+    const lotId = r ? (r.lot === this.pid ? 'me' : r.lot === `${this.pid}~hotel` ? 'hotel' : r.lot) : '';
+    const where = !r ? 'Gone' : r.tz >= FACADE_Z ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId === 'hotel' ? 'In your hotel' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
     const owed = g.net.credited[pid] ?? 0;
     el.appendChild(h('div', { class: 'card-head' },
       h('div', { class: 'card-emoji', html: icon('you', 30) }),
@@ -697,9 +701,14 @@ function localPid(): string {
   }
 }
 
-function hotelInfo(raw: unknown): { floors: number; tier: number } | null {
-  const h = sanitizeHotel(raw);
-  return h ? { floors: h.floors, tier: h.tier } : null;
+/** Another player's hotel as seen from the street (checked: presence and lots are untrusted). */
+function hotelInfo(raw: unknown): HotelInfo | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const snap = sanitizeSnapshot({ look: r.look, layout: { width: r.width, depth: r.depth }, floors: r.floors, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+  if (!snap) return null;
+  const stars = typeof r.stars === 'number' && Number.isFinite(r.stars) ? Math.max(1, Math.min(5, Math.round(r.stars))) : 1;
+  return { look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors, stars };
 }
 
 function rebirthsOf(v: unknown): number {

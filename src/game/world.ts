@@ -1,3 +1,4 @@
+import type { Site } from '../items/catalog';
 import type * as THREE from 'three';
 import type { Grid } from '../world/grid';
 import type { ItemManager } from '../items/itemManager';
@@ -13,6 +14,8 @@ export type MoneyReason =
 
 /** What NPCs and machines are allowed to see and poke of the running game. */
 export interface World {
+  /** Which business is loaded: guests gamble in the casino and sleep in the hotel. */
+  readonly site: Site;
   /** Number of floors in the casino (1 = ground floor only). */
   readonly floors: number;
   gridAt(floor: number): Grid;

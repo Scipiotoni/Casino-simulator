@@ -1,8 +1,12 @@
-export type Category = 'slots' | 'tables' | 'services' | 'decor';
+export type Category = 'slots' | 'tables' | 'services' | 'decor' | 'rooms';
+
+/** Which business sells an item: the casino, the hotel, or both. */
+export type Site = 'casino' | 'hotel';
 export type GameKind =
   | 'slot' | 'claw' | 'pachinko' | 'roulette' | 'blackjack' | 'poker' | 'craps' | 'wheel'
   | 'baccarat' | 'threecard' | 'sicbo' | 'videopoker' | 'keno'
-  | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor' | 'elevator';
+  | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor' | 'elevator'
+  | 'room' | 'desk' | 'pool';
 
 export interface SeatDef {
   /** Tile inside the footprint the occupant paths to (rotation 0). */
@@ -44,8 +48,10 @@ export interface ItemDef {
   litterReduce?: number;
   /** Built by the game itself (the elevator): never in the shop, can't be moved or sold. */
   fixed?: boolean;
-  /** Only used by generated buildings (the hotel): never sold in the shop. */
+  /** Never sold in the shop. */
   hidden?: boolean;
+  /** Where it's sold (see itemSites). */
+  sites?: Site[];
   /** Extra per-item look parameters handed to the model builder. */
   params?: Record<string, string | number>;
 }
@@ -355,17 +361,40 @@ export const ITEMS: ItemDef[] = [
     description: 'Takes guests and staff between floors.',
     colors: [0x3a1d4d], model: 'elevator',
   },
+  // ------------------------------------------------------------------ hotel
   {
-    ...base, id: 'frontdesk', name: 'Reception Desk', category: 'services', kind: 'decor', price: 0, unlock: 99, size: [4, 2],
-    appeal: 0.6, appealRadius: 3, hidden: true,
-    description: 'The hotel front desk. Walk up and press Space to run your hotel.',
-    colors: [0x5a1426], model: 'frontdesk',
+    ...base, id: 'reception', name: 'Reception Desk', category: 'services', kind: 'desk', price: 800, unlock: 1, size: [4, 2], sites: ['hotel'],
+    seats: [-0.5, 0.5].map((x, i) => ({ tile: [i + 1, 1] as [number, number], pos: [x, 0.9] as [number, number], face: Math.PI, pose: 'stand' as const })),
+    staff: { pos: [0, -0.35], face: 0, role: 'bartender' },
+    roundTime: 3.5, upkeep: 40, appeal: 0.6, appealRadius: 3,
+    description: 'Guests check in here before heading to their room. No desk, no guests.',
+    colors: [0x5a1426, 0x2a1a12, 0x1f2748, 0xe9e1d3], model: 'frontdesk',
   },
   {
-    ...base, id: 'hotelbed', name: 'Hotel Room', category: 'decor', kind: 'decor', price: 0, unlock: 99, size: [2, 3],
-    appeal: 0.3, appealRadius: 2, hidden: true,
-    description: 'A made-up hotel room, ready for tonight’s guests.',
-    colors: [0x8a1030], model: 'hotelbed',
+    ...base, id: 'room', name: 'Hotel Room', category: 'rooms', kind: 'room', price: 2000, unlock: 1, size: [4, 4], sites: ['hotel'],
+    seats: [{ tile: [2, 3], pos: [-0.6, 0.05], face: 0, pose: 'sit', seatY: 0.5 }],
+    roundTime: 32, upkeep: 15, appeal: 0.2, appealRadius: 2, fun: 1,
+    description: 'Four walls and a single bed. Click it to decorate: the more you spend, the more a night costs.',
+    colors: [0xd8cbb4], model: 'room', params: { suite: 0 },
+  },
+  {
+    ...base, id: 'suite', name: 'Luxury Suite', category: 'rooms', kind: 'room', price: 9000, unlock: 4, size: [6, 5], sites: ['hotel'],
+    seats: [{ tile: [3, 4], pos: [-1.5, -0.45], face: 0, pose: 'sit', seatY: 0.5 }],
+    roundTime: 40, upkeep: 45, appeal: 0.5, appealRadius: 2.5, fun: 1.3,
+    description: 'A big room with space for a jacuzzi and a grand piano. High rollers love it.',
+    colors: [0xd8cbb4], model: 'room', params: { suite: 1 },
+  },
+  {
+    ...base, id: 'pool', name: 'Swimming Pool', category: 'services', kind: 'pool', price: 12000, unlock: 3, size: [5, 4], sites: ['hotel'],
+    seats: [
+      { tile: [1, 3], pos: [-1.2, 0.7], face: Math.PI, pose: 'sit', seatY: 0.08 },
+      { tile: [3, 3], pos: [0.9, 0.6], face: Math.PI * 0.8, pose: 'sit', seatY: 0.08 },
+      { tile: [0, 1], pos: [-1.3, -0.6], face: Math.PI * 0.5, pose: 'sit', seatY: 0.08 },
+      { tile: [4, 2], pos: [1.4, -0.3], face: -Math.PI * 0.5, pose: 'sit', seatY: 0.08 },
+    ],
+    roundTime: 14, upkeep: 120, appeal: 2.2, appealRadius: 5, fun: 1.3,
+    description: 'Guests swim between nights. A big boost to your hotel’s rating.',
+    colors: [0x2fb8e0, 0x39c9a8, 0x3a6ee0], model: 'pool',
   },
 ];
 
@@ -446,7 +475,33 @@ export function describeItem(def: ItemDef): string {
       return `Mood boost · radius ${def.appealRadius}`;
     case 'claw':
       return `Plays $${def.minBet}–$${def.maxBet} · prizes`;
+    case 'room':
+      return 'Decorate after placing';
+    case 'desk':
+      return `Check-in · ${seats} guests at a time`;
+    case 'pool':
+      return `${seats} swimmers · big appeal`;
+    case 'elevator':
+      return 'Links the floors';
     default:
       return `Bets $${def.minBet}–$${def.maxBet} · ${seats} ${seats === 1 ? 'seat' : 'seats'}`;
   }
+}
+
+/** Items the casino shop sells by default: all of them except the hotel's; decor and services are shared. */
+const SHARED_KINDS = new Set<GameKind>(['decor', 'bench', 'bar', 'snack', 'atm', 'stage']);
+
+export function itemSites(d: ItemDef): Site[] {
+  if (d.sites) return d.sites;
+  return SHARED_KINDS.has(d.kind) ? ['casino', 'hotel'] : ['casino'];
+}
+
+export function soldAt(d: ItemDef, site: Site): boolean {
+  return !d.fixed && !d.hidden && itemSites(d).includes(site);
+}
+
+export function categoriesFor(site: Site): { id: Category; label: string }[] {
+  return site === 'hotel'
+    ? [{ id: 'rooms', label: 'Rooms' }, { id: 'services', label: 'Services' }, { id: 'decor', label: 'Decor' }]
+    : CATEGORIES;
 }

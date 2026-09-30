@@ -74,7 +74,7 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
     },
     createdAt: Math.round(num(r.createdAt, 0, Date.now(), Date.now())),
     cosmetics: sanitizeCosmetics(r.cosmetics),
-    hotel: sanitizeHotel(r.hotel),
+    hotel: sanitizeHotel(r.hotel, snap.look, SIGN_FONTS.map((f) => f.id), sanitizeAppearance),
     rebirths: Math.round(num(r.rebirths, 0, 99, 0)),
   };
   return { save };

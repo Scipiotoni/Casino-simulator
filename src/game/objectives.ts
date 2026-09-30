@@ -19,6 +19,8 @@ export interface ObjectiveView {
   floorPainted: number;
   lookEdited: boolean;
   casinoRenamed: boolean;
+  /** Best decorated hotel room (stars). */
+  bestRoomStars: number;
 }
 
 export interface LifetimeStats {
@@ -41,13 +43,16 @@ export interface LifetimeStats {
   awayNet: number;
   awayHands: number;
   turnedAway: number;
+  /** Hotel: rooms redecorated, and whole-floor setups applied. */
+  roomsDecorated: number;
+  floorSetups: number;
 }
 
 export function emptyStats(): LifetimeStats {
   return {
     collected: 0, earnedTotal: 0, visitors: 0, jackpots: 0, bigWins: 0, biggestWin: 0, cheatersCaught: 0, repairs: 0,
     trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0, managerSpins: 0,
-    awayNet: 0, awayHands: 0, turnedAway: 0,
+    awayNet: 0, awayHands: 0, turnedAway: 0, roomsDecorated: 0, floorSetups: 0,
   };
 }
 
@@ -93,6 +98,27 @@ export const OBJECTIVES: Objective[] = [
   { id: 'floor4', text: 'Stack four floors', hint: 'A tower on the Strip.', target: 4, reward: 60000, xp: 6000, progress: (v) => v.floors },
   { id: 'rating_5', text: 'Reach a 5-star rating', hint: 'A true casino legend.', target: 4.95, reward: 25000, xp: 5000, progress: (v) => v.rating },
   { id: 'earn_1m', text: 'Earn $1,000,000 in total', hint: 'Welcome to the high life.', target: 1_000_000, reward: 100000, xp: 10000, progress: (v) => v.stats.earnedTotal },
+];
+
+/** The hotel's own goals (the hotel is a separate tycoon with its own bank and level). */
+export const HOTEL_OBJECTIVES: Objective[] = [
+  { id: 'h_desk', text: 'Build a reception desk', hint: 'Build → Services. Guests check in here.', target: 1, reward: 300, xp: 60, progress: (v) => v.countItem('reception') },
+  { id: 'h_room', text: 'Build your first room', hint: 'Build → Rooms. It comes with a single bed.', target: 1, reward: 400, xp: 80, progress: (v) => v.countCategory('rooms') },
+  { id: 'h_night', text: 'Sell your first night', hint: 'Guests check in, then sleep in your rooms.', target: 1, reward: 300, xp: 80, progress: (v) => v.stats.rounds },
+  { id: 'h_decorate', text: 'Decorate a room', hint: 'Click a room and pick a bigger bed, colours or extras.', target: 1, reward: 500, xp: 100, progress: (v) => v.stats.roomsDecorated },
+  { id: 'h_staff', text: 'Hire a housekeeper', hint: 'Staff → Janitor. They make up rooms after guests leave.', target: 1, reward: 600, xp: 150, progress: (v) => v.staffTotal },
+  { id: 'h_rooms4', text: 'Have 4 rooms', hint: 'More rooms, more guests every night.', target: 4, reward: 1000, xp: 200, progress: (v) => v.countCategory('rooms') },
+  { id: 'h_stars3', text: 'Decorate a 3-star room', hint: 'Spend about $5,000 on one room.', target: 3, reward: 1500, xp: 300, progress: (v) => v.bestRoomStars },
+  { id: 'h_floorsetup', text: 'Copy a room’s setup to a whole floor', hint: 'Open a room and use “Apply to every room on this floor”.', target: 1, reward: 1500, xp: 300, progress: (v) => v.stats.floorSetups },
+  { id: 'h_bank20k', text: 'Have $20,000 in the hotel bank', hint: 'Better rooms charge more per night.', target: 20000, reward: 2000, xp: 400, progress: (v) => v.money },
+  { id: 'h_pool', text: 'Open a swimming pool', hint: 'Unlocks at hotel level 3.', target: 1, reward: 3000, xp: 500, progress: (v) => v.countItem('pool') },
+  { id: 'h_rooms12', text: 'Have 12 rooms', hint: 'Expand the hotel to fit more.', target: 12, reward: 5000, xp: 800, progress: (v) => v.countCategory('rooms') },
+  { id: 'h_floor2', text: 'Add a second floor', hint: 'Hotel settings → Add a floor.', target: 2, reward: 6000, xp: 1000, progress: (v) => v.floors },
+  { id: 'h_suite', text: 'Build a luxury suite', hint: 'Unlocks at hotel level 4.', target: 1, reward: 8000, xp: 1200, progress: (v) => v.countItem('suite') },
+  { id: 'h_rating4', text: 'Reach a 4-star hotel rating', hint: 'Happy guests, great rooms, a pool and clean floors.', target: 4, reward: 8000, xp: 1500, progress: (v) => v.rating },
+  { id: 'h_stars5', text: 'Create a 5-star room', hint: 'Royal bed, gold walls, marble, chandelier… about $25,000.', target: 5, reward: 20000, xp: 3000, progress: (v) => v.bestRoomStars },
+  { id: 'h_nights500', text: 'Sell 500 nights', hint: 'A busy hotel never sleeps.', target: 500, reward: 25000, xp: 4000, progress: (v) => v.stats.rounds },
+  { id: 'h_earn1m', text: 'Earn $1,000,000 at the hotel', hint: 'The finest address on the Strip.', target: 1_000_000, reward: 100000, xp: 10000, progress: (v) => v.stats.earnedTotal },
 ];
 
 export const ACTIVE_OBJECTIVES = 3;

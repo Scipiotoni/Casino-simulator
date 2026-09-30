@@ -1227,11 +1227,11 @@ export function softDotTexture(): THREE.CanvasTexture {
 
 const iconCache = new Map<string, THREE.CanvasTexture>();
 /** Round badge icon for 3D status sprites (broken / full / VIP ...). */
-export function badgeTexture(kind: 'broken' | 'full' | 'cheat' | 'vip'): THREE.CanvasTexture {
+export function badgeTexture(kind: 'broken' | 'full' | 'cheat' | 'vip' | 'dirty'): THREE.CanvasTexture {
   const cached = iconCache.get(kind);
   if (cached) return cached;
   const { canvas, ctx } = makeCanvas(128, 128);
-  const colors = { broken: '#ff9f1c', full: '#2ecc71', cheat: '#ff2d55', vip: '#ffcc1f' };
+  const colors = { broken: '#ff9f1c', full: '#2ecc71', cheat: '#ff2d55', vip: '#ffcc1f', dirty: '#7fd3ff' };
   ctx.fillStyle = 'rgba(20, 10, 30, 0.85)';
   ctx.beginPath();
   ctx.arc(64, 64, 58, 0, Math.PI * 2);
@@ -1258,6 +1258,20 @@ export function badgeTexture(kind: 'broken' | 'full' | 'cheat' | 'vip'): THREE.C
   } else if (kind === 'cheat') {
     ctx.font = '900 70px Arial Black, Arial, sans-serif';
     ctx.fillText('?', 64, 68);
+  } else if (kind === 'dirty') {
+    // Unmade room: a little broom
+    ctx.save();
+    ctx.translate(64, 64);
+    ctx.rotate(-0.6);
+    ctx.fillRect(-5, -44, 10, 56);
+    ctx.beginPath();
+    ctx.moveTo(-22, 12);
+    ctx.lineTo(22, 12);
+    ctx.lineTo(28, 40);
+    ctx.lineTo(-28, 40);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   } else {
     star(ctx, 64, 66, 40, 5, 0.45);
     ctx.fill();

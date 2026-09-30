@@ -2,7 +2,6 @@ import { type Game, type Selection, type DayReport, floorName, roman } from '../
 import { h, icon, stars, clear, swatch } from './dom';
 import { formatClock, formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
-import { OBJECTIVES } from '../game/objectives';
 import { itemThumb } from './preview';
 import { MAX_LEVEL, type PlacedItem } from '../items/placedItem';
 import type { Customer } from '../entities/customer';
@@ -180,8 +179,9 @@ export class Hud {
     g.events.on('mode', () => this.renderMode());
     g.events.on('look', () => (this.nameEl.textContent = g.building.look.name));
     g.events.on('day', (r) => this.dayReport(r));
-    g.events.on('hotelDesk', () => {
-      if (!this.modals.isOpen) this.modals.openHotel();
+    g.events.on('siteLeaving', () => {
+      this.modals.closeAll();
+      this.shop.close();
     });
     g.events.on('rebirth', (n) => {
       this.banner(`Rebirth ${roman(n)}!`, `A fresh start. Everything you earn is now worth ${Math.round(g.incomeMult * 100)}%.`, 'level');
@@ -259,7 +259,7 @@ export class Hud {
   renderGoals(): void {
     const g = this.game;
     const active = g.activeObjectives();
-    const total = OBJECTIVES.length;
+    const total = g.objectiveList.length;
     const done = g.doneObjectives.size;
     (this.goalsEl.querySelector('.goals-count') as HTMLElement).textContent = `${done}/${total}`;
     this.goalsEl.classList.toggle('collapsed', this.goalsCollapsed);
@@ -404,6 +404,9 @@ export class Hud {
     if (item.upgradable && item.level < MAX_LEVEL) {
       actions.appendChild(h('button', { class: 'btn gold', html: `${icon('upgrade', 16)} Upgrade <b>${formatMoney(item.upgradeCost)}</b>`, onClick: () => { if (g.upgrade(item)) this.renderCard({ kind: 'item', item }); } }));
     }
+    if (item.setup && !g.visit) {
+      actions.appendChild(h('button', { class: 'btn gold', html: `${icon('paint', 16)} Decorate`, onClick: () => this.modals.openRoom(item) }));
+    }
     actions.appendChild(h('button', { class: 'btn', html: `${icon('move', 16)} Move`, onClick: () => { g.build.startMove(item); } }));
     actions.appendChild(h('button', { class: 'btn', html: `${icon('rotate', 16)} Rotate`, onClick: () => this.quickRotate(item) }));
     if (g.floors > 1 && !item.outdoor) {
@@ -538,6 +541,12 @@ export class Hud {
           rows.push(['House profit', formatMoney(it.profit)]);
         } else if (it.def.kind === 'bar' || it.def.kind === 'snack' || it.def.kind === 'atm') {
           rows.push(['Sales', formatMoney(it.stats.wagered)]);
+        } else if (it.def.kind === 'room') {
+          const busy = it.seats.some((st) => st.occupant) ? 'Guest asleep' : it.dirty ? 'Needs making up' : it.seats.some((st) => st.reserved) ? 'Booked' : 'Free';
+          rows.push(['Stars', '★'.repeat(it.roomStars)]);
+          rows.push(['Per night', formatMoney(it.roomRate)]);
+          rows.push(['Now', busy]);
+          rows.push(['Nights sold', formatNumber(it.stats.plays)]);
         }
         if (it.def.upkeep) rows.push(['Upkeep', `${formatMoney(it.def.upkeep)}/day`]);
         s.innerHTML = rows.map(([a, b]) => `<div class="kv"><span>${a}</span><b>${b}</b></div>`).join('');
@@ -574,11 +583,30 @@ export class Hud {
   renderVisit(): void {
     const g = this.game;
     const v = g.visit;
-    this.visitBar.hidden = !v;
+    this.visitBar.hidden = !v && !g.inHotel;
     this.root.classList.toggle('visiting', !!v);
+    this.root.classList.toggle('in-hotel', g.inHotel);
     this.toolbar.querySelectorAll('.tool-shop, .tool-staff, .tool-casino').forEach((b) => ((b as HTMLElement).hidden = !!v));
+    const casinoLabel = this.toolbar.querySelector('.tool-casino .tool-label');
+    if (casinoLabel) casinoLabel.textContent = g.inHotel ? 'Building' : 'Casino';
     this.shop.close();
     this.nameEl.textContent = v ? v.lot.info.look.name : g.building.look.name;
+    if (!v && g.inHotel) {
+      clear(this.visitBar);
+      this.visitBar.append(
+        h('div', { class: 'vb-text' },
+          h('b', { text: `🏨 ${g.building.look.name}` }),
+          h('span', { class: 'vb-net', text: 'A separate business: its own bank, level and goals' }),
+        ),
+        h('button', {
+          class: 'btn small gold', html: `${icon('casino', 14)} Back to the casino`,
+          onClick: () => {
+            const me = g.street.get('me');
+            if (me && g.enterLot(me)) audio.play('whoosh');
+          },
+        }),
+      );
+    }
     if (v) {
       clear(this.visitBar);
       const home = g.street.get('me');

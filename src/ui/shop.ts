@@ -1,32 +1,28 @@
 import type { Game } from '../game/game';
 import type { Hud } from './hud';
 import { h, clear, icon } from './dom';
-import { CATEGORIES, ITEMS, type Category, type ItemDef, describeItem } from '../items/catalog';
+import { ITEMS, type Category, type ItemDef, categoriesFor, describeItem, soldAt } from '../items/catalog';
 import { itemThumb } from './preview';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 
-/** Bottom sheet with every buyable machine, table, service and decoration. */
+/** Bottom sheet with everything the business you're in can buy (casino or hotel). */
 export class ShopDrawer {
   private el: HTMLElement;
   private grid: HTMLElement;
+  private tabRow: HTMLElement;
   private tabs: HTMLButtonElement[] = [];
   private cat: Category = 'slots';
+  private tabsFor = '';
   open = false;
 
   constructor(parent: HTMLElement, private game: Game, private hud: Hud) {
     this.grid = h('div', { class: 'shop-grid' });
-    const tabRow = h('div', { class: 'tabs', role: 'tablist' });
-    for (const c of CATEGORIES) {
-      const b = h('button', { class: 'tab', role: 'tab', text: c.label, onClick: () => this.setCat(c.id) });
-      b.dataset.cat = c.id;
-      this.tabs.push(b);
-      tabRow.appendChild(b);
-    }
+    this.tabRow = h('div', { class: 'tabs', role: 'tablist' });
     this.el = h('section', { class: 'drawer shop', hidden: true, 'aria-label': 'Build menu' },
       h('div', { class: 'drawer-head' },
         h('div', { class: 'drawer-title', html: `${icon('shop', 20)} <span>Build</span>` }),
-        tabRow,
+        this.tabRow,
         h('button', { class: 'icon-btn', html: icon('close', 18), 'aria-label': 'Close', onClick: () => this.close() }),
       ),
       this.grid,
@@ -38,6 +34,23 @@ export class ShopDrawer {
     void this.hud;
   }
 
+  /** Tabs for the casino (machines, tables…) or the hotel (rooms, services, decor). */
+  private buildTabs(): void {
+    const site = this.game.site;
+    if (this.tabsFor === site) return;
+    this.tabsFor = site;
+    clear(this.tabRow);
+    this.tabs = [];
+    const cats = categoriesFor(site);
+    for (const c of cats) {
+      const b = h('button', { class: 'tab', role: 'tab', text: c.label, onClick: () => this.setCat(c.id) });
+      b.dataset.cat = c.id;
+      this.tabs.push(b);
+      this.tabRow.appendChild(b);
+    }
+    if (!cats.some((c) => c.id === this.cat)) this.cat = cats[0].id;
+  }
+
   toggle(): void {
     if (this.open) this.close();
     else this.show();
@@ -45,19 +58,20 @@ export class ShopDrawer {
 
   show(cat?: Category): void {
     if (this.game.visiting) {
-      this.game.notify('You can only build in your own casino.', 'bad');
+      this.game.notify('You can only build in your own casino or hotel.', 'bad');
       return;
     }
     if (!this.game.canBuildHere) {
-      this.game.notify('Head back to your casino to build.', 'bad');
+      this.game.notify(this.game.inHotel ? 'Head back into your hotel to build.' : 'Head back to your casino to build.', 'bad');
       return;
     }
     this.game.build.cancel();
     this.game.select(null);
+    this.buildTabs();
     this.open = true;
     this.el.hidden = false;
     this.el.parentElement?.classList.add('drawer-open');
-    this.setCat(cat ?? this.cat);
+    this.setCat(cat && categoriesFor(this.game.site).some((c) => c.id === cat) ? cat : this.cat);
     audio.play('whoosh');
   }
 
@@ -84,7 +98,7 @@ export class ShopDrawer {
   private render(): void {
     clear(this.grid);
     const g = this.game;
-    const list = ITEMS.filter((d) => d.category === this.cat && !d.fixed && !d.hidden);
+    const list = ITEMS.filter((d) => d.category === this.cat && soldAt(d, g.site));
     for (const def of list) {
       const locked = def.unlock > g.level;
       const card = h('button', {
@@ -95,7 +109,7 @@ export class ShopDrawer {
       },
         h('div', { class: 'sc-thumb' }, h('img', { src: itemThumb(def, undefined, g.player.appearance), alt: '', loading: 'lazy' })),
         h('div', { class: 'sc-name', text: def.name }),
-        h('div', { class: 'sc-tag', text: describeItem(def) }),
+        h('div', { class: 'sc-tag', text: def.kind === 'room' ? 'Decorate after placing' : describeItem(def) }),
         h('div', { class: 'sc-price', text: locked ? `Level ${def.unlock}` : formatMoney(def.price) }),
       );
       card.title = def.description;
@@ -117,7 +131,7 @@ export class ShopDrawer {
     const g = this.game;
     if (def.unlock > g.level) {
       audio.play('error');
-      g.notify(`${def.name} unlocks at casino level ${def.unlock}`, 'bad');
+      g.notify(`${def.name} unlocks at ${g.inHotel ? 'hotel' : 'casino'} level ${def.unlock}`, 'bad');
       return;
     }
     if (g.money < def.price) {

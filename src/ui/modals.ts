@@ -1,5 +1,7 @@
 import { type Game, type DayReport, roman } from '../game/game';
-import { HOTEL_MAX_FLOORS, HOTEL_PRICE, HOTEL_TIERS, ROOMS_PER_FLOOR, hotelFloorCost, hotelGuestBoost, hotelLook, hotelRooms } from '../game/hotel';
+import { HOTEL_PRICE, HOTEL_START_CASH, hotelGuestBoost } from '../game/hotel';
+import { BEDS, ROOM_EXTRAS, ROOM_FLOORS, ROOM_WALLS, type RoomSetup, changeCost, roomRate, roomStars, sameSetup, setupValue } from '../hotel/rooms';
+import type { PlacedItem } from '../items/placedItem';
 import { exportFileName, exportSave, parseImport } from '../game/transfer';
 import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
@@ -8,10 +10,9 @@ import { formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
-import { ROLES } from '../entities/staff';
+import { ROLES, roleFor } from '../entities/staff';
 import type { Worker } from '../entities/staff';
 import { CharacterCreator } from './creator';
-import { OBJECTIVES } from '../game/objectives';
 
 interface Frame {
   layer: HTMLElement;
@@ -48,7 +49,7 @@ export class Modals {
       opts.foot ? h('footer', { class: 'modal-foot' }, opts.foot) : null,
     );
     // Game screens dock to the side so the table stays in view.
-    const docked = /table-game|minigame/.test(opts.cls ?? '');
+    const docked = /table-game|minigame|room-modal/.test(opts.cls ?? '');
     const layer = h('div', { class: `modal-layer${docked ? ' docked' : ''}` }, modal);
     layer.addEventListener('pointerdown', (e) => {
       if (e.target === layer) this.close();
@@ -93,7 +94,7 @@ export class Modals {
       window.clearTimeout(t);
       t = window.setTimeout(() => g.setLook({ name: nameInput.value.trim() || 'My Casino' }), 250);
     });
-    body.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label', text: 'Casino name' }), nameInput));
+    body.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label', text: g.inHotel ? 'Hotel name' : 'Casino name' }), nameInput));
 
     const fonts = h('div', { class: 'chips' });
     const renderFonts = () => {
@@ -149,7 +150,7 @@ export class Modals {
         h('button', { class: 'btn gold', html: `${icon('upgrade', 16)} Add a floor <b>${formatMoney(g.nextFloorCost)}</b>`, disabled: g.level < g.nextFloorLevel, onClick: () => { if (g.addFloor()) this.close(); } })),
     );
     body.appendChild(h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Grow your casino' }), exp));
-    this.open('Your casino', body, { wide: false });
+    this.open(g.inHotel ? 'Your hotel' : 'Your casino', body, { wide: false });
   }
 
   private colorField(label: string, colors: number[], get: () => number, set: (c: number) => void): HTMLElement {
@@ -175,7 +176,7 @@ export class Modals {
     const render = () => {
       clear(body);
       const roles = h('div', { class: 'role-grid' });
-      for (const r of ROLES) {
+      for (const r of ROLES.map((x) => roleFor(x.role, g.site))) {
         const count = g.workers.filter((w) => w.role === r.role).length;
         const locked = g.level < r.unlock;
         roles.appendChild(h('div', { class: `role-card${locked ? ' locked' : ''}` },
@@ -193,7 +194,7 @@ export class Modals {
         const list = h('div', { class: 'staff-list' });
         for (const w of g.workers) {
           list.appendChild(h('div', { class: 'staff-row' },
-            h('div', {}, h('b', { text: w.name }), h('span', { class: 'muted', text: ` · ${w.info.title}` })),
+            h('div', {}, h('b', { text: w.name }), h('span', { class: 'muted', text: ` · ${roleFor(w.role, g.site).title}` })),
             h('div', { class: 'muted small', text: w.statusLine }),
             h('div', { class: 'btn-row' },
               h('button', { class: 'btn small', text: 'Find', onClick: () => { this.close(); g.select({ kind: 'worker', w }); g.cam.focus.set(w.x, 0, w.z); } }),
@@ -322,45 +323,140 @@ export class Modals {
       const hs = g.hotel;
       if (!hs) {
         const block = g.hotelBlock();
-        fill(body, 
-          h('p', { text: 'Build a hotel tower right next to your casino. Every night guests check in and pay for their rooms, and the next day they come over and gamble: more guests and more high rollers.' }),
-          h('div', { class: 'kv' }, h('span', { text: 'Price' }), h('b', { text: formatMoney(HOTEL_PRICE) })),
-          h('div', { class: 'kv' }, h('span', { text: 'Starts with' }), h('b', { text: `A lobby and ${ROOMS_PER_FLOOR} rooms` })),
+        fill(body,
+          h('p', { text: 'Open a second business: a hotel tower right next to your casino. It starts as an empty shell with its own bank. Build a reception desk and rooms, decorate every room, add a pool and more floors. Its guests also come over to gamble.' }),
+          h('div', { class: 'kv' }, h('span', { text: 'Price (from the casino bank)' }), h('b', { text: formatMoney(HOTEL_PRICE) })),
+          h('div', { class: 'kv' }, h('span', { text: 'Hotel starting cash' }), h('b', { text: formatMoney(HOTEL_START_CASH) })),
           h('button', { class: 'btn gold', disabled: !!block, html: `${icon('home', 16)} Build the hotel <b>${formatMoney(HOTEL_PRICE)}</b>`, onClick: () => { if (g.buyHotel()) render(); } }),
           block ? h('p', { class: 'muted small', text: block }) : null,
         );
         return;
       }
-      const t = HOTEL_TIERS[hs.tier];
-      const next = HOTEL_TIERS[hs.tier + 1];
+      // Inside, the live world is the hotel; outside, its last saved state.
+      const inside = g.inHotel;
+      const items = inside ? g.items.items.map((i) => ({ kind: i.def.kind, stars: i.roomStars, rate: i.roomRate, dirty: i.dirty })) : null;
+      const rooms = items ? items.filter((i) => i.kind === 'room') : [];
+      const bank = inside ? g.money : hs.bank;
+      const level = inside ? g.level : hs.level;
+      const rating = inside ? g.rating : hs.snap.rating;
       const boost = hotelGuestBoost(hs);
-      const floorCost = hotelFloorCost(hs);
-      const rooms = hotelRooms(hs);
-      fill(body, 
+      const kv = (k: string, v: string, cls = '') => h('div', { class: 'kv' }, h('span', { text: k }), h('b', { class: cls, text: v }));
+      fill(body,
         h('div', { class: 'hotel-head' },
-          h('div', { class: 'hotel-stars', text: '★'.repeat(t.stars) + '☆'.repeat(5 - t.stars) }),
-          h('b', { text: `${hotelLook(g.visit ? g.visit.home.look : g.building.look).name} · ${t.name}` }),
-          h('span', { class: 'muted small', text: `${hs.floors} storeys · ${rooms} rooms · ${formatMoney(Math.round(t.rate * g.incomeMult))} a night` }),
+          h('div', { class: 'hotel-stars', text: '★'.repeat(Math.max(1, Math.round(rating))) + '☆'.repeat(5 - Math.max(1, Math.round(rating))) }),
+          h('b', { text: inside ? g.building.look.name : hs.snap.name }),
+          h('span', { class: 'muted small', text: `A separate business: its own bank, level ${level} and goals.` }),
         ),
-        h('div', { class: 'kv' }, h('span', { text: 'Last night' }), h('b', { text: hs.last ? `${hs.last.guests}/${hs.last.rooms} rooms booked` : 'Opens tonight' })),
-        hs.last ? h('div', { class: 'kv' }, h('span', { text: 'Rooms minus housekeeping' }), h('b', { class: 'pos', text: `${formatMoney(Math.round(hs.last.revenue * g.incomeMult))} − ${formatMoney(hs.last.costs)}` })) : null,
-        h('div', { class: 'kv' }, h('span', { text: 'Hotel guests in your casino today' }), h('b', { text: hs.staying ? `+${Math.round((boost.spawn - 1) * 100)}% visitors, more VIPs` : '—' })),
-        h('p', { class: 'muted small', text: 'More stars and a better casino rating fill more rooms. Fancier rooms earn far more per night but are harder to sell.' }),
-        h('div', { class: 'btn-row wrap' },
-          hs.floors < HOTEL_MAX_FLOORS
-            ? h('button', { class: 'btn', disabled: g.money < floorCost, html: `${icon('expand', 16)} Add a storey (+${ROOMS_PER_FLOOR} rooms) <b>${formatMoney(floorCost)}</b>`, onClick: () => { if (g.addHotelFloor()) render(); } })
-            : h('span', { class: 'muted small', text: 'The tower is as tall as the city allows.' }),
-          next
-            ? h('button', { class: 'btn gold', disabled: g.money < next.cost || g.level < next.level, html: `${icon('upgrade', 16)} ${'★'.repeat(next.stars)} ${next.name} <b>${formatMoney(next.cost)}</b>`, onClick: () => { if (g.upgradeHotel()) render(); } })
-            : h('span', { class: 'muted small', text: 'Five stars: the finest hotel on the street.' }),
-        ),
-        next && g.level < next.level ? h('p', { class: 'muted small', text: `${next.name} unlocks at level ${next.level}.` }) : null,
-        h('p', { class: 'muted small', text: g.visit?.lot.id === 'hotel' ? 'You are in the lobby. Take the elevator to see the rooms.' : 'Your hotel stands next to your casino: walk out onto the street and in through its doors.' }),
+        kv('Hotel bank', formatMoney(bank), bank >= 0 ? 'pos' : 'neg'),
+        inside
+          ? kv('Rooms', rooms.length ? `${rooms.length} · ${rooms.filter((r) => r.dirty).length} need making up · best ${Math.max(...rooms.map((r) => r.stars))}★` : 'None yet: Build → Rooms')
+          : kv('Earning while you’re away', `about ${formatMoney(hs.rate * 60 * g.incomeMult)} a minute`),
+        inside && rooms.length ? kv('Nightly rates', `${formatMoney(Math.min(...rooms.map((r) => r.rate)))} – ${formatMoney(Math.max(...rooms.map((r) => r.rate)))}`) : null,
+        kv('Guests sent over to your casino', hs.staying ? `+${Math.round((boost.spawn - 1) * 100)}% visitors` : '—'),
+        h('p', { class: 'muted small', text: inside
+          ? 'Guests check in at reception, sleep in the best room they can afford, and leave it for housekeeping. Click a room to decorate it: what you spend sets its stars and nightly price.'
+          : 'Walk out onto the street and in through the hotel doors to build and decorate. The casino and hotel keep separate banks.' }),
       );
     };
     render();
     const off = g.events.on('hotel', () => render());
     this.open('Hotel', body, { onClose: () => off() });
+  }
+
+  /**
+   * Decorate one hotel room. Changes show on the room itself while you choose; nothing is
+   * paid until you apply (to this room, or to every room like it on the floor).
+   */
+  openRoom(item: PlacedItem): void {
+    const g = this.game;
+    if (!item.setup) return;
+    const suite = item.isSuite;
+    const original: RoomSetup = { ...item.setup, extras: [...item.setup.extras] };
+    let draft: RoomSetup = { ...original, extras: [...original.extras] };
+    let applied = false;
+    const body = h('div', { class: 'stack room-editor' });
+    const others = () => g.items.items.filter((i) => i.def.id === item.def.id && i.floor === item.floor && i !== item && i.setup);
+    // Show the design on the room itself; guests and saves still see the paid setup.
+    const preview = () => {
+      item.previewOf ??= original;
+      item.setup = { ...draft, extras: [...draft.extras] };
+      item.rebuildModel();
+    };
+    const unpreview = () => {
+      item.setup = original;
+      item.previewOf = null;
+    };
+    const choice = (label: string, sub: string, on: boolean, click: () => void, extra: Partial<{ disabled: boolean; swatch: number; icon: string }> = {}) =>
+      h('button', {
+        class: `room-opt${on ? ' on' : ''}`, disabled: !!extra.disabled,
+        onClick: () => { click(); audio.play('click'); preview(); render(); },
+      },
+      extra.swatch !== undefined ? h('i', { class: 'room-sw', style: `background:#${extra.swatch.toString(16).padStart(6, '0')}` }) : extra.icon ? h('span', { class: 'room-ic', text: extra.icon }) : null,
+      h('b', { text: label }), h('small', { text: sub }));
+    const price = (p: number) => (p ? formatMoney(p) : 'Free');
+    const render = () => {
+      clear(body);
+      const stars = roomStars(draft, suite);
+      const rate = roomRate(draft, suite);
+      const cost = changeCost(original, draft);
+      const floorRooms = others();
+      const floorCost = cost + floorRooms.reduce((a, r) => a + changeCost(r.setup!, draft), 0);
+      body.appendChild(h('div', { class: 'room-sum' },
+        h('div', { class: 'hotel-stars', text: '★'.repeat(stars) + '☆'.repeat(5 - stars) }),
+        h('div', {}, h('b', { text: `${formatMoney(rate)} a night` }), h('span', { class: 'muted small', text: ` · decor worth ${formatMoney(setupValue(draft))}` })),
+      ));
+      const sect = (title: string, ...kids: HTMLElement[]) => body.appendChild(h('div', { class: 'room-sect' }, h('div', { class: 'field-label', text: title }), h('div', { class: 'room-opts' }, ...kids)));
+      sect('Bed', ...BEDS.map((b, i) => choice(b.name, price(b.price), draft.bed === i, () => (draft.bed = i))));
+      sect('Walls', ...ROOM_WALLS.map((w, i) => choice(w.name, price(w.price), draft.wall === i, () => (draft.wall = i), { swatch: w.color })));
+      sect('Floor', ...ROOM_FLOORS.map((f, i) => choice(f.name, price(f.price), draft.floor === i, () => (draft.floor = i), { swatch: f.color })));
+      sect('Extras', ...ROOM_EXTRAS.map((e) => choice(e.name, e.suite && !suite ? 'Suites only' : price(e.price), draft.extras.includes(e.id), () => {
+        draft.extras = draft.extras.includes(e.id) ? draft.extras.filter((x) => x !== e.id) : [...draft.extras, e.id];
+      }, { icon: e.icon, disabled: !!e.suite && !suite })));
+      const changed = !sameSetup(original, draft);
+      const money = (n: number) => (n > 0 ? `pay ${formatMoney(n)}` : n < 0 ? `get ${formatMoney(-n)} back` : 'no charge');
+      body.appendChild(h('p', { class: 'muted small', text: 'What you spend decides the stars and the nightly price. Rich guests hunt for stars; budget guests just want something they can afford. Removing things gives half their price back.' }));
+      body.appendChild(h('div', { class: 'btn-row wrap' },
+        h('button', {
+          class: 'btn gold', disabled: !changed || (cost > 0 && g.money < cost), text: changed ? `Apply to this room (${money(cost)})` : 'No changes yet',
+          onClick: () => {
+            unpreview();
+            if (g.decorateRoom(item, draft)) {
+              applied = true;
+              audio.play('purchase');
+              g.notify(`Room decorated: ${stars}★, ${formatMoney(rate)} a night.`, 'good');
+              this.close();
+            } else preview();
+          },
+        }),
+        floorRooms.length
+          ? h('button', {
+            class: 'btn', disabled: floorCost > 0 && g.money < floorCost, text: `Apply to all ${floorRooms.length + 1} ${suite ? 'suites' : 'rooms'} on this floor (${money(floorCost)})`,
+            onClick: () => {
+              unpreview();
+              const ok = sameSetup(original, draft) || g.decorateRoom(item, draft);
+              const r = ok ? g.applySetupToFloor(item, draft) : null;
+              if (!r) {
+                preview();
+                return;
+              }
+              applied = true;
+              audio.play('purchase');
+              g.notify(`${r.rooms + 1} ${suite ? 'suites' : 'rooms'} now match: ${stars}★, ${formatMoney(rate)} a night.`, 'good');
+              this.close();
+            },
+          })
+          : null,
+      ));
+    };
+    render();
+    this.open(suite ? 'Decorate suite' : 'Decorate room', body, {
+      cls: 'room-modal',
+      onClose: () => {
+        if (applied) return;
+        unpreview();
+        if (g.items.items.includes(item)) item.rebuildModel();
+      },
+    });
   }
 
   /** Start over for a permanent bonus. */
@@ -457,9 +553,9 @@ export class Modals {
       chart,
       h('div', { class: 'field-label', text: 'Top earners' }),
       top.length ? table : h('p', { class: 'muted', text: 'Buy some machines to see who earns the most.' }),
-      h('div', { class: 'field-label', text: `Goals complete: ${g.doneObjectives.size}/${OBJECTIVES.length}` }),
+      h('div', { class: 'field-label', text: `Goals complete: ${g.doneObjectives.size}/${g.objectiveList.length}` }),
     );
-    this.open('Casino stats', body, { wide: true });
+    this.open(g.inHotel ? 'Hotel stats' : 'Casino stats', body, { wide: true });
     requestAnimationFrame(() => drawLine(chart, g.moneyHistory));
   }
 
@@ -572,16 +668,13 @@ export class Modals {
   // ------------------------------------------------------------------ day report
 
   dayReport(r: DayReport): void {
-    const lines: [string, number][] = [
-      ['Bets taken', r.revenue],
-      ['Payouts to guests', -r.payouts],
-      ['Bar, snacks & ATM', r.sales],
-      ['Staff wages', -r.wages],
-      ['Upkeep', -r.upkeep],
-    ];
-    if (r.hotel !== undefined) lines.push([`Hotel (${r.hotelGuests ?? 0} guests)`, r.hotel]);
+    const hotel = r.site === 'hotel';
+    const lines: [string, number][] = hotel
+      ? [['Room nights', r.revenue], ['Bar, pool-side & restaurant', r.sales], ['Staff wages', -r.wages], ['Upkeep', -r.upkeep]]
+      : [['Bets taken', r.revenue], ['Payouts to guests', -r.payouts], ['Bar, snacks & ATM', r.sales], ['Staff wages', -r.wages], ['Upkeep', -r.upkeep]];
+    if (r.hotel !== undefined) lines.push(['Hotel (its own bank)', r.hotel]);
     const card = h('div', { class: 'day-card' },
-      h('div', { class: 'day-title', text: `Day ${r.day} closed` }),
+      h('div', { class: 'day-title', text: `${hotel ? 'Hotel · ' : ''}Day ${r.day} closed` }),
       h('div', { class: `day-profit ${r.profit >= 0 ? 'pos' : 'neg'}`, text: `${r.profit >= 0 ? '+' : ''}${formatMoney(r.profit)}` }),
       ...lines.map(([k, v]) => h('div', { class: 'kv' }, h('span', { text: k }), h('b', { class: v >= 0 ? 'pos' : 'neg', text: `${v >= 0 ? '+' : ''}${formatMoney(v)}` }))),
       h('div', { class: 'kv' }, h('span', { text: 'Guests' }), h('b', { text: formatNumber(r.visitors) })),
