@@ -5,6 +5,7 @@ import type { WorkerRole } from '../entities/staff';
 import type { Appearance } from '../entities/appearance';
 import type { LifetimeStats } from './objectives';
 import { sanitizeSetup } from '../hotel/rooms';
+import { MAX_DEPTH_STEPS } from '../world/city';
 
 export interface SavedStaff {
   role: WorkerRole;
@@ -73,6 +74,10 @@ export interface SaveData extends CasinoSnapshot {
   hotel?: import('./hotel').HotelState | null;
   /** Times you've been reborn. */
   rebirths?: number;
+  /** Your house and its vault (see src/game/house.ts). */
+  house?: import('./house').HouseState | null;
+  /** Guns you own (see src/game/guns.ts). */
+  guns?: import('./guns').GunState;
   /** When this save was written (epoch ms): the newest of the local and cloud copies wins. */
   savedAt?: number;
 }
@@ -192,7 +197,7 @@ export function sanitizeSnapshot(raw: unknown, fonts: string[], sanitizeLook: (a
     trimColor: num(lookRaw.trimColor, 0, 0xffffff, 0x2fe6ff),
   };
   const lay = (s.layout ?? {}) as Record<string, unknown>;
-  const layout: Layout = { width: num(lay.width, 0, 2, 0), depth: num(lay.depth, 0, 120, 0) };
+  const layout: Layout = { width: num(lay.width, 0, 2, 0), depth: num(lay.depth, 0, MAX_DEPTH_STEPS, 0) };
   if (Array.isArray(lay.lift) && lay.lift.length === 2) layout.lift = [num(lay.lift[0], 0, 47, 17), num(lay.lift[1], -600, 45, 36)];
   const floors = num(s.floors, 1, 12, 1);
   const items: SavedItem[] = [];

@@ -11,11 +11,12 @@ describe('street with casinos on both sides', () => {
   const st = new Street();
   st.setLots([lot('rival', 0), lot('me', 1), lot('a', 2), lot('b', 3)]);
 
-  it('alternates sides and fills columns', () => {
-    expect(st.placeOf('rival')).toEqual({ col: 0, side: 0 });
-    expect(st.placeOf('me')).toEqual({ col: 0, side: 1 });
-    expect(st.placeOf('a')).toEqual({ col: 1, side: 0 });
-    expect(st.placeOf('b')).toEqual({ col: 1, side: 1 });
+  it('alternates sides and fills columns of the Strip (around the gun shop)', () => {
+    expect(st.placeOf('rival')).toEqual({ row: 0, col: 0, side: 0 });
+    expect(st.placeOf('me')).toEqual({ row: 0, col: 0, side: 1 });
+    expect(st.placeOf('shop:guns')).toEqual({ row: 0, col: 1, side: 0 });
+    expect(st.placeOf('a')).toEqual({ row: 0, col: 1, side: 1 });
+    expect(st.placeOf('b')).toEqual({ row: 0, col: 2, side: 0 });
   });
 
   it('frames round-trip and facing doors line up across the road', () => {

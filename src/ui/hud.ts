@@ -12,6 +12,8 @@ import { Modals } from './modals';
 import { escapeHtml } from './floaters';
 import { openTableGame } from './games';
 import { Minimap } from './minimap';
+import { GunBar, openGunShop } from './guns';
+import { openVault } from './vault';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
 export class Hud {
@@ -49,6 +51,7 @@ export class Hud {
   private floorBar!: HTMLElement;
   private camBtn!: HTMLButtonElement;
   private floorTag = h('div', { class: 'floor-tag', hidden: true });
+  readonly gunBar: GunBar;
   /** Extra card for another player you clicked (filled in by the multiplayer layer). */
   remoteCard: ((pid: string, el: HTMLElement) => void) | null = null;
 
@@ -58,6 +61,7 @@ export class Hud {
     this.modals = new Modals(this.root, game, this);
     this.shop = new ShopDrawer(this.root, game, this);
     this.minimap = new Minimap(game);
+    this.gunBar = new GunBar(game);
     this.build();
     this.bind();
     this.goalsCollapsed = window.innerWidth < 700;
@@ -108,7 +112,8 @@ export class Hud {
       ['staff', 'Staff', () => this.modals.openStaff()],
       ['casino', 'Casino', () => this.modals.openCasino()],
       ['you', 'You', () => this.modals.openCreator('player')],
-      ['home', 'Hotel', () => this.modals.openHotel()],
+      ['hotel', 'Hotel', () => this.modals.openHotel()],
+      ['home', 'Home', () => this.modals.openHouse()],
       ['upgrade', 'Luxe', () => this.modals.openCosmetics()],
       ['stats', 'Stats', () => this.modals.openStats()],
     ];
@@ -153,7 +158,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -199,6 +204,12 @@ export class Hud {
       if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });
     });
     g.events.on('visit', () => this.renderVisit());
+    g.events.on('gunshop', () => {
+      if (!this.modals.isOpen) openGunShop(g, this.modals);
+    });
+    g.events.on('vault', () => {
+      if (!this.modals.isOpen) openVault(g, this.modals);
+    });
     g.events.on('floor', () => this.renderFloors());
     g.events.on('expansion', () => this.renderFloors());
     g.events.on('camera', () => this.renderCamBtn());
@@ -593,12 +604,13 @@ export class Hud {
   renderVisit(): void {
     const g = this.game;
     const v = g.visit;
-    this.visitBar.hidden = !v && !g.inHotel;
+    this.visitBar.hidden = !v && !g.inHotel && !g.inHouse;
     this.root.classList.toggle('visiting', !!v);
     this.root.classList.toggle('in-hotel', g.inHotel);
+    this.root.classList.toggle('in-house', g.inHouse);
     this.toolbar.querySelectorAll('.tool-shop, .tool-staff, .tool-casino').forEach((b) => ((b as HTMLElement).hidden = !!v));
     const casinoLabel = this.toolbar.querySelector('.tool-casino .tool-label');
-    if (casinoLabel) casinoLabel.textContent = g.inHotel ? 'Building' : 'Casino';
+    if (casinoLabel) casinoLabel.textContent = g.inHotel ? 'Building' : g.inHouse ? 'House' : 'Casino';
     this.shop.close();
     this.nameEl.textContent = v ? v.lot.info.look.name : g.building.look.name;
     if (!v && g.inHotel) {
@@ -607,6 +619,22 @@ export class Hud {
         h('div', { class: 'vb-text' },
           h('b', { text: `${g.gardenSite ? '🏝️' : '🏨'} ${g.building.look.name}` }),
           h('span', { class: 'vb-net', text: g.gardenSite ? 'Open-air: pools, loungers, hot tubs and the tiki bar go here' : g.hotelOpen ? 'Open for guests · its own bank, level and goals' : 'Not open yet: see the checklist in Goals' }),
+        ),
+        h('button', {
+          class: 'btn small gold', html: `${icon('casino', 14)} Back to the casino`,
+          onClick: () => {
+            const me = g.street.get('me');
+            if (me && g.enterLot(me)) audio.play('whoosh');
+          },
+        }),
+      );
+    }
+    if (!v && g.inHouse) {
+      clear(this.visitBar);
+      this.visitBar.append(
+        h('div', { class: 'vb-text' },
+          h('b', { text: `🏠 ${g.building.look.name}` }),
+          h('span', { class: 'vb-net', dataset: { live: 'house' } }),
         ),
         h('button', {
           class: 'btn small gold', html: `${icon('casino', 14)} Back to the casino`,
@@ -659,6 +687,7 @@ export class Hud {
     const g = this.game;
     this.floorBar.hidden = g.floors < 2 || !g.inside;
     this.minimap.update(dt);
+    this.gunBar.update();
     const up = g.inside && g.player.floor > 0;
     this.floorTag.hidden = !up;
     if (up) {
@@ -698,6 +727,11 @@ export class Hud {
           audio.play('levelup');
           this.banner('Open for business!', 'Your tower passed its checklist. Guests are on their way.', 'level');
         }
+      }
+      if (g.inHouse) {
+        const hn = this.visitBar.querySelector('[data-live="house"]') as HTMLElement | null;
+        const hs = g.house;
+        if (hn && hs) hn.textContent = hs.tier ? `Vault ${formatMoney(hs.vault)} · Security ${g.houseSecurity}/100` : 'Build → Security → Vault to start banking';
       }
       if (g.visit) {
         const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;

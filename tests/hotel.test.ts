@@ -121,7 +121,7 @@ describe('hotel business', () => {
     expect(soldAt(itemDef('slot_lucky7'), 'hotel')).toBe(false);
     expect(soldAt(itemDef('bar'), 'hotel')).toBe(true);
     expect(soldAt(itemDef('plant'), 'casino')).toBe(true);
-    expect(categoriesFor('hotel').map((c) => c.id)).toEqual(['rooms', 'services', 'decor']);
+    expect(categoriesFor('hotel').map((c) => c.id)).toEqual(['rooms', 'services', 'decor', 'garden']);
     expect(ITEMS.filter((d) => soldAt(d, 'hotel') && d.kind === 'room').length).toBe(3);
   });
 
@@ -135,7 +135,7 @@ describe('hotel business', () => {
     expect(ho2.col).toBe(me.col + 2);
     expect(ho.side).toBe(me.side);
     expect(ho.col).toBe(me.col + 1);
-    const taken = new Set(st.lots.map((l) => `${st.placeOf(l.id).col},${st.placeOf(l.id).side}`));
+    const taken = new Set(st.lots.map((l) => `${st.placeOf(l.id).row},${st.placeOf(l.id).col},${st.placeOf(l.id).side}`));
     expect(taken.size).toBe(st.lots.length);
   });
 });

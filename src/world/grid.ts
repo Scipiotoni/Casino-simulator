@@ -19,8 +19,8 @@ export const DOOR_TILES: [number, number][] = [
 /** Mirror line of the road (world z): the south side of the street is the north side turned around it. */
 export const ROAD_MID = 49.5;
 
-/** The street is a row of lots this far apart (building width limit + a gap). */
-export const LOT_STRIDE = 30;
+/** Lots along a street are this far apart (building width limit + a wide gap). */
+export const LOT_STRIDE = 36;
 
 /** Width steps. The last one is the width limit of every lot on the street. */
 export const WIDTHS: { w: number; cost: number; level: number }[] = [

@@ -13,6 +13,8 @@ import {
   tikibarModel, vendingModel, waterslideModel,
 } from './hotel';
 
+import { kitModel, vaultModel } from './kit';
+
 export type { BuildOpts } from './common';
 
 const BUILDERS: Record<string, (o: BuildOpts) => ItemModel> = {
@@ -60,6 +62,8 @@ const BUILDERS: Record<string, (o: BuildOpts) => ItemModel> = {
   statue: statueModel,
   moneytree: moneyTreeModel,
   giantdiamond: giantDiamondModel,
+  kit: kitModel,
+  vault: vaultModel,
 };
 
 export function buildModel(key: string, opts: BuildOpts): ItemModel {

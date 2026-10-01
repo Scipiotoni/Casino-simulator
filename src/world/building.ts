@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { mat, glow, gold } from '../render/materials';
-import { asphaltTexture, lotTexture, sidewalkTexture, wallTexture } from '../render/textures';
-import { CENTER_X, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z1, type Grid } from './grid';
+import { mat, gold } from '../render/materials';
+import { lotTexture, wallTexture } from '../render/textures';
+import { CENTER_X, ROAD_MID, type Grid } from './grid';
 
 export const WALL_H = 2.5;
 const WALL_T = 0.2;
@@ -36,8 +36,8 @@ interface WallSide {
   cut: number; // 0 = full height, 1 = cut away
 }
 
-/** Length of the street drawn either side of the active lot. */
-const STREET_LEN = 1600;
+/** Size of the ground plane around the active lot (it covers the whole city). */
+const STREET_LEN = 2400;
 /** How far the street drops per floor you go up (matches the exterior storeys). */
 export const STORY_DROP = 3;
 
@@ -87,84 +87,16 @@ export class Building {
     this.rebuild();
   }
 
-  /** Ground, sidewalk, road and street lamps running the whole length of the street. */
+  /** Bare ground under the whole city (the roads themselves are drawn by the city view). */
   private buildStreet(): void {
     const lot = lotTexture().clone();
-    lot.repeat.set(STREET_LEN, 240);
+    lot.repeat.set(STREET_LEN / 2, STREET_LEN / 2);
     lot.needsUpdate = true;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, 240), mat(0xffffff, { map: lot, rough: 1 }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, STREET_LEN), mat(0xffffff, { map: lot, rough: 1 }));
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(CENTER_X, -0.02, ROAD_MID);
+    ground.position.set(CENTER_X, -0.03, ROAD_MID);
     ground.receiveShadow = true;
     this.street.add(ground);
-
-    const sw = sidewalkTexture().clone();
-    const swDepth = SIDEWALK_Z1 + 1 - FACADE_Z;
-    sw.repeat.set(STREET_LEN, swDepth);
-    sw.needsUpdate = true;
-    const swMat = mat(0xffffff, { map: sw, rough: 0.9 });
-    const curbMat = mat(0xb9b4c2, { rough: 0.8 });
-    // Both sides of the road: the south side mirrors the north one around ROAD_MID.
-    for (const mirror of [false, true]) {
-      const sidewalk = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, swDepth), swMat);
-      sidewalk.rotation.x = -Math.PI / 2;
-      const zc = FACADE_Z + swDepth / 2;
-      sidewalk.position.set(CENTER_X, 0.001, mirror ? 2 * ROAD_MID - zc : zc);
-      sidewalk.receiveShadow = true;
-      this.street.add(sidewalk);
-      const curb = new THREE.Mesh(new THREE.BoxGeometry(STREET_LEN, 0.12, 0.25), curbMat);
-      curb.position.set(CENTER_X, 0.06, mirror ? 2 * ROAD_MID - (SIDEWALK_Z1 + 1.12) : SIDEWALK_Z1 + 1.12);
-      this.street.add(curb);
-    }
-
-    const asph = asphaltTexture().clone();
-    asph.repeat.set(STREET_LEN / 2, 4);
-    asph.needsUpdate = true;
-    const roadW = 2 * (ROAD_MID - SIDEWALK_Z1 - 1);
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, roadW), mat(0xffffff, { map: asph, rough: 0.95 }));
-    road.rotation.x = -Math.PI / 2;
-    road.position.set(CENTER_X, -0.01, ROAD_MID);
-    road.receiveShadow = true;
-    this.street.add(road);
-
-    const m4 = new THREE.Matrix4();
-    const dashGeo = new THREE.PlaneGeometry(1.4, 0.14);
-    dashGeo.rotateX(-Math.PI / 2);
-    const nDash = Math.floor(STREET_LEN / 3);
-    const dashes = new THREE.InstancedMesh(dashGeo, mat(0xffd23f, { emissive: 0x6b5200, emissiveIntensity: 0.4 }), nDash);
-    for (let i = 0; i < nDash; i++) {
-      m4.makeTranslation(CENTER_X - STREET_LEN / 2 + i * 3 + 1, 0.0, ROAD_MID);
-      dashes.setMatrixAt(i, m4);
-    }
-    dashes.frustumCulled = false;
-    this.street.add(dashes);
-
-    // Street lamps between the lots (instanced: one draw call per part)
-    const spots: number[] = [];
-    for (let x = CENTER_X - STREET_LEN / 2; x <= CENTER_X + STREET_LEN / 2; x += LOT_STRIDE / 4) {
-      const rel = (((x - CENTER_X) % LOT_STRIDE) + LOT_STRIDE) % LOT_STRIDE;
-      if (rel < 5 || rel > LOT_STRIDE - 5) continue;
-      spots.push(x);
-    }
-    const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 3.2, 8);
-    poleGeo.translate(0, 1.6, 0);
-    const armGeo = new THREE.BoxGeometry(0.08, 0.08, 0.7);
-    armGeo.translate(0, 3.15, -0.3);
-    const headGeo = new THREE.SphereGeometry(0.2, 12, 8);
-    headGeo.translate(0, 3.05, -0.62);
-    const poleMat = mat(0x6b6478, { metal: 0.6, rough: 0.4 });
-    for (const [geo, material] of [[poleGeo, poleMat], [armGeo, poleMat], [headGeo, glow(0xffe2a8, 2.6)]] as const) {
-      const im = new THREE.InstancedMesh(geo, material, spots.length * 2);
-      const turn = new THREE.Matrix4().makeRotationY(Math.PI);
-      spots.forEach((x, i) => {
-        m4.makeTranslation(x, 0, SIDEWALK_Z1 + 0.85);
-        im.setMatrixAt(i * 2, m4);
-        m4.makeTranslation(x, 0, 2 * ROAD_MID - (SIDEWALK_Z1 + 0.85)).multiply(turn);
-        im.setMatrixAt(i * 2 + 1, m4);
-      });
-      im.frustumCulled = false;
-      this.street.add(im);
-    }
   }
 
   setLook(look: Partial<CasinoLook>): void {

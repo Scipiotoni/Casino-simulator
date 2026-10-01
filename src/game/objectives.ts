@@ -27,6 +27,12 @@ export interface ObjectiveView {
   hotelOpen: boolean;
   reviewAvg: number;
   gardenItems: number;
+  /** City life: guns owned, the house and its vault. */
+  gunsOwned: number;
+  houseOwned: boolean;
+  vaultTier: number;
+  vaultMoney: number;
+  houseGuards: number;
 }
 
 export interface LifetimeStats {
@@ -52,6 +58,13 @@ export interface LifetimeStats {
   /** Hotel: rooms redecorated, and whole-floor setups applied. */
   roomsDecorated: number;
   floorSetups: number;
+  /** Out on the street with a gun. */
+  shotsFired: number;
+  targetsHit: number;
+  carsHit: number;
+  /** Money moved in and out of the vault. */
+  deposited: number;
+  vaultOpened: number;
 }
 
 export function emptyStats(): LifetimeStats {
@@ -59,6 +72,7 @@ export function emptyStats(): LifetimeStats {
     collected: 0, earnedTotal: 0, visitors: 0, jackpots: 0, bigWins: 0, biggestWin: 0, cheatersCaught: 0, repairs: 0,
     trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0, managerSpins: 0,
     awayNet: 0, awayHands: 0, turnedAway: 0, roomsDecorated: 0, floorSetups: 0,
+    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0,
   };
 }
 
@@ -89,10 +103,17 @@ export const OBJECTIVES: Objective[] = [
   { id: 'rating_3', text: 'Reach a 3-star rating', hint: 'Happy guests, decor, variety and clean floors.', target: 3, reward: 1000, xp: 300, progress: (v) => v.rating },
   { id: 'expand', text: 'Expand your casino', hint: 'Open Casino and buy more floor space.', target: 1, reward: 1500, xp: 300, progress: (v) => v.expansion },
   { id: 'visit', text: 'Play a hand at another casino', hint: 'Walk out the front door and down the street.', target: 1, reward: 500, xp: 120, progress: (v) => v.stats.awayHands },
+  { id: 'gun', text: 'Buy a gun at Bullseye Guns', hint: 'The gun shop is on the Strip, next to the rival. Guns only fire out on the street.', target: 1, reward: 400, xp: 100, progress: (v) => v.gunsOwned },
+  { id: 'targets_10', text: 'Shoot 10 targets', hint: 'Tin cans, bottles and balloons wait on the sidewalks.', target: 10, reward: 500, xp: 150, progress: (v) => v.stats.targetsHit },
+  { id: 'house', text: 'Buy a house on Palm Avenue', hint: 'Open Home on the toolbar (casino level 3).', target: 1, reward: 1500, xp: 300, progress: (v) => (v.houseOwned ? 1 : 0) },
+  { id: 'vault', text: 'Put a vault in your house', hint: 'In your house: Build → Security → Vault, then pick a code.', target: 1, reward: 1000, xp: 250, progress: (v) => v.vaultTier },
+  { id: 'bank_10k', text: 'Keep $10,000 in your vault', hint: 'Open the vault and deposit casino cash. It earns interest every day.', target: 10000, reward: 1500, xp: 300, progress: (v) => v.vaultMoney },
   { id: 'doorman', text: 'Post a door guard at the entrance', hint: 'Staff → Door Guard. Turns cheaters away.', target: 1, reward: 700, xp: 200, progress: (v) => v.doorGuards },
   { id: 'cheater', text: 'Catch a cheater', hint: 'Look for the red ? badge and press Space next to them.', target: 1, reward: 800, xp: 250, progress: (v) => v.stats.cheatersCaught },
   { id: 'vip', text: 'Greet 3 VIP guests', hint: 'VIPs sparkle gold. Greet them for a tip.', target: 3, reward: 900, xp: 250, progress: (v) => v.stats.vipsGreeted },
   { id: 'crowd_25', text: 'Have 25 guests inside at once', hint: 'More seats and a better rating.', target: 25, reward: 2000, xp: 400, progress: (v) => v.customersNow },
+  { id: 'bodyguard', text: 'Hire a bodyguard for your house', hint: 'In your house: Staff → Bodyguard. Security matters.', target: 1, reward: 1500, xp: 300, progress: (v) => v.houseGuards },
+  { id: 'targets_100', text: 'Shoot 100 targets', hint: 'A shotgun clears a whole crate at once.', target: 100, reward: 3000, xp: 600, progress: (v) => v.stats.targetsHit },
   { id: 'jackpot', text: 'Witness a jackpot', hint: 'Triple 7s pays big. Brace yourself.', target: 1, reward: 1500, xp: 300, progress: (v) => v.stats.jackpots },
   { id: 'earn_50k', text: 'Earn $50,000 in total', hint: 'Every dollar you collect counts.', target: 50000, reward: 5000, xp: 800, progress: (v) => v.stats.earnedTotal },
   { id: 'roulette', text: 'Install a roulette table', hint: 'Unlocks at level 4.', target: 1, reward: 2000, xp: 400, progress: (v) => v.countItem('roulette') },
@@ -101,6 +122,8 @@ export const OBJECTIVES: Objective[] = [
   { id: 'mega', text: 'Install a Mega Jackpot machine', hint: 'Unlocks at level 8.', target: 1, reward: 8000, xp: 1500, progress: (v) => v.countItem('slot_mega') },
   { id: 'floor2', text: 'Build a second floor', hint: 'Casino → Add a floor. The elevator links them.', target: 2, reward: 12000, xp: 2000, progress: (v) => v.floors },
   { id: 'full_width', text: 'Build out to the full lot width', hint: 'Every lot on the street has the same width limit.', target: 1, reward: 8000, xp: 1500, progress: (v) => (v.widthStep >= 2 ? 1 : 0) },
+  { id: 'vault3', text: 'Upgrade to a Titanium Vault', hint: 'Open your vault and upgrade it twice.', target: 3, reward: 20000, xp: 3000, progress: (v) => v.vaultTier },
+  { id: 'bank_1m', text: 'Keep $1,000,000 in your vault', hint: 'A Bank Vault holds a million.', target: 1_000_000, reward: 50000, xp: 6000, progress: (v) => v.vaultMoney },
   { id: 'floor4', text: 'Stack four floors', hint: 'A tower on the Strip.', target: 4, reward: 60000, xp: 6000, progress: (v) => v.floors },
   { id: 'rating_5', text: 'Reach a 5-star rating', hint: 'A true casino legend.', target: 4.95, reward: 25000, xp: 5000, progress: (v) => v.rating },
   { id: 'earn_1m', text: 'Earn $1,000,000 in total', hint: 'Welcome to the high life.', target: 1_000_000, reward: 100000, xp: 10000, progress: (v) => v.stats.earnedTotal },

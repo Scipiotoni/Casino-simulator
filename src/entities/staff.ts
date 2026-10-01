@@ -26,8 +26,13 @@ export const ROLES: RoleInfo[] = [
 ];
 
 /** A role as the business you're in calls it: in the hotel, janitors are housekeepers. */
-export function roleFor(role: WorkerRole, site: 'casino' | 'hotel'): RoleInfo {
+export function roleFor(role: WorkerRole, site: 'casino' | 'hotel' | 'house'): RoleInfo {
   const r = ROLES.find((x) => x.role === role)!;
+  if (site === 'house') {
+    if (role === 'security') return { ...r, title: 'Bodyguard', wage: 400, unlock: 1, blurb: 'Patrols your house and guards the vault. Each one adds to your security rating.' };
+    if (role === 'doorman') return { ...r, title: 'Gate Guard', wage: 250, unlock: 1, blurb: 'Stands at your front door and keeps strangers out (max 2).' };
+    if (role === 'janitor') return { ...r, title: 'Butler', wage: 200, unlock: 1, blurb: 'Keeps the house spotless.' };
+  }
   if (site === 'hotel' && role === 'janitor') {
     return { ...r, title: 'Housekeeper', unlock: 1, blurb: 'Makes up rooms after guests check out (a dirty room can’t be sold) and sweeps litter.' };
   }
@@ -41,6 +46,12 @@ export const DOOR_POSTS: [number, number][] = [
   [CENTER_X + 1.55, FACADE_Z + 1.35],
 ];
 export const MAX_DOOR_GUARDS = DOOR_POSTS.length;
+
+/** The roles each place can hire. */
+export function rolesAt(site: 'casino' | 'hotel' | 'house'): RoleInfo[] {
+  const list = site === 'house' ? ROLES.filter((r) => r.role !== 'technician') : ROLES;
+  return list.map((r) => roleFor(r.role, site));
+}
 
 type Task =
   | { kind: 'trash'; trash: Trash }

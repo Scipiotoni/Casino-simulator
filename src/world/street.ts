@@ -1,13 +1,17 @@
 import * as THREE from 'three';
 import { Exterior, type LotLook } from './exterior';
-import { CENTER_X, DOOR_TILES, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z0 } from './grid';
+import { CENTER_X, DOOR_TILES, FACADE_Z } from './grid';
+import {
+  MIN_COLS, BLOCK_COLS, STREET_ROWS, type SlotRef, cityX, cityZ, fillerFor, globalToSlot, onRoadNetwork, slotAt, slotKey, slotToGlobal,
+} from './city';
+import { CityView } from './cityView';
 export { ROAD_MID } from './grid';
 
-export type LotKind = 'me' | 'rival' | 'player' | 'hotel';
+export type LotKind = 'me' | 'rival' | 'player' | 'hotel' | 'house' | 'filler' | 'shop';
 
-/** One casino on the street. */
+/** One building in the city. */
 export interface StreetLot {
-  /** 'me', 'rival' or another player's id. */
+  /** 'me', 'rival', another player's id, 'hotel:h0', 'house', 'filler:…', 'shop:guns'… */
   id: string;
   kind: LotKind;
   info: LotLook;
@@ -19,100 +23,155 @@ export interface StreetLot {
   online: boolean;
   /** For a hotel: the id of the casino it belongs to (it stands right next to it). */
   hotelOf?: string;
+  /** For a house: the id of the casino whose owner lives there. */
+  houseOf?: string;
 }
 
-/** How many columns either side of the player exteriors are built. */
-const VIEW_COLS = 3;
-
-/** Tile rows of the whole street: north sidewalk, road, south sidewalk. */
-export const STREET_Z0 = SIDEWALK_Z0;
-export const STREET_Z1 = 2 * ROAD_MID - 1 - SIDEWALK_Z0;
+/** Exteriors are built within this distance of the camera focus. */
+const VIEW_R = 150;
 
 export interface Vec2 {
   x: number;
   z: number;
 }
 
+/** Fixed buildings everybody shares (they never move, whoever plays). */
+const SPECIALS: { id: string; slot: SlotRef; name: string; tagline: string }[] = [
+  { id: 'shop:guns', slot: { row: 0, col: 1, side: 0 }, name: 'Bullseye Guns', tagline: 'PISTOLS · SHOTGUNS · RIFLES' },
+];
+
 /**
- * The casinos on both sides of one road. Lots alternate north / south and fill columns
- * LOT_STRIDE apart, so neighbours face each other across the street.
+ * Every building of the city: casinos, hotels and houses of the players, the rival, the gun
+ * shop and the filler buildings in between. Lots sit in slots (street row, column, side);
+ * casinos and hotels line the Casino Strip, houses go on Palm Avenue.
  *
  * Every lot has its own local frame (the one its floor plan is built in: facade at
- * FACADE_Z, facing +z, door at CENTER_X). The global frame is the street itself; the
- * world is always drawn in the frame of the lot whose interior is loaded ("active").
+ * FACADE_Z, facing +z, door at CENTER_X). The global frame is the city's; the world is
+ * always drawn in the frame of the lot whose interior is loaded ("active").
  */
 export class Street {
   readonly group = new THREE.Group();
+  readonly city = new CityView();
   lots: StreetLot[] = [];
   activeId = 'me';
+  /** Lot columns along each street. */
+  cols = MIN_COLS;
   private built = new Map<string, { ext: Exterior; key: string }>();
-  /** Slot of each lot (col * 2 + side); hotels can leave gaps. */
-  private slots = new Map<string, number>();
-  private bySlot: (StreetLot | undefined)[] = [];
+  private slots = new Map<string, SlotRef>();
+  private bySlot = new Map<number, StreetLot>();
+  private byId = new Map<string, StreetLot>();
+  private builtCols = -1;
+
+  constructor() {
+    this.group.add(this.city.group);
+  }
 
   /**
-   * Casinos fill slots in opening order, alternating sides. A hotel takes the slot right
-   * beside its casino on the same side of the road (two slots on), and later casinos skip it.
+   * Casinos fill the Casino Strip in opening order, alternating sides; a casino's hotel
+   * buildings line up beside it on the same side. Houses go on Palm Avenue, right behind
+   * their owner's casino when that lot is free. Every slot left over gets a filler building.
    */
   setLots(lots: StreetLot[]): void {
-    const casinos = lots.filter((l) => l.kind !== 'hotel').sort((a, b) => (a.kind === 'rival' ? -1 : b.kind === 'rival' ? 1 : a.order - b.order));
-    const hotels = new Map<string, StreetLot[]>();
-    for (const l of lots) {
-      if (l.kind !== 'hotel' || !l.hotelOf) continue;
-      const list = hotels.get(l.hotelOf) ?? [];
-      list.push(l);
-      hotels.set(l.hotelOf, list);
-    }
-    for (const list of hotels.values()) list.sort((a, b) => a.order - b.order);
-    this.slots.clear();
-    this.bySlot = [];
-    let next = 0;
-    const take = (l: StreetLot, i: number) => {
-      this.slots.set(l.id, i);
-      this.bySlot[i] = l;
+    const casinos = lots.filter((l) => l.kind === 'me' || l.kind === 'rival' || l.kind === 'player')
+      .sort((a, b) => (a.kind === 'rival' ? -1 : b.kind === 'rival' ? 1 : a.order - b.order));
+    const group = (key: 'hotelOf' | 'houseOf') => {
+      const m = new Map<string, StreetLot[]>();
+      for (const l of lots) {
+        const owner = l[key];
+        if (!owner || (key === 'hotelOf' ? l.kind !== 'hotel' : l.kind !== 'house')) continue;
+        const list = m.get(owner) ?? [];
+        list.push(l);
+        m.set(owner, list);
+      }
+      for (const list of m.values()) list.sort((a, b) => a.order - b.order);
+      return m;
     };
+    const hotels = group('hotelOf');
+    const houses = group('houseOf');
+    this.slots.clear();
+    this.bySlot.clear();
+    const take = (l: StreetLot, s: SlotRef) => {
+      this.slots.set(l.id, s);
+      this.bySlot.set(slotKey(s), l);
+    };
+    const taken = (s: SlotRef) => this.bySlot.has(slotKey(s));
+    const strip = (i: number): SlotRef => ({ row: 0, col: Math.floor(i / 2), side: (i % 2) as 0 | 1 });
+    const out: StreetLot[] = [];
+    for (const sp of SPECIALS) {
+      const lot: StreetLot = {
+        id: sp.id, kind: 'shop', owner: sp.name, order: 0, online: true,
+        info: { look: { name: sp.name, signFont: 'bungee', signColor: 0xff4d4d, wallColor: 0x3b3f46, trimColor: 0xff4d4d }, width: 1, depth: 1, floors: 1, tagline: sp.tagline, style: 'gunshop' },
+      };
+      take(lot, sp.slot);
+      out.push(lot);
+    }
+    let next = 0;
     for (const c of casinos) {
-      while (this.bySlot[next]) next++;
-      take(c, next);
-      // A casino's hotel buildings line up beside it, on the same side of the road.
+      while (taken(strip(next))) next++;
+      take(c, strip(next));
+      out.push(c);
       let i = next;
       for (const h of hotels.get(c.id) ?? []) {
         i += 2;
-        while (this.bySlot[i]) i += 2;
-        take(h, i);
+        while (taken(strip(i))) i += 2;
+        take(h, strip(i));
+        out.push(h);
       }
     }
-    this.lots = [...casinos, ...[...hotels.values()].flat().filter((h) => this.slots.has(h.id))];
+    // Houses on Palm Avenue, behind their owner's casino if they can.
+    let hn = 0;
+    for (const c of casinos) {
+      for (const h of houses.get(c.id) ?? []) {
+        const s = this.slots.get(c.id)!;
+        const want: SlotRef[] = [{ row: 1, col: s.col, side: 0 }, { row: 1, col: s.col, side: 1 }];
+        let spot = want.find((w) => !taken(w));
+        if (!spot) {
+          while (taken({ row: 1, col: Math.floor(hn / 2), side: (hn % 2) as 0 | 1 })) hn++;
+          spot = { row: 1, col: Math.floor(hn / 2), side: (hn % 2) as 0 | 1 };
+        }
+        take(h, spot);
+        out.push(h);
+      }
+    }
+    let maxCol = 0;
+    for (const s of this.slots.values()) maxCol = Math.max(maxCol, s.col);
+    this.cols = Math.max(MIN_COLS, Math.ceil((maxCol + 1) / BLOCK_COLS) * BLOCK_COLS);
+    for (let row = 0; row < STREET_ROWS; row++) {
+      for (let col = 0; col < this.cols; col++) {
+        for (const side of [0, 1] as const) {
+          const s = { row, col, side };
+          if (taken(s)) continue;
+          const f = fillerFor(s);
+          const lot: StreetLot = {
+            id: `filler:${row}:${col}:${side}`, kind: 'filler', owner: '', order: 0, online: false,
+            info: { look: { name: f.name, signFont: 'nunito', signColor: f.accent, wallColor: f.color, trimColor: f.accent }, width: 0, depth: 0, floors: f.floors, style: 'filler', filler: f },
+          };
+          take(lot, s);
+          out.push(lot);
+        }
+      }
+    }
+    this.lots = out;
+    this.byId = new Map(out.map((l) => [l.id, l]));
   }
 
   get(id: string): StreetLot | undefined {
-    return this.lots.find((l) => l.id === id);
+    return this.byId.get(id);
   }
 
-  slotOf(id: string): number {
-    return this.slots.get(id) ?? 0;
+  /** Street row, column along the road and side (0 = north, 1 = south) of a lot. */
+  placeOf(id: string): SlotRef {
+    return this.slots.get(id) ?? { row: 0, col: 0, side: 0 };
   }
 
-  /** Column along the road and side (0 = north, 1 = south) of a lot. */
-  placeOf(id: string): { col: number; side: 0 | 1 } {
-    const i = this.slotOf(id);
-    return { col: Math.floor(i / 2), side: (i % 2) as 0 | 1 };
-  }
-
-  get columns(): number {
-    return Math.max(1, Math.ceil(this.bySlot.length / 2));
-  }
-
-  /** Lot-local point → street (global) frame. */
+  /** Lot-local point → global frame. */
   toGlobal(id: string, x: number, z: number): Vec2 {
-    const { col, side } = this.placeOf(id);
-    return side === 0 ? { x: x + col * LOT_STRIDE, z } : { x: 2 * CENTER_X + col * LOT_STRIDE - x, z: 2 * ROAD_MID - z };
+    return slotToGlobal(this.placeOf(id), x, z);
   }
 
-  /** Street (global) point → a lot's local frame (the transform is its own inverse per side). */
+  /** Global point → a lot's local frame. */
   fromGlobal(id: string, x: number, z: number): Vec2 {
-    const { col, side } = this.placeOf(id);
-    return side === 0 ? { x: x - col * LOT_STRIDE, z } : { x: 2 * CENTER_X + col * LOT_STRIDE - x, z: 2 * ROAD_MID - z };
+    return globalToSlot(this.placeOf(id), x, z);
   }
 
   /** A point in one lot's frame expressed in another's. */
@@ -140,17 +199,18 @@ export class Street {
     return this.fromGlobal(this.activeId, x, z);
   }
 
-  /** Global x range of the street (a little past the first and last column). */
-  get extent(): [number, number] {
-    return [CENTER_X - LOT_STRIDE / 2, (this.columns - 1) * LOT_STRIDE + CENTER_X + LOT_STRIDE / 2];
+  /** Global bounds of the city. */
+  get bounds(): { x0: number; x1: number; z0: number; z1: number } {
+    const [x0, x1] = cityX(this.cols);
+    const [z0, z1] = cityZ();
+    return { x0, x1, z0, z1 };
   }
 
   /** The lot whose frontage is nearest a world point (on the side of the road it's on). */
   lotAt(x: number, z: number): StreetLot | null {
     const g = this.worldToGlobal(x, z);
-    const col = Math.round((g.x - CENTER_X) / LOT_STRIDE);
-    if (col < 0) return null;
-    return this.bySlot[col * 2 + (g.z < ROAD_MID ? 0 : 1)] ?? null;
+    const s = slotAt(g.x, g.z, this.cols);
+    return s ? this.bySlot.get(slotKey(s)) ?? null : null;
   }
 
   private tileTo(id: string, tx: number, tz: number): [number, number] {
@@ -159,30 +219,45 @@ export class Street {
     return [Math.floor(l.x), Math.floor(l.z)];
   }
 
-  /** Is world tile (tx,tz) the front door of a lot other than the active one? Returns that lot. */
+  /** Is world tile (tx,tz) the front door of a lot (not the active one) you can walk into? */
   doorAt(tx: number, tz: number): StreetLot | null {
     const lot = this.lotAt(tx + 0.5, tz + 0.5);
-    if (!lot || lot.id === this.activeId) return null;
+    if (!lot || lot.id === this.activeId || lot.kind === 'filler' || lot.kind === 'shop') return null;
     const [lx, lz] = this.tileTo(lot.id, tx, tz);
     return lz === FACADE_Z && DOOR_TILES.some(([dx]) => dx === lx) ? lot : null;
   }
 
-  /** The player may stroll both sidewalks, cross the road and step into any lot's doorway. */
+  /** The player may stroll every sidewalk, cross any road and step into a lot's doorway. */
   isStreetWalkable(tx: number, tz: number): boolean {
     const g = this.worldToGlobal(tx + 0.5, tz + 0.5);
-    const [x0, x1] = this.extent;
-    if (g.z > STREET_Z0 && g.z < STREET_Z1 + 1 && g.x >= x0 && g.x <= x1) return true;
+    if (onRoadNetwork(g.x, g.z, this.cols)) return true;
     return this.doorAt(tx, tz) !== null;
   }
 
+  /** Is this world point out on the roads and sidewalks (not inside any building)? */
+  isOutdoors(x: number, z: number): boolean {
+    const g = this.worldToGlobal(x, z);
+    return onRoadNetwork(g.x, g.z, this.cols);
+  }
+
   /** Build/refresh exteriors near the focus point; the active lot's shell hides while you're inside. */
-  update(dt: number, focusX: number, focusZ: number, inside: boolean): void {
+  update(dt: number, focusX: number, focusZ: number, inside: boolean, sim = dt): void {
     const f = this.worldToGlobal(focusX, focusZ);
-    const focusCol = Math.round((f.x - CENTER_X) / LOT_STRIDE);
     const keep = new Set<string>();
-    this.lots.forEach((l) => {
-      const slot = this.slotOf(l.id);
-      if (Math.abs(Math.floor(slot / 2) - focusCol) > VIEW_COLS && l.id !== this.activeId) return;
+    // The roads are (re)built lazily, when the city first gets drawn or grows wider.
+    if (this.builtCols !== this.cols) {
+      this.builtCols = this.cols;
+      this.city.build(this.cols);
+    }
+    const act = this.placeOf(this.activeId);
+    // The city is drawn in the global frame: carry it into the active lot's frame.
+    const o = this.fromGlobal(this.activeId, 0, 0);
+    this.city.group.position.set(o.x, 0, o.z);
+    this.city.group.rotation.y = act.side === 1 ? Math.PI : 0;
+    this.city.update(dt, sim, f.x, f.z);
+    for (const l of this.lots) {
+      const c = this.toGlobal(l.id, CENTER_X, FACADE_Z - 12);
+      if (l.id !== this.activeId && Math.hypot(c.x - f.x, c.z - f.z) > VIEW_R) continue;
       keep.add(l.id);
       const key = JSON.stringify(l.info);
       let b = this.built.get(l.id);
@@ -192,12 +267,12 @@ export class Street {
         this.built.set(l.id, b);
         this.group.add(b.ext.group);
       }
-      const o = this.toActive(l.id, 0, 0);
-      b.ext.group.position.set(o.x, 0, o.z);
+      const p = this.toActive(l.id, 0, 0);
+      b.ext.group.position.set(p.x, 0, p.z);
       b.ext.group.rotation.y = this.rotOf(l.id);
       b.ext.shell.visible = !(inside && l.id === this.activeId);
       b.ext.update(dt);
-    });
+    }
     for (const [id, b] of this.built) {
       if (!keep.has(id)) {
         b.ext.dispose();

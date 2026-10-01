@@ -811,11 +811,20 @@ export class CharacterModel {
   private t = Math.random() * 10;
   /** 0..1 — a few cocktails in, the whole body sways and the head lolls. */
   tipsy = 0;
+  /** Holding something out in the right hand (a gun): 1 = one hand, 2 = both hands. */
+  aim = 0;
+  /** Kick from the last shot (decays by itself). */
+  recoil = 0;
+  /** Right hand, for holding props (a gun's +z points where the arm points). */
+  readonly hand = new THREE.Group();
 
   constructor(appearance: Appearance, private opts: CharacterOpts = {}) {
     this.root.add(this.body);
     if (!opts.override) this.root.add(blobShadow());
     this.body.add(this.hips, this.armL, this.armR, this.legL, this.legR, this.headPivot);
+    this.hand.position.set(0, -0.33, 0.02);
+    this.hand.rotation.x = Math.PI / 2;
+    this.armR.add(this.hand);
     this.face = new THREE.Mesh(faceGeometry('dots', 'neutral'), opts.override ?? FACE);
     this.setAppearance(appearance);
   }
@@ -1070,6 +1079,16 @@ export class CharacterModel {
     const moving = this.pose === 'walk' || this.pose === 'run' || this.pose === 'sneak';
     if (moving) this.phase += dt * Math.max(0.8, this.moveSpeed) * (this.pose === 'run' ? 3.2 : 4.6);
     this.computeTargets();
+    if (this.aim > 0 && this.pose !== 'sitPlay' && this.pose !== 'standPlay') {
+      const T = this.target;
+      T.armRx = -1.5 - this.recoil * 0.5;
+      T.armRz = 0.05;
+      if (this.aim > 1) {
+        T.armLx = -1.35 - this.recoil * 0.3;
+        T.armLz = 0.45;
+      }
+    }
+    this.recoil = Math.max(0, this.recoil - dt * 6);
     const k = moving || this.pose === 'dance' || this.pose === 'cheer' || this.pose === 'celebrate' ? 22 : 11;
     const j = this.j;
     const T = this.target;

@@ -43,7 +43,8 @@ export type ModelEvent =
   | { type: 'tableResult'; seats: number[]; outcomes: Map<number, Outcome>; shared: SharedVisual }
   | { type: 'bet'; seat: number; amount: number }
   | { type: 'clear'; seat: number }
-  | { type: 'jackpot'; amount: number };
+  | { type: 'jackpot'; amount: number }
+  | { type: 'door'; open: boolean };
 
 export interface ModelCtx {
   t: number;

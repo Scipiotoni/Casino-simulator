@@ -12,6 +12,7 @@ import {
 import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
+import { MAX_DEPTH_STEPS } from '../world/city';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
 import {
@@ -23,7 +24,7 @@ import { CameraRig, type CamMode } from '../world/camera';
 import { TrashManager } from '../world/trash';
 import { DECK_STYLE, FLOOR_STYLES, LAWN_STYLE } from '../render/textures';
 import { ItemManager } from '../items/itemManager';
-import { ITEMS, type ItemDef, type Site, itemDef, soldAt, zoneBlock } from '../items/catalog';
+import { ITEMS, ITEM_BY_ID, type ItemDef, type Site, itemDef, soldAt, zoneBlock } from '../items/catalog';
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
 import type { Outcome } from '../items/types';
 import { Customer, type CustomerType, spawnPoint } from '../entities/customer';
@@ -39,6 +40,11 @@ import {
   type CasinoSnapshot, type NetState, type RivalState, type SaveData, emptyNet, newRival,
 } from './save';
 import { RIVAL_ID, RIVAL_NAME, generateRival, rivalLook, rivalLotInfo, tickRival } from './rival';
+import {
+  type HouseState, HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, addLog, clampTransfer, newHouse, sanitizeHouse, securityRating, validCode, vaultInterest, vaultTier,
+} from './house';
+import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
+import { GunPlay } from './gunplay';
 
 export type { SaveData } from './save';
 
@@ -91,6 +97,14 @@ export interface GameEvents {
   visit: void;
   floor: number;
   camera: CamMode;
+  /** Walked up to the gun shop counter. */
+  gunshop: void;
+  /** Walked up to your vault. */
+  vault: PlacedItem;
+  /** Guns bought, equipped or holstered; ammo changed. */
+  guns: void;
+  /** Your house or its vault changed. */
+  house: void;
 }
 
 export interface Settings {
@@ -253,6 +267,9 @@ export class Game implements World, ItemHost {
   inside = true;
   private transitionT = 0;
   private doorCooldown = 0;
+  /** Guns you own and the one in your hand. */
+  guns: GunState = emptyGuns();
+  readonly gunplay: GunPlay;
 
   constructor(container: HTMLElement, settings: Settings) {
     this.settings = settings;
@@ -269,6 +286,12 @@ export class Game implements World, ItemHost {
     this.cam = new CameraRig(this.renderer.camera);
     this.cam.setMode(settings.camera ?? 'top');
     this.build = new BuildController(this);
+    this.gunplay = new GunPlay(this);
+    scene.add(this.gunplay.group);
+    this.street.city.onHonk = (c) => {
+      const w = this.street.globalToWorld(c.x, c.z);
+      audio.playAt('honk', w.x, w.z, 0.8);
+    };
     this.floorGroup.add(this.levels[0].floor.group);
     scene.add(this.floorGroup, this.building.group, this.street.group, this.items.group, this.trash.group, this.effects.group, this.player.model.root);
     this.effects.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
@@ -371,6 +394,9 @@ export class Game implements World, ItemHost {
     this.parked = null;
     this.hotelAcc = 0;
     this.rebirths = 0;
+    this.house = null;
+    this.guns = emptyGuns();
+    this.gunplay.reset();
     this.cosmetics = emptyCosmetics();
     this.applyCosmetics();
     this.setFloorCount(1);
@@ -498,10 +524,20 @@ export class Game implements World, ItemHost {
     const n = this.rebirths + 1;
     const cos = { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] };
     const stats = { ...this.stats };
+    const house = this.house;
+    const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped };
     this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
     this.rebirths = n;
     this.stats = stats;
     this.cosmetics = cos;
+    this.guns = guns;
+    // Your house and its vault survive, but the vault starts empty again.
+    if (house) {
+      if (house.vault > 0) addLog(house, this.day, `Rebirth ${roman(n)}: vault emptied`, -house.vault);
+      house.vault = 0;
+      this.house = house;
+    }
+    this.refreshStreet();
     this.applyCosmetics();
     audio.play('jackpot');
     this.effects.confetti(this.player.x, 2, this.player.z, 160, 1.2);
@@ -654,7 +690,10 @@ export class Game implements World, ItemHost {
       // From one hotel building to another: just swap the floor plan.
       this.captureHotel();
     } else {
-      const parked = this.visit
+      const fromHouse = this.site === 'house' ? this.closeHouse() : null;
+      const parked = fromHouse
+        ? { home: fromHouse.home, away: fromHouse.away, rate: fromHouse.rate, netLog: this.netLog }
+        : this.visit
         ? { home: this.serialize(), away: this.visit.away, rate: this.visit.rate, netLog: this.netLog }
         : { home: this.serialize(), away: 0, rate: Math.max(0, this.incomePerMin / 60), netLog: this.netLog };
       this.visit = null;
@@ -827,6 +866,341 @@ export class Game implements World, ItemHost {
     return { rooms: targets.length, cost };
   }
 
+  // ------------------------------------------------------------------ house & bank
+
+  /** Your house on Palm Avenue (null until you buy one). It's also your bank. */
+  house: HouseState | null = null;
+  /** The vault door is open (you typed the right code this visit). */
+  vaultOpen = false;
+  private vaultTries = 0;
+  /** Epoch ms until which the keypad is locked after too many wrong codes. */
+  vaultLockUntil = 0;
+
+  get inHouse(): boolean {
+    return this.site === 'house';
+  }
+
+  /** Why the house can't be bought yet (null = go ahead). */
+  houseBlock(): string | null {
+    if (this.house) return 'You already own a house.';
+    if (this.visit || this.site !== 'casino') return 'Head home to your casino first.';
+    if (this.level < HOUSE_LEVEL) return `Unlocks at casino level ${HOUSE_LEVEL}.`;
+    if (this.money < HOUSE_PRICE) return `Costs ${formatMoney(HOUSE_PRICE)}.`;
+    return null;
+  }
+
+  /** Buy a house on Palm Avenue (it takes the place of whatever stood on that lot). */
+  buyHouse(): boolean {
+    const block = this.houseBlock();
+    if (block) {
+      audio.play('error');
+      this.notify(block, 'bad');
+      return false;
+    }
+    this.spend(HOUSE_PRICE, 'expand');
+    this.house = newHouse(this.player.name, this.building.look);
+    audio.play('levelup');
+    this.refreshStreet();
+    this.notify('Your house is ready on Palm Avenue, right behind the Strip. Open the map (M) and tap it to go there.', 'good');
+    this.events.emit('house', undefined);
+    this.saveNow();
+    return true;
+  }
+
+  /** The house as it looks from the street. */
+  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number } | null {
+    const h = this.house;
+    if (!h) return null;
+    const live = this.site === 'house';
+    return {
+      look: live ? { ...this.building.look } : h.snap.look,
+      width: live ? this.layout.width : h.snap.layout.width,
+      depth: live ? this.layout.depth : h.snap.layout.depth,
+      floors: live ? this.floors : h.snap.floors,
+    };
+  }
+
+  /** Write the loaded house back into its saved state. */
+  private captureHouse(): void {
+    if (this.site !== 'house' || !this.house) return;
+    this.house.snap = this.worldSnapshot();
+  }
+
+  /** Walk into your house. The casino waits (it keeps earning), your cash stays in your pocket. */
+  private enterHouse(): void {
+    const h = this.house!;
+    const from = this.street.activeId;
+    const at = this.street.map(from, 'house', this.player.x, this.player.z);
+    this.standUp();
+    this.events.emit('siteLeaving', undefined);
+    let parked: { home: SaveData; away: number; rate: number; netLog: [number, number][] };
+    if (this.site === 'hotel') {
+      const p = this.closeHotel()!;
+      parked = { home: p.home, away: p.away, rate: p.rate, netLog: this.netLog };
+    } else if (this.visit) {
+      const v = this.visit;
+      parked = { home: v.home, away: v.away, rate: v.rate, netLog: this.netLog };
+      this.visit = null;
+    } else {
+      parked = { home: this.serialize(), away: 0, rate: Math.max(0, this.incomePerMin / 60), netLog: this.netLog };
+    }
+    this.parked = parked;
+    this.site = 'house';
+    this.netLog = [];
+    this.vaultOpen = false;
+    this.build.cancel(false);
+    this.select(null);
+    this.loadCasino(h.snap, false);
+    this.building.setGarden(false);
+    if (!h.snap.paint.some((p) => p)) {
+      // A new house comes with oak floors, not casino carpet.
+      const oak = FLOOR_STYLES.findIndex((f) => f.id === 'parquet');
+      for (const l of this.levels) {
+        const r = l.grid.rect;
+        for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) l.grid.setFloor(x, z, oak);
+        l.floor.rebuild();
+      }
+    }
+    this.street.activeId = 'house';
+    this.syncVaultModel();
+    this.shiftPlayer(at.x, FACADE_Z - 1.5);
+    audio.play('doorbell');
+    this.events.emit('toast', {
+      text: h.tier ? 'Home sweet home. Walk up to your vault to bank some money.' : 'Home sweet home! Build → Security → Vault to turn it into your bank.',
+      kind: 'event',
+    });
+    this.afterSiteChange();
+  }
+
+  /** Leave the house: store it; the casino's live cash, level and goals go back into its save. */
+  private closeHouse(): { home: SaveData; away: number; rate: number } | null {
+    if (this.site !== 'house' || !this.parked) return null;
+    this.events.emit('siteLeaving', undefined);
+    this.select(null);
+    this.closeVault();
+    this.captureHouse();
+    const p = this.parked;
+    this.parked = null;
+    this.site = 'casino';
+    p.home = {
+      ...p.home, money: Math.round(this.money), xp: Math.round(this.xp), level: this.level,
+      objectives: [...this.doneObjectives], stats: { ...this.stats }, history: [...this.history],
+    };
+    this.netLog = p.netLog;
+    return p;
+  }
+
+  /** Leave whichever side business is loaded (hotel or house). */
+  private closeSite(): { home: SaveData; away: number; rate: number } | null {
+    return this.site === 'hotel' ? this.closeHotel() : this.site === 'house' ? this.closeHouse() : null;
+  }
+
+  /** Vault items in the loaded house take the vault's tier as their level (bigger, more bolts). */
+  syncVaultModel(): void {
+    if (!this.inHouse || !this.house) return;
+    for (const it of this.items.items) {
+      if (it.def.kind !== 'vault') continue;
+      const lvl = Math.max(1, this.house.tier);
+      if (it.level !== lvl) {
+        it.level = lvl;
+        it.rebuildModel();
+      }
+      it.model.event({ type: 'door', open: this.vaultOpen });
+    }
+  }
+
+  get vaultInfo() {
+    return vaultTier(this.house?.tier ?? 0);
+  }
+
+  /** Security rating of the house, 0..100. */
+  get houseSecurity(): number {
+    const h = this.house;
+    if (!h) return 0;
+    const live = this.inHouse;
+    const staff = live ? this.workers.map((w) => w.role) : h.snap.staff.map((s) => s.role);
+    const gadgets = live
+      ? this.items.items.reduce((a, i) => a + (i.def.security ?? 0), 0)
+      : h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.security ?? 0), 0);
+    return securityRating(h.tier, staff.filter((r) => r === 'security').length, staff.filter((r) => r === 'doorman').length, gadgets);
+  }
+
+  /** What the house costs a day: its guards' wages and its gadgets' upkeep. */
+  houseDailyCosts(): number {
+    const h = this.house;
+    if (!h) return 0;
+    const wages = h.snap.staff.reduce((a, st) => a + roleFor(st.role, 'house').wage, 0);
+    const upkeep = h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.upkeep ?? 0), 0);
+    return wages + upkeep;
+  }
+
+  /**
+   * Type a code on the vault keypad. Three wrong codes in a row set off the alarm and lock
+   * the keypad for half a minute.
+   */
+  tryVaultCode(code: string): 'open' | 'wrong' | 'locked' | 'none' {
+    const h = this.house;
+    if (!h || !this.inHouse || !h.tier) return 'none';
+    if (this.vaultLockUntil > Date.now()) return 'locked';
+    if (code === h.code) {
+      this.vaultTries = 0;
+      return 'open';
+    }
+    this.vaultTries++;
+    if (this.vaultTries >= 3) {
+      this.vaultTries = 0;
+      this.vaultLockUntil = Date.now() + 30_000;
+      audio.play('alarm');
+      this.notify('🚨 Wrong code three times! The vault locked itself for 30 seconds and your guards came running.', 'bad');
+      const v = this.items.items.find((i) => i.def.kind === 'vault');
+      if (v) for (const w of this.workers) if (w.role === 'security') w.x = v.cx + (Math.random() - 0.5) * 2, w.z = v.cz + 1.6;
+      return 'locked';
+    }
+    return 'wrong';
+  }
+
+  /** The unlock animation finished: the vault door swings open. */
+  openVault(): void {
+    if (!this.house?.tier || !this.inHouse) return;
+    this.vaultOpen = true;
+    this.stats.vaultOpened++;
+    this.syncVaultModel();
+    this.events.emit('house', undefined);
+  }
+
+  closeVault(): void {
+    if (!this.vaultOpen) return;
+    this.vaultOpen = false;
+    this.syncVaultModel();
+    if (this.inHouse) audio.play('vaultClunk');
+    this.events.emit('house', undefined);
+  }
+
+  /** Pick (or change) the vault code. It must have exactly as many digits as the vault's tier asks. */
+  setVaultCode(code: string): boolean {
+    const h = this.house;
+    if (!h || !validCode(code, h.tier)) return false;
+    h.code = code;
+    audio.play('purchase');
+    this.notify('New vault code saved. Don’t forget it!', 'good');
+    this.events.emit('house', undefined);
+    this.saveNow();
+    return true;
+  }
+
+  /** Upgrade the vault to the next tier (paid from your cash). A new tier asks for a longer code. */
+  upgradeVault(newCode: string): boolean {
+    const h = this.house;
+    const next = VAULT_TIERS[h?.tier ?? 0];
+    if (!h || !h.tier || !next) return false;
+    if (this.money < next.price) {
+      audio.play('error');
+      this.notify(`${next.name} costs ${formatMoney(next.price)}.`, 'bad');
+      return false;
+    }
+    if (!validCode(newCode, next.tier)) {
+      audio.play('error');
+      this.notify(`Pick a ${next.digits}-digit code for the ${next.name}.`, 'bad');
+      return false;
+    }
+    this.spend(next.price, 'upgrade');
+    h.tier = next.tier;
+    h.code = newCode;
+    addLog(h, this.day, `Upgraded to ${next.name}`, -next.price);
+    audio.play('levelup');
+    this.syncVaultModel();
+    const v = this.items.items.find((i) => i.def.kind === 'vault');
+    if (v) this.effects.sparkle(v.cx, 1.5, v.cz, 40, 0xffd24a, 1.4);
+    this.notify(`🔐 ${next.name}! Holds up to ${formatMoney(next.cap)} and pays ${(next.interest * 100).toFixed(2)}% interest a day.`, 'good');
+    this.events.emit('house', undefined);
+    this.saveNow();
+    return true;
+  }
+
+  /** The hotel's bank, wherever the hotel is (it's parked while you're home). */
+  private get hotelBank(): number {
+    return this.hotel?.bank ?? 0;
+  }
+
+  /**
+   * Move money between the open vault and a business. Positive `amount` deposits into the
+   * vault from it, negative withdraws to it. Returns how much actually moved.
+   */
+  vaultTransfer(target: 'casino' | 'hotel', amount: number): number {
+    const h = this.house;
+    if (!h || !this.inHouse || !this.vaultOpen) return 0;
+    if (target === 'hotel' && !this.hotel) return 0;
+    const source = target === 'casino' ? this.money : this.hotelBank;
+    const moved = clampTransfer(amount, h.vault, h.tier, Math.max(0, source));
+    if (!moved) {
+      audio.play('error');
+      const t = vaultTier(h.tier);
+      if (amount > 0 && t && h.vault >= t.cap) this.notify(`The ${t.name} is full (${formatMoney(t.cap)}). Upgrade it to store more.`, 'bad');
+      else this.notify(amount > 0 ? `Not enough in the ${target} to deposit.` : 'The vault is empty.', 'bad');
+      return 0;
+    }
+    h.vault += moved;
+    if (target === 'casino') {
+      this.money -= moved;
+      this.events.emit('money', { money: this.money, delta: -moved });
+    } else if (this.hotel) this.hotel.bank -= moved;
+    if (moved > 0) this.stats.deposited += moved;
+    addLog(h, this.day, moved > 0 ? `Deposit from the ${target}` : `Sent to the ${target}`, moved);
+    audio.play(moved > 0 ? 'coin' : 'cash');
+    const v = this.items.items.find((i) => i.def.kind === 'vault');
+    if (v) this.effects.sparkle(v.cx, 1.2, v.cz, 14, 0xffd24a, 0.9);
+    this.events.emit('house', undefined);
+    this.events.emit('hotel', undefined);
+    this.requestSave();
+    return moved;
+  }
+
+  // ------------------------------------------------------------------ guns
+
+  /** Buy a gun at the gun shop (from the cash you have on you). It goes straight into your hand. */
+  /** Your casino's level, wherever you are (the hotel has its own). */
+  get homeLevel(): number {
+    return this.site === 'hotel' ? this.parked?.home.level ?? this.level : this.level;
+  }
+
+  buyGun(id: string): boolean {
+    const d = gunDef(id);
+    if (!d || this.guns.owned.includes(id)) return false;
+    const lvl = this.homeLevel;
+    if (lvl < d.unlock) {
+      audio.play('error');
+      this.notify(`${d.name} unlocks at casino level ${d.unlock}.`, 'bad');
+      return false;
+    }
+    if (this.money < d.price) {
+      audio.play('error');
+      this.notify(`${d.name} costs ${formatMoney(d.price)}.`, 'bad');
+      return false;
+    }
+    this.spend(d.price, 'purchase');
+    this.guns = { owned: [...this.guns.owned, id], equipped: id };
+    audio.play('reload');
+    this.notify(`🔫 ${d.name} is yours. It only fires out on the street: click (or hold) to shoot, R to reload.`, 'good');
+    this.events.emit('guns', undefined);
+    this.saveNow();
+    return true;
+  }
+
+  /** Draw a gun you own, or holster (null). */
+  equipGun(id: string | null): void {
+    if (id && !this.guns.owned.includes(id)) return;
+    this.guns = { ...this.guns, equipped: id };
+    audio.play(id ? 'reload' : 'click');
+    this.events.emit('guns', undefined);
+    this.requestSave();
+  }
+
+  /** A target went down (goal progress shows up right away). */
+  onTargetHit(): void {
+    const n = this.stats.targetsHit;
+    if (n === 1 || n % 25 === 0) this.notify(n === 1 ? '🎯 Nice shot! Targets come back after a while.' : `🎯 ${n} targets down!`, 'good');
+  }
+
   private playerFx: PlayerFx | null = null;
 
   /** Buy a cosmetic (it's switched on right away). */
@@ -890,6 +1264,13 @@ export class Game implements World, ItemHost {
         },
       });
     }
+    const hi = this.houseInfo();
+    if (hi) {
+      lots.push({
+        id: 'house', kind: 'house', houseOf: 'me', owner: this.player.name, order: 0, online: true,
+        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '' },
+      });
+    }
     this.street.setLots(lots);
     if (!this.street.get(this.street.activeId)) this.street.activeId = 'me';
   }
@@ -937,6 +1318,8 @@ export class Game implements World, ItemHost {
       if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
       if (!this.playerLot?.(lot.id)) return `${lot.info.look.name} is closed right now.`;
     }
+    if (lot.kind === 'house' && lot.houseOf !== 'me') return `${lot.owner}'s bodyguards won’t let you in: it’s a private home.`;
+    if (lot.kind === 'filler' || lot.kind === 'shop') return 'You can’t go in there.';
     if (lot.kind === 'hotel' && lot.hotelOf && lot.hotelOf !== 'me') {
       const until = this.bannedBy?.(lot.hotelOf) ?? 0;
       if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
@@ -952,9 +1335,13 @@ export class Game implements World, ItemHost {
       this.enterHotel(lot.id.slice('hotel:'.length));
       return true;
     }
+    if (lot.id === 'house' && this.house) {
+      this.enterHouse();
+      return true;
+    }
     if (lot.kind === 'me') {
-      if (this.site === 'hotel') {
-        const p = this.closeHotel()!;
+      if (this.site !== 'casino') {
+        const p = this.closeSite()!;
         this.visit = { lot, home: p.home, away: p.away, rate: p.rate, net: 0, hands: 0 };
       }
       this.returnHome();
@@ -972,7 +1359,7 @@ export class Game implements World, ItemHost {
     let home: SaveData;
     let away: number;
     let rate: number;
-    const fromHotel = this.site === 'hotel' ? this.closeHotel() : null;
+    const fromHotel = this.closeSite();
     if (fromHotel) ({ home, away, rate } = fromHotel);
     else if (this.visit) ({ home, away, rate } = this.visit);
     else {
@@ -1046,7 +1433,8 @@ export class Game implements World, ItemHost {
 
   /** Put a casino's floor plan into the world (yours or one you're visiting). */
   private loadCasino(s: CasinoSnapshot, visiting: boolean): void {
-    this.layout = { ...s.layout };
+    // Lots stop where the next street's buildings begin.
+    this.layout = { ...s.layout, depth: Math.min(s.layout.depth, MAX_DEPTH_STEPS) };
     this.setFloorCount(s.floors || 1);
     for (const l of this.levels) l.grid.setLayout(this.layout);
     for (const l of this.levels) l.grid.floor.fill(0);
@@ -1392,6 +1780,11 @@ export class Game implements World, ItemHost {
       hotelOpen: this.hotelOpen,
       reviewAvg: this.reviewAverage,
       gardenItems: this.gardenSite ? this.items.items.length : Math.max(0, ...(this.hotel?.buildings.filter((b) => b.kind === 'garden').map((b) => b.snap.items.length) ?? [0])),
+      gunsOwned: this.guns.owned.length,
+      houseOwned: !!this.house,
+      vaultTier: this.house?.tier ?? 0,
+      vaultMoney: this.house?.vault ?? 0,
+      houseGuards: this.inHouse ? this.staffCount('security') : this.house?.snap.staff.filter((st) => st.role === 'security').length ?? 0,
     };
   }
 
@@ -1512,6 +1905,10 @@ export class Game implements World, ItemHost {
   private updateSpawner(dt: number): void {
     this.spawnT -= dt;
     if (this.spawnT > 0) return;
+    if (this.site === 'house') {
+      this.spawnT = 5;
+      return;
+    }
     if (this.site === 'hotel') {
       const inside = this.customers.filter((c) => !c.exited).length;
       const mult = this.activeEvent?.spawnMult ?? 1;
@@ -1681,6 +2078,7 @@ export class Game implements World, ItemHost {
 
   /** Why this item can't go in the building you're in (hotel indoor/outdoor rules). */
   placeBlock(def: ItemDef): string | null {
+    if (def.kind === 'vault' && this.items.items.some((i) => i.def.kind === 'vault')) return 'You already have a vault. Open it to upgrade it instead.';
     return this.inHotel ? zoneBlock(def, this.gardenSite) : null;
   }
 
@@ -1716,6 +2114,13 @@ export class Game implements World, ItemHost {
     this.effects.sparkle(item.cx, 1, item.cz, 10);
     this.floaters.money(new THREE.Vector3(item.cx, 1.5, item.cz), -def.price);
     item.pendingXp = Math.round(def.price / 60);
+    if (def.kind === 'vault' && this.house) {
+      // A brand-new vault: tier 1, and it wants a code before it'll hold anything.
+      if (!this.house.tier) this.house.tier = 1;
+      item.pendingXp = 0;
+      this.syncVaultModel();
+      this.events.emit('vault', item);
+    }
     this.requestSave();
     return item;
   }
@@ -1760,6 +2165,16 @@ export class Game implements World, ItemHost {
 
   sell(item: PlacedItem): void {
     if (item.def.fixed || this.visit) return;
+    if (item.def.kind === 'vault' && this.house) {
+      if (this.house.vault > 0) {
+        audio.play('error');
+        this.notify('Empty the vault before you sell it.', 'bad');
+        return;
+      }
+      this.house.tier = 0;
+      this.house.code = '';
+      this.vaultOpen = false;
+    }
     const refund = item.refundable;
     if (!refund && item.pendingXp) this.gainXp(item.pendingXp);
     const value = item.sellValueFor(refund);
@@ -1915,8 +2330,13 @@ export class Game implements World, ItemHost {
     return true;
   }
 
-  /** Push the back wall out; depth has no limit. */
+  /** Push the back wall out, up to the block's depth limit (the lots behind start there). */
   expandDepth(): boolean {
+    if (this.layout.depth >= MAX_DEPTH_STEPS) {
+      audio.play('error');
+      this.notify('This is as deep as a lot goes: the buildings on the next street start right behind you. Add a floor instead!', 'bad');
+      return false;
+    }
     const cost = this.nextDepthCost;
     if (!this.payFor(cost, this.nextDepthLevel, 'build deeper')) return false;
     const prev = { ...this.grid.rect };
@@ -2054,9 +2474,9 @@ export class Game implements World, ItemHost {
     const w = this.street.globalToWorld(gx, gz);
     const tx = Math.floor(w.x);
     const tz = Math.floor(w.z);
-    if (!this.street.isStreetWalkable(tx, tz) || this.street.doorAt(tx, tz) || tz <= FACADE_Z) return false;
+    if (!this.street.isOutdoors(w.x, w.z) || this.street.doorAt(tx, tz)) return false;
     const g = this.gridAt(0);
-    if (g.inBounds(tx, tz) && g.occupant(tx, tz)) return false;
+    if (g.isOwned(tx, tz) || (g.inBounds(tx, tz) && g.occupant(tx, tz))) return false;
     this.standUp();
     if (this.build.active) this.build.cancel();
     this.select(null);
@@ -2123,6 +2543,8 @@ export class Game implements World, ItemHost {
 
   private handleClicks(): void {
     if (this.build.active || this.photoMode) return;
+    // With a gun drawn on the street, clicks are shots.
+    if (this.gunplay.drawn && !this.input.isTouch) return;
     for (const c of this.input.clicks) {
       const ch = this.pickCharacter(c.x, c.y);
       if (ch) {
@@ -2179,16 +2601,17 @@ export class Game implements World, ItemHost {
   /** Walkability for the manager: the floor they're on, plus the whole sidewalk outside. */
   private playerWalk = (tx: number, tz: number): boolean => {
     const g = this.gridAt(this.player.floor);
-    if (this.player.floor > 0 || tz < FACADE_Z) return g.isWalkable(tx, tz);
-    if (tz === FACADE_Z) return g.isDoor(tx, tz) || this.street.doorAt(tx, tz) !== null;
+    if (this.player.floor > 0 || g.isOwned(tx, tz)) return g.isWalkable(tx, tz);
+    if (tz === FACADE_Z && g.isDoor(tx, tz)) return true;
     // Decorations in the yard out front are solid.
-    if (g.inBounds(tx, tz) && g.occupant(tx, tz)) return false;
+    if (g.inBounds(tx, tz) && tz > FACADE_Z && g.occupant(tx, tz)) return false;
     return this.street.isStreetWalkable(tx, tz);
   };
 
   /** Standing on the sidewalk in front of your own casino (you can decorate the yard from here). */
   get onHomeFront(): boolean {
-    return !this.visit && this.player.floor === 0 && Math.abs(this.player.x - CENTER_X) < 16;
+    const p = this.player;
+    return !this.visit && p.floor === 0 && Math.abs(p.x - CENTER_X) < 16 && p.z > FACADE_Z - 1 && p.z < FACADE_Z + 8;
   }
 
   /** Can the build tools be used from where you're standing? */
@@ -2321,6 +2744,20 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    // Your vault
+    if (!target && this.inHouse && this.house) {
+      for (const it of this.items.items) {
+        if (it.def.kind !== 'vault' || it.floor !== pf) continue;
+        const bb = it.bounds;
+        if (distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1) > 1.5) continue;
+        const h = this.house;
+        target = {
+          kind: `vault${this.vaultOpen ? 'o' : 'c'}`, label: !h.code ? '🔐 Set your vault code' : this.vaultOpen ? '💰 Use the vault' : '🔐 Open the vault', hold: false,
+          anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.5, it.cz),
+          act: () => this.events.emit('vault', it),
+        };
+      }
+    }
     // The elevator
     const lp = this.gridAt(pf).portal;
     if (!target && this.floors > 1 && Math.hypot(p.x - (lp[0] + 0.5), p.z - (lp[1] + 0.5)) < 1.2) {
@@ -2335,16 +2772,26 @@ export class Game implements World, ItemHost {
     // Out on the street: the doors of the other casinos
     if (!target && !this.inside) {
       const lot = this.street.lotAt(p.x, p.z);
-      if (lot && lot.id !== this.street.activeId) {
+      if (lot && lot.id !== this.street.activeId && lot.kind !== 'filler') {
         const l = this.street.map(this.street.activeId, lot.id, p.x, p.z);
         if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2) {
-          const block = this.entryBlock(lot);
           const a = this.street.toActive(lot.id, CENTER_X, FACADE_Z + 0.8);
-          target = {
-            kind: `door${lot.id}`, label: block ? `🚫 ${lot.info.look.name}` : lot.kind === 'me' ? `Back to ${lot.info.look.name}` : `Enter ${lot.info.look.name}`, hold: false,
-            anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
-            act: () => this.enterLot(lot),
-          };
+          if (lot.kind === 'shop') {
+            target = {
+              kind: `shop${lot.id}`, label: `🔫 Shop at ${lot.info.look.name}`, hold: false,
+              anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
+              act: () => this.events.emit('gunshop', undefined),
+            };
+          } else {
+            const block = this.entryBlock(lot);
+            const label = block ? `🚫 ${lot.kind === 'house' ? `${lot.owner}'s house` : lot.info.look.name}`
+              : lot.kind === 'me' ? `Back to ${lot.info.look.name}` : lot.id === 'house' ? 'Go into your house' : `Enter ${lot.info.look.name}`;
+            target = {
+              kind: `door${lot.id}`, label, hold: false,
+              anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
+              act: () => this.enterLot(lot),
+            };
+          }
         }
       }
     }
@@ -2396,8 +2843,12 @@ export class Game implements World, ItemHost {
     const lot = this.street.doorAt(tx, tz);
     if (lot) {
       if (!this.enterLot(lot)) {
-        // Bounced: step back onto the sidewalk.
-        this.player.z = FACADE_Z + 1.3;
+        // Bounced: step back onto the sidewalk in front of that door.
+        const l = this.street.map(this.street.activeId, lot.id, this.player.x, this.player.z);
+        const back = this.street.toActive(lot.id, l.x, FACADE_Z + 1.3);
+        this.player.x = back.x;
+        this.player.z = back.z;
+        this.player.halt();
         this.doorCooldown = 1.5;
       }
     }
@@ -2506,6 +2957,16 @@ export class Game implements World, ItemHost {
     this.money -= wages + upkeep;
     const best = [...this.dayAcc.byItem.entries()].sort((a, b) => b[1] - a[1])[0];
     // The hotel keeps its own books: while you're at the casino it pays its staff here.
+    if (this.house && this.site === 'casino') {
+      const hc = this.houseDailyCosts();
+      upkeep += hc;
+      this.money -= hc;
+      const interest = vaultInterest(this.house);
+      if (interest > 0) {
+        this.house.vault += interest;
+        addLog(this.house, this.day, 'Interest', interest);
+      }
+    }
     let hotelNet: number | undefined;
     if (this.hotel && this.site !== 'hotel') {
       const costs = hotelDailyCosts(this.hotel.buildings.map((b) => b.snap));
@@ -2591,6 +3052,9 @@ export class Game implements World, ItemHost {
       if (this.visit) {
         this.visit.away += sim;
         if (tickRival(this.rival, sim)) this.refreshStreet();
+      } else if (this.site === 'house') {
+        // At home the casino's clock waits; it catches up (wages, interest) when you go back.
+        if (tickRival(this.rival, sim)) this.refreshStreet();
       } else {
         this.dayMinutes += sim * (1440 / DAY_SECONDS);
         if (this.dayMinutes >= 1440) {
@@ -2632,7 +3096,7 @@ export class Game implements World, ItemHost {
     this.items.update(sim, this.time);
     this.effects.muted = false;
     this.floaters.muted = false;
-    if (playing && !this.visit) this.updateDoor();
+    if (playing && !this.visit && this.site !== 'house') this.updateDoor();
   }
 
   private step(dt: number, render: boolean): void {
@@ -2680,16 +3144,19 @@ export class Game implements World, ItemHost {
         iz -= input.joy.y;
       }
       const sprint = input.down('ShiftLeft') || input.down('ShiftRight') || Math.hypot(input.joy.x, input.joy.y) > 0.92;
+      // The city is big: you stride out faster on the sidewalks.
+      this.player.speedMult = this.inside ? 1 : 1.5;
       this.player.update(dt, ix, iz, sprint, this.cam.basis(), this.playerWalk, third);
     } else {
       this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third);
     }
+    if (playing) this.gunplay.update(dt);
     this.cam.followYaw = this.player.yaw;
     this.player.model.root.visible = playing;
     this.playerFx?.update(dt, playing && !this.player.seat);
     this.playerPos.set(this.player.x, 0, this.player.z);
     const wasInside = this.inside;
-    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && Math.abs(this.player.x - CENTER_X) < 16);
+    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > this.grid.rect.z0 - 1 && Math.abs(this.player.x - CENTER_X) < 16);
     if (this.inside !== wasInside) {
       if (!this.inside && this.build.active && !this.onHomeFront) this.build.cancel();
       if (!this.inside && this.selection?.kind === 'item' && !this.selection.item.outdoor) this.select(null);
@@ -2732,7 +3199,7 @@ export class Game implements World, ItemHost {
       this.simulateWorld(sim);
       if (playing) {
         this.updateInteraction(sim);
-        if (!this.visit) {
+        if (!this.visit && this.site !== 'house') {
           this.objectiveT -= sim;
           if (this.objectiveT <= 0) {
             this.objectiveT = 0.5;
@@ -2768,7 +3235,10 @@ export class Game implements World, ItemHost {
     const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
     this.cam.update(dt, fx, fz);
     this.building.update(dt, this.cam.yaw, this.cam.low);
-    this.street.update(dt, this.player.x, this.player.z, this.inside);
+    const pg = this.street.worldToGlobal(this.player.x, this.player.z);
+    this.street.city.player.x = this.inside ? -9999 : pg.x;
+    this.street.city.player.z = pg.z;
+    this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
     // Neon pops a little more after dark
     const hour = this.clockMinutes / 60;
     const night = hour >= 20 || hour < 5 ? 1 : hour >= 17 ? (hour - 17) / 3 : hour < 8 ? 1 - (hour - 5) / 3 : 0;
@@ -2845,12 +3315,24 @@ export class Game implements World, ItemHost {
     return this.hotel ? (JSON.parse(JSON.stringify(this.hotel)) as HotelState) : null;
   }
 
+  private houseSave(): HouseState | null {
+    this.captureHouse();
+    return this.house ? (JSON.parse(JSON.stringify(this.house)) as HouseState) : null;
+  }
+
   serialize(): SaveData {
     // In the hotel: your casino as you left it, with the clock where it is now.
     if (this.parked) {
       const home = this.parked.home;
+      // At home the casino's cash, level and goals stay live (only the hotel has its own).
+      const live = this.site === 'house'
+        ? { money: Math.round(this.money), xp: Math.round(this.xp), level: this.level, objectives: [...this.doneObjectives], stats: { ...this.stats } }
+        : {};
       return {
         ...home,
+        ...live,
+        house: this.houseSave(),
+        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
         day: this.day,
         dayMinutes: this.dayMinutes,
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
@@ -2875,6 +3357,8 @@ export class Game implements World, ItemHost {
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
         hotel: this.hotelSave(),
+        house: this.houseSave(),
+        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
         rebirths: this.rebirths,
         savedAt: Date.now(),
       };
@@ -2909,6 +3393,8 @@ export class Game implements World, ItemHost {
       createdAt: this.createdAt,
       cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
       hotel: this.hotelSave(),
+      house: this.houseSave(),
+      guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
       rebirths: this.rebirths,
       savedAt: Date.now(),
     };
@@ -2940,6 +3426,10 @@ export class Game implements World, ItemHost {
     this.parked = null;
     this.hotelAcc = 0;
     this.hotel = sanitizeHotel(s.hotel, s.look, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+    this.house = sanitizeHouse(s.house, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+    this.guns = sanitizeGuns(s.guns);
+    this.gunplay.reset();
+    this.vaultOpen = false;
     this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
     this.applyCosmetics();
     this.player.floor = 0;

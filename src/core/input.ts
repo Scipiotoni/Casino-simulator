@@ -91,6 +91,7 @@ export class Input {
   endFrame(): void {
     this.pressed.clear();
     this.clicks.length = 0;
+    this.mousePresses = 0;
     this.rightClicks = 0;
     this.wheel = 0;
     this.pinch = 1;
@@ -154,6 +155,7 @@ export class Input {
       return;
     }
     this.mouseDown = { x: p.x, y: p.y, t0: performance.now(), button: e.button };
+    if (e.button === 0) this.mousePresses++;
     if (e.button === 0) this.primaryDown = true;
     if (e.button === 2) this.rightClicks++;
   }
@@ -235,6 +237,14 @@ export class Input {
       this.mouseDown = null;
     }
   }
+
+  /** Left mouse button held right now (not touch). */
+  get mouseHeld(): boolean {
+    return this.mouseDown?.button === 0;
+  }
+
+  /** Left mouse presses since the last frame (for guns: a tap fires even when shorter than a frame). */
+  mousePresses = 0;
 
   private endJoystick(): void {
     this.joyId = null;

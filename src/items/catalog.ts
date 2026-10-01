@@ -1,12 +1,15 @@
-export type Category = 'slots' | 'tables' | 'services' | 'decor' | 'rooms';
+import { homeItems } from './catalogHome';
 
-/** Which business sells an item: the casino, the hotel, or both. */
-export type Site = 'casino' | 'hotel';
+export type Category = 'slots' | 'tables' | 'services' | 'decor' | 'rooms' | 'furniture' | 'fun' | 'security' | 'garden';
+
+/** Which place sells an item: the casino, the hotel, your house (or several). */
+export type Site = 'casino' | 'hotel' | 'house';
 export type GameKind =
   | 'slot' | 'claw' | 'pachinko' | 'roulette' | 'blackjack' | 'poker' | 'craps' | 'wheel'
   | 'baccarat' | 'threecard' | 'sicbo' | 'videopoker' | 'keno'
   | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor' | 'elevator'
-  | 'room' | 'desk' | 'pool' | 'buffet' | 'restaurant' | 'gym' | 'spa' | 'giftshop' | 'vending' | 'laundry' | 'hottub' | 'lounger';
+  | 'room' | 'desk' | 'pool' | 'buffet' | 'restaurant' | 'gym' | 'spa' | 'giftshop' | 'vending' | 'laundry' | 'hottub' | 'lounger'
+  | 'vault';
 
 export interface SeatDef {
   /** Tile inside the footprint the occupant paths to (rotation 0). */
@@ -56,6 +59,8 @@ export interface ItemDef {
   zone?: 'garden';
   /** Only VIP guests use it (penthouses). */
   vipOnly?: boolean;
+  /** Points it adds to your house's security rating. */
+  security?: number;
   /** Extra per-item look parameters handed to the model builder. */
   params?: Record<string, string | number>;
 }
@@ -68,7 +73,7 @@ const NEON = [0xff3fa4, 0x2fe6ff, 0xffc53d, 0x39ff88, 0xb77bff, 0xff4d4d];
 const slotSeat: SeatDef[] = [{ tile: [0, 1], pos: [0, 0.42], face: Math.PI, pose: 'sit', seatY: 0.56 }];
 const standSeat: SeatDef[] = [{ tile: [0, 1], pos: [0, 0.38], face: Math.PI, pose: 'stand' }];
 
-const base = {
+export const base = {
   seats: [] as SeatDef[],
   minBet: 0,
   maxBet: 0,
@@ -500,6 +505,8 @@ export const ITEMS: ItemDef[] = [
   },
 ];
 
+ITEMS.push(...homeItems(base));
+
 export const ITEM_BY_ID = new Map(ITEMS.map((d) => [d.id, d]));
 
 export function itemDef(id: string): ItemDef {
@@ -565,6 +572,7 @@ export function describeItem(def: ItemDef): string {
   const seats = def.seats.length;
   switch (def.kind) {
     case 'decor':
+      if (def.security) return `Security +${def.security}`;
       return def.litterReduce ? 'Cuts litter nearby' : `Appeal +${def.appeal}`;
     case 'bar':
     case 'snack':
@@ -598,16 +606,19 @@ export function describeItem(def: ItemDef): string {
       return 'Housekeeping ×2 speed';
     case 'elevator':
       return 'Links the floors';
+    case 'vault':
+      return 'Your bank · pick a code';
     default:
       return `Bets $${def.minBet}–$${def.maxBet} · ${seats} ${seats === 1 ? 'seat' : 'seats'}`;
   }
 }
 
 /** Items the casino shop sells by default: all of them except the hotel's; decor and services are shared. */
-const SHARED_KINDS = new Set<GameKind>(['decor', 'bench', 'bar', 'snack', 'atm', 'stage']);
+const SHARED_KINDS = new Set<GameKind>(['bench', 'bar', 'snack', 'atm', 'stage']);
 
 export function itemSites(d: ItemDef): Site[] {
   if (d.sites) return d.sites;
+  if (d.kind === 'decor') return ['casino', 'hotel', 'house'];
   return SHARED_KINDS.has(d.kind) ? ['casino', 'hotel'] : ['casino'];
 }
 
@@ -626,7 +637,8 @@ export function zoneBlock(d: ItemDef, garden: boolean): string | null {
 }
 
 export function categoriesFor(site: Site): { id: Category; label: string }[] {
+  if (site === 'house') return [{ id: 'furniture', label: 'Furniture' }, { id: 'fun', label: 'Fun' }, { id: 'decor', label: 'Decor' }, { id: 'garden', label: 'Garden' }, { id: 'security', label: 'Security' }];
   return site === 'hotel'
-    ? [{ id: 'rooms', label: 'Rooms' }, { id: 'services', label: 'Services' }, { id: 'decor', label: 'Decor' }]
-    : CATEGORIES;
+    ? [{ id: 'rooms', label: 'Rooms' }, { id: 'services', label: 'Services' }, { id: 'decor', label: 'Decor' }, { id: 'garden', label: 'Garden' }]
+    : [...CATEGORIES, { id: 'garden', label: 'Garden' }];
 }

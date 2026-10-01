@@ -3842,3 +3842,321 @@ p.small {
   border: 1px solid rgba(255, 77, 94, 0.45);
   background: rgba(255, 77, 94, 0.08);
 }
+
+/* ------------------------------------------------------------------ guns */
+.gunbar {
+  position: absolute;
+  right: 250px;
+  bottom: 96px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 14px;
+  background: rgba(23, 21, 31, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+.gunbar.armed {
+  border-color: rgba(255, 77, 94, 0.7);
+  box-shadow: 0 0 18px rgba(255, 77, 94, 0.35), 0 8px 22px rgba(0, 0, 0, 0.4);
+}
+.gb-info {
+  display: grid;
+  min-width: 128px;
+}
+.gb-name {
+  font-weight: 900;
+  font-size: 13px;
+}
+.gb-ammo {
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--gold);
+}
+.gb-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+.gb-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 17px;
+}
+.gb-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.gb-fire {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, #ff7a86, #c8102e);
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: #fff;
+  box-shadow: 0 0 20px rgba(255, 77, 94, 0.6);
+  touch-action: none;
+}
+.gb-fire:active {
+  transform: scale(0.94);
+}
+.photo .gunbar {
+  display: none;
+}
+@media (max-width: 700px) {
+  .gunbar {
+    right: 8px;
+    bottom: calc(var(--safe-bottom) + 196px);
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 210px;
+  }
+  .gb-info {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+}
+.gun-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.gun-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.gun-card.on {
+  border-color: var(--gold);
+  box-shadow: 0 0 14px rgba(255, 197, 61, 0.3);
+}
+.gun-card.locked {
+  opacity: 0.55;
+}
+.gun-thumb {
+  width: 100%;
+  height: 92px;
+  object-fit: contain;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.08), transparent 70%);
+  border-radius: 10px;
+}
+.gun-name {
+  font-weight: 900;
+}
+.gun-stats {
+  font-size: 12px;
+  color: var(--cyan);
+}
+
+/* ------------------------------------------------------------------ vault keypad */
+.vault-modal .modal {
+  max-width: 360px;
+}
+.keypad {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #3a3d46, #1c1d22);
+  border: 2px solid var(--steel, #9aa0ab);
+  box-shadow: inset 0 2px 6px rgba(255, 255, 255, 0.15), 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.keypad.shake {
+  animation: kp-shake 0.42s;
+}
+@keyframes kp-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-10px); }
+  40% { transform: translateX(9px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(4px); }
+}
+.kp-title {
+  font-family: var(--font-display);
+  text-align: center;
+  letter-spacing: 0.12em;
+  font-size: 13px;
+  color: var(--steel, #c9ced8);
+}
+.kp-display {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #07140b;
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.9);
+}
+.kp-slot {
+  width: 26px;
+  height: 34px;
+  border-bottom: 3px solid rgba(57, 255, 136, 0.35);
+  font-family: 'Courier New', monospace;
+  font-size: 26px;
+  font-weight: 700;
+  text-align: center;
+  color: #39ff88;
+  text-shadow: 0 0 8px #39ff88;
+}
+.kp-slot.on {
+  border-color: #39ff88;
+}
+.kp-msg {
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #39ff88;
+}
+.kp-msg.bad {
+  color: var(--red);
+}
+.kp-keys {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.kp-key {
+  height: 52px;
+  border-radius: 12px;
+  font-size: 22px;
+  font-weight: 900;
+  background: linear-gradient(180deg, #e9ecf1, #a9aeb8);
+  color: #1c1d22;
+  box-shadow: 0 4px 0 #6d7380, 0 6px 10px rgba(0, 0, 0, 0.4);
+  transition: transform 0.05s;
+}
+.kp-key:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 #6d7380;
+}
+.kp-key.clr {
+  background: linear-gradient(180deg, #ffb3b3, #e05050);
+}
+.kp-key.ok {
+  background: linear-gradient(180deg, #a6ffcf, #2fbf6f);
+}
+
+/* ------------------------------------------------------------------ vault unlock animation */
+.vault-anim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 18px;
+  background: radial-gradient(circle at 50% 45%, #2a2c33, #08080b 75%);
+  pointer-events: auto;
+}
+.vault-anim.out {
+  opacity: 0;
+  transition: opacity 0.38s ease-in;
+}
+.va-canvas {
+  display: block;
+}
+.va-status {
+  font-family: var(--font-display);
+  letter-spacing: 0.2em;
+  font-size: clamp(14px, 4vw, 22px);
+  color: #c9ced8;
+}
+.va-status.ok {
+  color: #39ff88;
+  text-shadow: 0 0 14px rgba(57, 255, 136, 0.8);
+}
+.va-skip {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ bank */
+.bank-head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.bank-icon {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  font-size: 28px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, #b5bac4, var(--steel), #7f8591, #d5d9e0, var(--steel), #b5bac4);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5);
+}
+.bank-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+.bank-balance {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(255, 197, 61, 0.14), rgba(255, 197, 61, 0.03));
+  border: 1px solid var(--line-strong);
+}
+.bank-big {
+  font-family: var(--font-display);
+  font-size: 30px;
+  color: var(--gold);
+}
+.meter.wide {
+  display: block;
+  width: 100%;
+  height: 8px;
+}
+.bank-accts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.acct {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.acct span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.bank-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.bank-log {
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+}
+.tier-list {
+  display: grid;
+  gap: 6px;
+}
+.tier {
+  display: grid;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  border: 1px solid transparent;
+}
+.tier.on {
+  border-color: var(--gold);
+}
+.tier.done {
+  opacity: 0.6;
+}

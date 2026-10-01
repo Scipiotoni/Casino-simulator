@@ -20,6 +20,8 @@ export class Player {
   name = 'Boss';
   /** Floor of the casino the manager is on. */
   floor = 0;
+  /** Walking speed multiplier (faster out in the city). */
+  speedMult = 1;
   /** Set while playing at a table or machine. */
   seat: { x: number; z: number; yaw: number; sit: boolean; height: number } | null = null;
 
@@ -95,7 +97,7 @@ export class Player {
       return;
     }
     const len = Math.hypot(ix, iz);
-    const maxSpeed = sprint ? 5.6 : 3.7;
+    const maxSpeed = (sprint ? 5.6 : 3.7) * this.speedMult;
     let tvx = 0;
     let tvz = 0;
     if (tank) {
@@ -138,7 +140,7 @@ export class Player {
     }
     if (speed > 0.3) {
       m.moveSpeed = speed / 1.4;
-      m.setPose(speed > 4.4 ? 'run' : 'walk');
+      m.setPose(speed > 4.4 * this.speedMult ? 'run' : 'walk');
     } else {
       m.setPose(this.emote ?? 'idle');
     }

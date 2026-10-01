@@ -32,11 +32,13 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - Hire janitors, technicians, security and **door guards**, who stand at the entrance and turn most cheaters away before they get in. Wages are paid at the end of each day.
 - Random events: happy hour, tour buses, VIP parties, power surges and jackpot buzz.
 - A star rating built from guest happiness, decor, game variety, cleanliness and working machines. More stars bring more guests and more VIPs.
-- 31 goals, casino levels that unlock new items, a daily report and a stats panel.
+- 40 goals, casino levels that unlock new items, a daily report and a stats panel.
 
-**The street**
-- Casinos line **both sides of the road**, facing each other; cross the street to reach the other side.
-- A live **street map** (bottom right, `M` to enlarge) shows every casino and every player. Click the sidewalk or road to teleport there, or a casino to land at its front door. You can never teleport inside a casino.
+**The city**
+- A whole city grid: three streets (the **Casino Strip**, **Palm Avenue** for houses and **Downtown Boulevard**) crossed by avenues every four lots, with crosswalks, working traffic lights, street-name signs, lamps, trees, hydrants and **cars** that drive the roads, stop at red lights and honk if you stand in their lane. Lots are further apart and you walk faster outdoors.
+- Every unused lot holds a **filler building** (apartments, glass towers, diners, shops, motels, brownstones, villas, a chapel, a cinema, a gas station, parks and parking lots). When a player needs the space (a new casino, a hotel building or a house), the filler makes way for it.
+- Lots now go up to 68 tiles deep (the next street's buildings start behind them); old saves deeper than that are trimmed, with anything that no longer fits refunded.
+- A live **city map** (bottom right, `M` to enlarge) shows every building and player. Click a sidewalk or road to teleport there, or a building to land at its front door.
 - **The Golden Viper**, a rival AI casino, sits across the road. It grows (wider, deeper, up to four floors) as players lose money there, and its security walks you out if you win too much.
 - You can't gamble in your own casino, so go and play somewhere else, with standard casino rules and paytables:
   - **Blackjack**: 6 decks, dealer stands on all 17s, 3:2 blackjack, insurance 2:1, double on any two, split up to four hands (aces once) and late surrender.
@@ -58,6 +60,20 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - **Services:** breakfast buffet, restaurant, spa, gym, gift shop, vending machines and a laundry (housekeepers clean faster). Guests write reviews after checking out, and the average moves your rating. Watch for tour groups, conventions, weddings, celebrities and the hotel critic.
 - Guests have a budget: backpackers, regulars, business travellers and high rollers. They check in at reception, pick the best room they can afford, sleep in it (and pay) for a few nights, have breakfast, take a swim or a drink, and check out. Then the room needs making up: hire housekeepers, or hold Space next to it yourself. While you're at the casino the hotel keeps earning on an estimate from your last visit, and some of its guests come over to gamble.
 - **Rebirth** (in the menu) once your casino reaches level 15 and $1,000,000 (the bar rises each time): your casino, hotel, money, level and goals reset, but you keep your character, casino style and luxury items, and everything you earn is worth 25% more for each rebirth. Your rebirth badge shows next to your level, on your name tag and on your casino's sign.
+
+**Your house and bank**
+- From casino level 3, buy a **house on Palm Avenue** ($15,000), right behind your casino. Furnish it from its own shop (furniture, fun, decor, garden, security) and hire **bodyguards** and **gate guards**. Your casino keeps running while you're home.
+- **Your house is your bank.** Buy a **vault**, pick your own code (typed twice), and type it on the keypad to open it: the dial spins to each digit, the bolts pull back, the wheel turns, steam hisses out and the door swings open on the gold. Three wrong codes lock it for 30 seconds and set off the alarm.
+- Inside the open vault, **deposit or withdraw** money to and from **both businesses** (the casino and the hotel). Money in the vault earns interest every day.
+- **Upgrade the vault** through five tiers (Steel Safe Room, Bank Vault, Titanium, Diamond, Fort Knox): each holds more, pays more interest, has more bolts and asks for a longer custom code. Cameras, laser grids, alarms, a guard dog, a metal detector and your guards raise the house's **security rating**. A rebirth keeps the house but empties the vault. (No heists yet.)
+
+**Guns (street only)**
+- **Bullseye Guns** on the Strip sells 11 guns: a pocket pistol, a six-shooter, a pump shotgun, an SMG, an assault rifle, a sniper rifle, a golden hand cannon, a laser blaster, a minigun, a paintball marker and a confetti cannon.
+- Guns only fire out on the streets and sidewalks; inside any building they stay holstered. Click (or hold, for automatics) to aim at the cursor and shoot; on touch, hold FIRE (with a little auto-aim). `R` reloads, `G` switches guns.
+- Shoot tin cans, bottles and balloons along the sidewalks (they come back later), set off car alarms, splat paint or burst confetti. People nearby run for cover. Other players see the gun in your hand and your muzzle flashes.
+
+**Decorations galore**
+- Over 100 new decorations: statues, a grand piano, a T-Rex skeleton, a classic car, a jade dragon, neon flamingos, a disco ball, a koi pond and much more for every business; lobby touches for the hotel; garden pieces (flower beds, tiki torches, a gazebo, a fire pit); and house furniture and toys (sofas, beds, a pool table, a home cinema, a gaming setup, a hot tub).
 
 **Luxury shop**
 - Spend your profits on very expensive, completely useless things: a solid-gold crown, a neon halo, a sparkle aura, orbiting lucky dice, a casino pup and a golden pup for your character; searchlights, rainbow neon, nightly fireworks and a gold-plated facade for your casino. Switch them on and off any time. Other players see them too.
@@ -85,6 +101,8 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 | Other casinos | Walk out the front door, along the sidewalk or across the road, into their doorway | Same |
 | Street map | Click the map to teleport to the sidewalk or road; `M` enlarges it | Tap the map |
 | Select | Click a machine, guest or staff member | Tap |
+| Guns (street only) | Click or hold to shoot at the cursor, `R` reload, `G` switch / holster | Hold FIRE, ⟳ reload, ⇄ switch |
+| Vault | Walk up to it, `Space`, then type the code (number keys, `Enter`) | Action button, then the keypad |
 | Emotes | `1`–`4` (wave, dance, cheer, clap) | |
 | Pause | `P` or the pause / play buttons | Pause / play buttons |
 | Photo mode | `H` | Camera button |

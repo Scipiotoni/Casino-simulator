@@ -4,6 +4,8 @@ import { canvasTexture, drawNeonText, makeCanvas, roundRect } from '../render/te
 import { Dyn, bake, box, cyl, sph, disposeTree } from '../items/models/common';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z1, WIDTHS, START_DEPTH, DEPTH_STEP } from './grid';
 import { SIGN_FONTS, type CasinoLook } from './building';
+import { type FillerSpec, MAX_DEPTH_STEPS } from './city';
+import { type Built, buildFiller, buildGunShop, buildHouse } from './cityBuildings';
 
 /** Height of one storey seen from outside. */
 export const STORY_H = 3;
@@ -18,8 +20,10 @@ export interface LotLook {
   tagline?: string;
   /** Casino cosmetics switched on (searchlights, fireworks, gold facade, rainbow neon). */
   cos?: string[];
-  /** A hotel tower (balconies, tall HOTEL sign) or an open-air Pool Garden. */
-  style?: 'hotel' | 'garden';
+  /** A hotel tower (balconies, tall HOTEL sign), an open-air Pool Garden, a player's house, the gun shop or city scenery. */
+  style?: 'hotel' | 'garden' | 'house' | 'filler' | 'gunshop';
+  /** What a filler building looks like. */
+  filler?: FillerSpec;
 }
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
@@ -73,7 +77,7 @@ export class Exterior {
   private buildGarden(): void {
     const { look } = this.info;
     const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, this.info.width))].w;
-    const d = START_DEPTH + Math.max(0, this.info.depth) * DEPTH_STEP;
+    const d = START_DEPTH + Math.min(MAX_DEPTH_STEPS, Math.max(0, this.info.depth)) * DEPTH_STEP;
     const x0 = CENTER_X - w / 2;
     const x1 = CENTER_X + w / 2;
     const z0 = FACADE_Z - d;
@@ -132,11 +136,30 @@ export class Exterior {
   /** Lagoon water on a Pool Garden's exterior (shimmers). */
   private garden: THREE.MeshStandardMaterial | null = null;
 
+  /** Scenery built by cityBuildings (fillers, houses, the gun shop). */
+  private extra: Built | null = null;
+
+  private buildCity(): void {
+    const s = this.shell;
+    const dyn = new Dyn();
+    const i = this.info;
+    if (i.style === 'filler' && i.filler) this.extra = buildFiller(s, i.filler);
+    else if (i.style === 'gunshop') this.extra = buildGunShop(s, i.look.name);
+    else {
+      const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, i.width))].w;
+      const d = START_DEPTH + Math.min(MAX_DEPTH_STEPS, Math.max(0, i.depth)) * DEPTH_STEP;
+      this.extra = buildHouse(s, CENTER_X - w / 2, CENTER_X + w / 2, FACADE_Z - d, Math.max(1, i.floors) * STORY_H, i.look.wallColor, i.look.trimColor, i.look.name);
+    }
+    for (const k of this.extra.keep) dyn.keep(k);
+    bake(s, dyn);
+  }
+
   private build(): void {
     if (this.info.style === 'garden') return this.buildGarden();
+    if (this.info.style === 'filler' || this.info.style === 'gunshop' || this.info.style === 'house') return this.buildCity();
     const { look, floors } = this.info;
     const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, this.info.width))].w;
-    const d = START_DEPTH + Math.max(0, this.info.depth) * DEPTH_STEP;
+    const d = START_DEPTH + Math.min(MAX_DEPTH_STEPS, Math.max(0, this.info.depth)) * DEPTH_STEP;
     const x0 = CENTER_X - w / 2;
     const x1 = CENTER_X + w / 2;
     const z0 = FACADE_Z - d;
@@ -464,6 +487,7 @@ export class Exterior {
 
   update(dt: number): void {
     this.t += dt;
+    this.extra?.update?.(dt, this.t);
     if (this.garden) this.garden.emissiveIntensity = 0.6 + Math.sin(this.t * 2) * 0.12;
     this.updateEffects(dt);
     const phase = Math.floor(this.t * 8);
@@ -477,6 +501,12 @@ export class Exterior {
     this.garden?.dispose();
     this.bladeTex?.dispose();
     this.signTex.dispose();
+    for (const t of this.extra?.textures ?? []) t.dispose();
+    this.group.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      // Sign planes made their own materials.
+      if (m && !Array.isArray(m) && m.map && this.extra?.textures.includes(m.map)) m.dispose();
+    });
   }
 }
 

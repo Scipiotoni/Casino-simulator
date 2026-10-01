@@ -10,7 +10,11 @@ import { formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
-import { ROLES, roleFor } from '../entities/staff';
+import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
+import { MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
+import { HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, vaultTier } from '../game/house';
+import { FACADE_Z, SIDEWALK_Z0, CENTER_X } from '../world/grid';
+import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
 import { CharacterCreator } from './creator';
 
@@ -94,7 +98,7 @@ export class Modals {
       window.clearTimeout(t);
       t = window.setTimeout(() => g.setLook({ name: nameInput.value.trim() || 'My Casino' }), 250);
     });
-    body.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label', text: g.inHotel ? 'Hotel name' : 'Casino name' }), nameInput));
+    body.appendChild(h('label', { class: 'field' }, h('span', { class: 'field-label', text: g.inHotel ? 'Hotel name' : g.inHouse ? 'House name' : 'Casino name' }), nameInput));
 
     const fonts = h('div', { class: 'chips' });
     const renderFonts = () => {
@@ -119,11 +123,18 @@ export class Modals {
       }),
     ));
 
-    // Rating breakdown
+    // Rating breakdown (a house has a security rating instead)
     const rb = g.ratingBreakdown();
+    if (g.inHouse) {
+      body.appendChild(h('div', { class: 'field' },
+        h('span', { class: 'field-label', html: `Security <b>${g.houseSecurity}/100</b>` }),
+        h('div', { class: 'meter wide' }, h('i', { style: `width:${g.houseSecurity}%` })),
+        h('p', { class: 'muted small', text: 'Raise it with a bigger vault, bodyguards (Staff), gate guards and security gadgets (Build → Security).' }),
+      ));
+    }
     const bar = (label: string, v: number, tip: string) =>
       h('div', { class: 'rb-row', title: tip }, h('span', { text: label }), h('span', { class: 'meter' }, h('i', { style: `width:${(Math.max(0, Math.min(1, v)) * 100).toFixed(0)}%` })));
-    body.appendChild(h('div', { class: 'field' },
+    if (!g.inHouse) body.appendChild(h('div', { class: 'field' },
       h('span', { class: 'field-label', html: `Rating ${stars(g.rating)} <b>${g.rating.toFixed(1)}</b>` }),
       h('div', { class: 'rb' },
         bar('Guest happiness', rb.happiness, 'Average mood of guests when they leave'),
@@ -144,13 +155,13 @@ export class Modals {
     const exp = h('div', { class: 'stack grow' },
       growRow('Width', `${w} tiles`, nw ? `Next: ${nw.w} wide · needs level ${nw.level}` : `Street limit (${MAX_WIDTH}) reached`,
         nw ? h('button', { class: 'btn gold', html: `${icon('expand', 16)} Widen <b>${formatMoney(nw.cost)}</b>`, disabled: g.level < nw.level, onClick: () => { if (g.expandWidth()) this.close(); } }) : null),
-      growRow('Depth', `${d} tiles`, `+${DEPTH_STEP} rows · needs level ${g.nextDepthLevel} · no limit`,
-        h('button', { class: 'btn gold', html: `${icon('expand', 16)} Build deeper <b>${formatMoney(g.nextDepthCost)}</b>`, disabled: g.level < g.nextDepthLevel, onClick: () => { if (g.expandDepth()) this.close(); } })),
+      growRow('Depth', `${d} tiles`, g.layout.depth >= MAX_DEPTH_STEPS ? `Block limit reached (${d} tiles): the next street's lots start behind you` : `+${DEPTH_STEP} rows · needs level ${g.nextDepthLevel} · up to ${MAX_DEPTH} deep`,
+        g.layout.depth >= MAX_DEPTH_STEPS ? null : h('button', { class: 'btn gold', html: `${icon('expand', 16)} Build deeper <b>${formatMoney(g.nextDepthCost)}</b>`, disabled: g.level < g.nextDepthLevel, onClick: () => { if (g.expandDepth()) this.close(); } })),
       growRow('Floors', `${g.floors}`, `${g.floors === 1 ? 'An elevator appears by the entrance' : 'Every floor is as big as the ground floor'} · needs level ${g.nextFloorLevel} · no limit`,
         h('button', { class: 'btn gold', html: `${icon('upgrade', 16)} Add a floor <b>${formatMoney(g.nextFloorCost)}</b>`, disabled: g.level < g.nextFloorLevel, onClick: () => { if (g.addFloor()) this.close(); } })),
     );
     body.appendChild(h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Grow your casino' }), exp));
-    this.open(g.inHotel ? 'Your hotel' : 'Your casino', body, { wide: false });
+    this.open(g.inHotel ? 'Your hotel' : g.inHouse ? 'Your house' : 'Your casino', body, { wide: false });
   }
 
   private colorField(label: string, colors: number[], get: () => number, set: (c: number) => void): HTMLElement {
@@ -176,7 +187,7 @@ export class Modals {
     const render = () => {
       clear(body);
       const roles = h('div', { class: 'role-grid' });
-      for (const r of ROLES.map((x) => roleFor(x.role, g.site))) {
+      for (const r of rolesAt(g.site)) {
         const count = g.workers.filter((w) => w.role === r.role).length;
         const locked = g.level < r.unlock;
         roles.appendChild(h('div', { class: `role-card${locked ? ' locked' : ''}` },
@@ -312,6 +323,73 @@ export class Modals {
     };
     body.append(file, area, h('button', { class: 'btn gold', text: 'Import', onClick: doImport }), status);
     this.open('Export / import casino', body, { wide: true });
+  }
+
+  /** Your house on Palm Avenue: buy it, find it, and see the bank and security at a glance. */
+  openHouse(): void {
+    const g = this.game;
+    const body = h('div', { class: 'stack' });
+    const render = () => {
+      clear(body);
+      const hs = g.house;
+      const kv = (k: string, v: string, cls = '') => h('div', { class: 'kv' }, h('span', { text: k }), h('b', { class: cls, text: v }));
+      if (!hs) {
+        const block = g.houseBlock();
+        body.append(
+          h('p', { text: `Buy a house on ${STREET_NAMES[1]}, one street behind the Strip. It's your home and your bank: put a vault in it, pick your own code, and move money between the vault, the casino and the hotel. Hire bodyguards, add cameras and laser grids, and furnish every room.` }),
+          kv('Price (from the casino bank)', formatMoney(HOUSE_PRICE)),
+          kv('Unlocks at', `casino level ${HOUSE_LEVEL}`),
+          h('button', { class: 'btn gold', disabled: !!block, html: `${icon('home', 16)} Buy the house <b>${formatMoney(HOUSE_PRICE)}</b>`, onClick: () => { if (g.buyHouse()) render(); } }),
+        );
+        if (block) body.appendChild(h('p', { class: 'muted small', text: block }));
+        return;
+      }
+      const t = vaultTier(hs.tier);
+      body.append(
+        h('div', { class: 'hotel-head' },
+          h('div', { class: 'hotel-stars', text: '🏠' }),
+          h('b', { text: hs.snap.name }),
+          h('span', { class: 'muted small', text: `On ${STREET_NAMES[1]}. Your cash comes with you; the casino keeps running while you're home.` }),
+        ),
+        kv('Vault', t ? `${t.name} · ${formatMoney(hs.vault)} of ${formatMoney(t.cap)}` : 'None yet: Build → Security → Vault'),
+        kv('Interest', t ? `${(t.interest * 100).toFixed(2)}% a day` : '—'),
+        kv('Security', `${g.houseSecurity}/100`),
+        kv('Daily costs (guards and gadgets)', formatMoney(g.houseDailyCosts())),
+      );
+      const row = h('div', { class: 'btn-row wrap' });
+      if (!g.inHouse) {
+        row.appendChild(h('button', {
+          class: 'btn gold', html: `${icon('home', 16)} Go home`,
+          onClick: () => {
+            const d = g.street.toGlobal('house', CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
+            if (g.teleportTo(d.x, d.z)) this.close();
+          },
+        }));
+      } else {
+        row.appendChild(h('button', {
+          class: 'btn gold', html: `${icon('casino', 16)} Back to the casino`,
+          onClick: () => {
+            const me = g.street.get('me');
+            if (me && g.enterLot(me)) this.close();
+          },
+        }));
+      }
+      body.appendChild(row);
+      body.appendChild(h('div', { class: 'field-label', text: 'Vault tiers' }));
+      const tiers = h('div', { class: 'tier-list' });
+      for (const v of VAULT_TIERS) {
+        tiers.appendChild(h('div', { class: `tier${hs.tier === v.tier ? ' on' : hs.tier > v.tier ? ' done' : ''}` },
+          h('b', { text: v.name }),
+          h('span', { class: 'muted small', text: `${formatMoney(v.price)} · holds ${formatMoney(v.cap, true)} · ${v.digits} digits · ${v.bolts} bolts` }),
+        ));
+      }
+      body.appendChild(tiers);
+      body.appendChild(h('p', { class: 'muted small', text: `In the house: walk up to the vault and press Space to type your code. Up to ${MAX_DOOR_GUARDS} gate guards can stand at the door.` }));
+    };
+    render();
+    const off = g.events.on('house', render);
+    this.open('Home', body, { onClose: off });
+    void FACADE_Z;
   }
 
   /** Your hotel tower: buy it, add storeys, upgrade the stars, see last night. */

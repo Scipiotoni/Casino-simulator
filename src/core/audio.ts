@@ -8,7 +8,9 @@ import { clamp } from './math';
 export type SfxName =
   | 'click' | 'pop' | 'coin' | 'cash' | 'spin' | 'win' | 'bigwin' | 'jackpot' | 'place' | 'sell'
   | 'error' | 'levelup' | 'bust' | 'repair' | 'fixed' | 'dice' | 'cards' | 'tick' | 'whoosh'
-  | 'break' | 'drink' | 'objective' | 'rotate' | 'paint' | 'doorbell' | 'chips' | 'claw' | 'purchase';
+  | 'break' | 'drink' | 'objective' | 'rotate' | 'paint' | 'doorbell' | 'chips' | 'claw' | 'purchase'
+  | 'gunshot' | 'gunHeavy' | 'shotgun' | 'smg' | 'laser' | 'paintball' | 'confettiGun' | 'reload' | 'empty' | 'ping' | 'glass'
+  | 'carAlarm' | 'honk' | 'balloon' | 'ricochet' | 'keyBeep' | 'keyError' | 'vaultClunk' | 'vaultHiss' | 'vaultWheel' | 'alarm';
 
 interface ToneOpts {
   type?: OscillatorType;
@@ -340,6 +342,94 @@ class AudioEngine {
       case 'claw':
         this.tone(220 * p, t, 0.5, { type: 'square', gain: 0.03, freqEnd: 260 * p, filter: 900, dest });
         break;
+      case 'gunshot':
+        this.noise(t, 0.18, { type: 'lowpass', freq: 5200 * p, freqEnd: 500, gain: 0.5, dest });
+        this.tone(160 * p, t, 0.12, { type: 'triangle', gain: 0.35, freqEnd: 50, dest });
+        this.noise(t + 0.05, 0.35, { type: 'bandpass', freq: 900, q: 0.4, gain: 0.06, dest });
+        break;
+      case 'gunHeavy':
+        this.noise(t, 0.32, { type: 'lowpass', freq: 3600 * p, freqEnd: 260, gain: 0.65, dest });
+        this.tone(95 * p, t, 0.28, { type: 'sine', gain: 0.55, freqEnd: 32, dest });
+        this.noise(t + 0.08, 0.7, { type: 'bandpass', freq: 600, q: 0.4, gain: 0.08, dest });
+        break;
+      case 'shotgun':
+        this.noise(t, 0.4, { type: 'lowpass', freq: 3000 * p, freqEnd: 200, gain: 0.7, dest });
+        this.tone(80 * p, t, 0.3, { type: 'sine', gain: 0.5, freqEnd: 30, dest });
+        // Pump: two clacks
+        this.noise(t + 0.42, 0.05, { type: 'highpass', freq: 2500, gain: 0.18, dest });
+        this.noise(t + 0.55, 0.05, { type: 'highpass', freq: 2000, gain: 0.18, dest });
+        break;
+      case 'smg':
+        this.noise(t, 0.09, { type: 'lowpass', freq: 6000 * p, freqEnd: 700, gain: 0.36, dest });
+        this.tone(190 * p, t, 0.06, { type: 'triangle', gain: 0.22, freqEnd: 70, dest });
+        break;
+      case 'laser':
+        this.tone(1800 * p, t, 0.18, { type: 'sawtooth', gain: 0.07, freqEnd: 300, filter: 4000, dest });
+        this.tone(2400 * p, t, 0.12, { type: 'square', gain: 0.03, freqEnd: 600, dest });
+        break;
+      case 'paintball':
+        this.noise(t, 0.06, { type: 'bandpass', freq: 1800 * p, q: 1.2, gain: 0.28, dest });
+        this.tone(420 * p, t, 0.05, { type: 'sine', gain: 0.08, freqEnd: 200, dest });
+        break;
+      case 'confettiGun':
+        this.noise(t, 0.25, { type: 'bandpass', freq: 900 * p, freqEnd: 3000, q: 0.6, gain: 0.35, dest });
+        this.tone(300 * p, t, 0.1, { type: 'sine', gain: 0.2, freqEnd: 120, dest });
+        for (let i = 0; i < 4; i++) this.tone(midi(84 + [0, 4, 7, 12][i]) * p, t + 0.06 + i * 0.05, 0.1, { type: 'triangle', gain: 0.05, dest });
+        break;
+      case 'reload':
+        this.noise(t, 0.04, { type: 'highpass', freq: 3000, gain: 0.22, dest });
+        this.tone(900 * p, t + 0.02, 0.03, { type: 'square', gain: 0.04, dest });
+        this.noise(t + 0.22, 0.05, { type: 'highpass', freq: 2200, gain: 0.25, dest });
+        this.tone(600 * p, t + 0.24, 0.04, { type: 'square', gain: 0.05, dest });
+        break;
+      case 'empty':
+        this.noise(t, 0.025, { type: 'highpass', freq: 4000, gain: 0.2, dest });
+        break;
+      case 'ping':
+        this.bell(1650 * p, t, 0.35, 0.12, dest);
+        this.noise(t, 0.04, { type: 'highpass', freq: 5000, gain: 0.1, dest });
+        break;
+      case 'ricochet':
+        this.tone(2600 * p, t, 0.28, { type: 'sine', gain: 0.06, freqEnd: 900, dest });
+        this.noise(t, 0.05, { type: 'highpass', freq: 3000, gain: 0.12, dest });
+        break;
+      case 'glass':
+        for (let i = 0; i < 6; i++) this.bell((2200 + Math.random() * 2600) * p, t + i * 0.025, 0.25, 0.04, dest);
+        this.noise(t, 0.3, { type: 'highpass', freq: 4000, gain: 0.2, dest });
+        break;
+      case 'balloon':
+        this.noise(t, 0.08, { type: 'bandpass', freq: 1200 * p, q: 0.8, gain: 0.5, dest });
+        this.tone(220, t, 0.05, { type: 'sine', gain: 0.2, freqEnd: 90, dest });
+        break;
+      case 'carAlarm':
+        for (let i = 0; i < 8; i++) this.tone(i % 2 ? 1100 : 1500, t + i * 0.16, 0.14, { type: 'square', gain: 0.035, filter: 3000, dest });
+        break;
+      case 'honk':
+        this.tone(330 * p, t, 0.32, { type: 'sawtooth', gain: 0.05, filter: 1400, dest });
+        this.tone(415 * p, t, 0.32, { type: 'sawtooth', gain: 0.04, filter: 1400, dest });
+        break;
+      case 'keyBeep':
+        this.tone(1320 * p, t, 0.07, { type: 'square', gain: 0.05, filter: 5000, dest });
+        break;
+      case 'keyError':
+        this.tone(180, t, 0.35, { type: 'square', gain: 0.07, filter: 1200, dest });
+        this.tone(170, t, 0.35, { type: 'sawtooth', gain: 0.04, filter: 900, dest });
+        break;
+      case 'vaultClunk':
+        this.tone(70 * p, t, 0.3, { type: 'sine', gain: 0.5, freqEnd: 40, dest });
+        this.noise(t, 0.12, { type: 'lowpass', freq: 900, gain: 0.45, dest });
+        this.noise(t + 0.01, 0.05, { type: 'highpass', freq: 3500, gain: 0.12, dest });
+        break;
+      case 'vaultHiss':
+        this.noise(t, 1.1, { type: 'highpass', freq: 3000, freqEnd: 7000, gain: 0.12, attack: 0.08, dest });
+        break;
+      case 'vaultWheel':
+        for (let i = 0; i < 10; i++) this.noise(t + i * 0.07, 0.03, { type: 'bandpass', freq: 2200 + (i % 3) * 300, q: 3, gain: 0.12, dest });
+        this.tone(110, t, 0.75, { type: 'sawtooth', gain: 0.02, filter: 400, dest });
+        break;
+      case 'alarm':
+        for (let i = 0; i < 6; i++) this.tone(i % 2 ? 660 : 880, t + i * 0.25, 0.23, { type: 'sawtooth', gain: 0.06, filter: 2500, dest });
+        break;
     }
   }
 
@@ -472,6 +562,7 @@ const PROGRESSION: { root: number; tones: number[] }[] = [
 ];
 
 const MIN_GAP: Partial<Record<SfxName, number>> = {
+  smg: 0.04, ping: 0.03, glass: 0.06, honk: 1, carAlarm: 1.2, alarm: 1.4, keyBeep: 0.02,
   coin: 0.05, spin: 0.12, tick: 0.05, win: 0.15, chips: 0.1, cards: 0.08, dice: 0.2, paint: 0.06, click: 0.03,
 };
 

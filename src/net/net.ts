@@ -16,6 +16,8 @@ import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { dampAngle } from '../core/math';
 import { Relay } from './relay';
+import { gunDef } from '../game/guns';
+import { buildGun } from '../items/models/guns';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -86,9 +88,17 @@ interface LotDoc {
   since: number;
   snap: CasinoSnapshot | null;
   bans: Record<string, number>;
-  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: HotelInfo[]; rb?: number };
+  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: HotelInfo[]; rb?: number; house?: HouseView | null };
   /** The owner's hotel floor plans by building, for walking around in them. */
   hotelSnap?: Record<string, CasinoSnapshot>;
+}
+
+/** Another player's house as the street shows it. */
+interface HouseView {
+  look: CasinoLook;
+  width: number;
+  depth: number;
+  floors: number;
 }
 
 interface Remote {
@@ -105,6 +115,12 @@ interface Remote {
   floor: number;
   lot: string;
   moving: boolean;
+  /** Out on the roads and sidewalks (not inside any building). */
+  out: boolean;
+  /** Gun in their hand and how many shots they've fired (a change means a muzzle flash). */
+  gun: string | null;
+  shots: number;
+  held: THREE.Group | null;
   label: HTMLElement;
   visible: boolean;
   bans: Record<string, number>;
@@ -215,7 +231,7 @@ export class Net {
         since: typeof raw.since === 'number' ? raw.since : Date.now(),
         snap: snapData,
         bans: cleanNumbers(raw.bans),
-        info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos), hotel: hotelInfo(raw.hotel), rb: rebirthsOf(raw.rb) },
+        info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos), hotel: hotelInfo(raw.hotel), rb: rebirthsOf(raw.rb), house: houseView(raw.house) },
         hotelSnap: hotelSnaps(raw.hotelSnap),
       });
     }
@@ -248,7 +264,7 @@ export class Net {
         const label = h('div', { class: 'net-label' });
         this.labelRoot.appendChild(label);
         r = {
-          key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, label, visible: false,
+          key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, shots: 0, held: null, label, visible: false,
           bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0,
         };
         this.remotes.set(p.peer, r);
@@ -266,12 +282,35 @@ export class Net {
       r.floor = Math.max(0, Math.min(40, Math.round(num(pr.fl))));
       r.lot = typeof pr.lot === 'string' ? pr.lot.slice(0, 80) : '';
       r.moving = pr.mv === 1;
+      r.out = pr.out === 1 || (pr.out === undefined && r.tz >= FACADE_Z + 0.2);
+      const gun = typeof pr.gun === 'string' && gunDef(pr.gun) ? pr.gun : null;
+      if (gun !== r.gun) {
+        r.held?.removeFromParent();
+        r.held = null;
+        r.gun = gun;
+        const d = gunDef(gun);
+        if (d) {
+          const held = buildGun(d).group;
+          r.held = held;
+          r.model.hand.add(held);
+        }
+        r.model.aim = d ? (d.twoHand ? 2 : 1) : 0;
+      }
+      const shots = Math.round(num(pr.sh));
+      if (shots !== r.shots) {
+        if (r.visible && r.gun && shots > r.shots) {
+          r.model.recoil = 0.6;
+          audio.playAt('gunshot', r.x, r.z, 0.7);
+          this.game.effects.sparkle(r.x + Math.sin(r.model.root.rotation.y) * 0.8, 1.3, r.z + Math.cos(r.model.root.rotation.y) * 0.8, 4, 0xffd27a, 0.15);
+        }
+        r.shots = shots;
+      }
       r.bans = cleanNumbers(pr.bans);
       r.owes = cleanNumbers(pr.owes);
       r.since = num(pr.since) || r.since;
       const c = pr.casino as Record<string, unknown> | undefined;
       const snap = c ? sanitizeSnapshot({ ...c, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null;
-      r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos), hotel: hotelInfo(c?.hotel), rb: r.rb } : null;
+      r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos), hotel: hotelInfo(c?.hotel), rb: r.rb, house: houseView(c?.house) } : null;
       r.fx.set(cleanCosmetics(pr.cos));
     }
     for (const [k, r] of this.remotes) {
@@ -360,6 +399,13 @@ export class Net {
         });
       });
     };
+    const addHouse = (pid: string, owner: string, hv: HouseView | null | undefined, on: boolean) => {
+      if (!hv) return;
+      hotels.push({
+        id: `${pid}~house`, kind: 'house', houseOf: pid, owner, order: 0, online: on,
+        info: { look: hv.look, width: hv.width, depth: hv.depth, floors: hv.floors, style: 'house', tagline: '' },
+      });
+    };
     for (const [pid, l] of this.lots) {
       // Live presence beats the stored copy (cosmetics, hotel or rebirths changed since the last save).
       const live = [...this.remotes.values()].find((r) => r.pid === pid)?.casino;
@@ -371,6 +417,7 @@ export class Net {
         },
       });
       addHotel(pid, l.owner, live ? live.hotel : l.info.hotel, online.has(pid));
+      addHouse(pid, l.owner, live ? live.house : l.info.house, online.has(pid));
     }
     // Players who can't publish still show their casino on the street while they're online.
     for (const r of this.remotes.values()) {
@@ -380,6 +427,7 @@ export class Net {
         info: { look: r.casino.look, width: r.casino.layout.width, depth: r.casino.layout.depth, floors: r.casino.floors, tagline: tag(r.name, r.rb), cos: r.casino.cos ?? [] },
       });
       addHotel(r.pid, r.name, r.casino.hotel, true);
+      addHouse(r.pid, r.name, r.casino.house, true);
     }
     lots.push(...hotels);
     const key = JSON.stringify(lots);
@@ -473,7 +521,8 @@ export class Net {
   private presenceData(): Record<string, unknown> {
     const g = this.game;
     const p = g.player;
-    const lot = g.street.activeId === 'me' ? this.pid : g.street.activeId.startsWith('hotel:') ? `${this.pid}~${g.street.activeId}` : g.street.activeId;
+    const act = g.street.activeId;
+    const lot = act === 'me' ? this.pid : act.startsWith('hotel:') || act === 'house' ? `${this.pid}~${act}` : act;
     const bans: Record<string, number> = {};
     for (const [k, v] of Object.entries(g.net.bans)) if (v > Date.now()) bans[k] = v;
     const data: Record<string, unknown> = {
@@ -485,6 +534,9 @@ export class Net {
       z: Math.round(p.z * 100) / 100,
       yaw: Math.round(p.yaw * 100) / 100,
       mv: p.moving ? 1 : 0,
+      out: g.inside ? 0 : 1,
+      gun: g.gunplay.drawn ? g.guns.equipped : null,
+      sh: g.gunplay.shots,
       look: p.appearance,
       bans,
       owes: g.net.owes,
@@ -494,6 +546,7 @@ export class Net {
       casino: {
         cos: equipped(g.cosmetics, 'casino'),
         hotel: g.hotelInfo(),
+        house: g.houseInfo(),
         look: g.homeLook,
         layout: g.homeLayout,
         floors: g.homeFloors,
@@ -527,6 +580,7 @@ export class Net {
       snap: JSON.parse(JSON.stringify(snap)) as Record<string, unknown>,
       cos: equipped(g.cosmetics, 'casino'),
       hotel: g.hotelInfo(),
+      house: g.houseInfo(),
       hotelSnap: g.hotelSnapshot(),
       rb: g.rebirths,
       updated: Date.now(),
@@ -603,12 +657,12 @@ export class Net {
     for (const r of this.remotes.values()) {
       const lotId = this.localLot(r.lot);
       const known = !!g.street.get(lotId);
-      const outside = r.tz >= FACADE_Z + 0.2 && r.floor === 0;
+      const outside = r.out && r.floor === 0;
       const wp = known ? g.street.toActive(lotId, CENTER_X + r.tx, r.tz) : { x: 0, z: 0 };
       const wx = wp.x;
       const wz = wp.z;
       let visible = known && (outside || (lotId === g.street.activeId && g.inside && r.floor === g.viewFloor));
-      if (visible && Math.abs(wx - g.player.x) > 70) visible = false;
+      if (visible && Math.hypot(wx - g.player.x, wz - g.player.z) > 90) visible = false;
       if (visible && !r.visible) {
         r.x = wx;
         r.z = wz;
@@ -654,7 +708,7 @@ export class Net {
     const r = [...this.remotes.values()].find((x) => x.pid === pid);
     const name = r?.name ?? 'Player';
     const lotId = r ? this.localLot(r.lot) : '';
-    const where = !r ? 'Gone' : r.tz >= FACADE_Z ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId.startsWith('hotel:') ? 'In your hotel' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
+    const where = !r ? 'Gone' : r.out ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId.startsWith('hotel:') ? 'In your hotel' : lotId === 'house' ? 'At your house' : lotId.endsWith('~house') ? 'At home' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
     const owed = g.net.credited[pid] ?? 0;
     el.appendChild(h('div', { class: 'card-head' },
       h('div', { class: 'card-emoji', html: icon('you', 30) }),
@@ -726,6 +780,14 @@ function hotelInfo(raw: unknown): HotelInfo[] {
     out.push({ bid: r.bid, kind: r.kind === 'garden' ? 'garden' : 'tower', look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors, stars });
   }
   return out;
+}
+
+/** Another player's house from the street (untrusted: clamp it like a floor plan). */
+function houseView(raw: unknown): HouseView | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const snap = sanitizeSnapshot({ look: r.look, layout: { width: r.width, depth: r.depth }, floors: r.floors, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+  return snap ? { look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors } : null;
 }
 
 function hotelSnaps(raw: unknown): Record<string, CasinoSnapshot> {

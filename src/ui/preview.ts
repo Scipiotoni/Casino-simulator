@@ -4,6 +4,8 @@ import { buildModel } from '../items/models';
 import type { ItemDef } from '../items/catalog';
 import { CharacterModel, type Pose } from '../entities/characterModel';
 import type { Appearance } from '../entities/appearance';
+import type { GunDef } from '../game/guns';
+import { buildGun } from '../items/models/guns';
 
 function makeRenderer(w: number, h: number): THREE.WebGLRenderer {
   const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
@@ -59,9 +61,40 @@ class ThumbRenderer {
     this.cache.set(key, url);
     return url;
   }
+
+  /** Any object as a thumbnail, seen from `dir`. */
+  object(key: string, build: () => THREE.Object3D, dir: THREE.Vector3): string {
+    const hit = this.cache.get(key);
+    if (hit) return hit;
+    const obj = build();
+    this.scene.add(obj);
+    obj.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(obj);
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const dist = sphere.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * 0.95;
+    this.camera.position.copy(sphere.center).addScaledVector(dir.clone().normalize(), dist);
+    this.camera.lookAt(sphere.center);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.render(this.scene, this.camera);
+    const url = this.renderer.domElement.toDataURL('image/png');
+    obj.removeFromParent();
+    obj.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+    this.cache.set(key, url);
+    return url;
+  }
 }
 
 let thumbs: ThumbRenderer | null = null;
+
+/** Side view of a gun for the gun shop. */
+export function gunThumb(def: GunDef): string {
+  try {
+    thumbs ??= new ThumbRenderer();
+    return thumbs.object(`gun:${def.id}`, () => buildGun(def).group, new THREE.Vector3(1, 0.35, 0.12));
+  } catch {
+    return '';
+  }
+}
 
 export function itemThumb(def: ItemDef, color?: number, statueLook?: Appearance): string {
   try {
