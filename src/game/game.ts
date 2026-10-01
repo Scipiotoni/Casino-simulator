@@ -41,7 +41,7 @@ import { BuildController } from './build';
 import { ACTIVE_OBJECTIVES, HOTEL_OBJECTIVES, OBJECTIVES, type LifetimeStats, type Objective, type ObjectiveView, emptyStats, xpForLevel } from './objectives';
 import { type RoomSetup, changeCost, sameSetup } from '../hotel/rooms';
 import {
-  type CasinoSnapshot, type NetState, type RivalState, type SaveData, emptyNet, newRival,
+  type CasinoSnapshot, type NetState, type RivalState, type SaveData, emptyNet, newNetEpoch, newRival,
 } from './save';
 import { RIVAL_ID, RIVAL_NAME, generateRival, rivalLook, rivalLotInfo, tickRival } from './rival';
 import {
@@ -165,6 +165,8 @@ export function cleanChat(raw: unknown): string {
 export const START_CHIPS = 10_000;
 const DAY_START = 10 * 60;
 const START_MONEY = 3000;
+/** Most a casino or hotel bank can hold; bank the rest in your house vault. */
+export const MAX_BANK = 20_000_000;
 const JACKPOT_SEED = 5000;
 /** Win this much in one visit and the rival's security walks you out. */
 const RIVAL_WIN_LIMIT = 100000;
@@ -1224,6 +1226,8 @@ export class Game implements World, ItemHost {
     if (!h || !this.inHouse || !this.vaultOpen) return 0;
     if (target === 'hotel' && !this.hotel) return 0;
     const source = target === 'casino' ? this.money : this.hotelBank;
+    // Withdrawals stop where the business's bank is full.
+    if (amount < 0) amount = -Math.min(-amount, Math.max(0, MAX_BANK - source));
     const moved = clampTransfer(amount, h.vault, h.tier, Math.max(0, source));
     if (!moved) {
       audio.play('error');
@@ -1612,7 +1616,7 @@ export class Game implements World, ItemHost {
   }
 
   private replayAway(seconds: number, rate: number): number {
-    const before = this.money;
+    const before = Math.min(this.money, MAX_BANK);
     const real = Math.min(seconds, 60);
     const dt = 0.25;
     for (let t = 0; t < real; t += dt) this.simulateWorld(dt);
@@ -1620,7 +1624,7 @@ export class Game implements World, ItemHost {
     while (rest > 0) {
       const step = Math.min(rest, 30);
       rest -= step;
-      this.money += rate * step;
+      this.money = Math.min(MAX_BANK, this.money + rate * step);
       this.tickHotel(step);
       this.dayMinutes += step * (1440 / DAY_SECONDS);
       if (this.dayMinutes >= 1440) {
@@ -1628,6 +1632,7 @@ export class Game implements World, ItemHost {
         this.endOfDay();
       }
     }
+    this.capBanks();
     return Math.round(this.money - before);
   }
 
@@ -1641,6 +1646,14 @@ export class Game implements World, ItemHost {
     if (!amount) return;
     // Rebirth bonus: everything your businesses earn is worth more.
     if (amount > 0 && this.rebirths > 0 && (reason === 'collect' || reason === 'tip')) amount = Math.round(amount * this.incomeMult);
+    // The bank is full at MAX_BANK: income past that is lost.
+    if (amount > 0) {
+      amount = Math.min(amount, Math.max(0, MAX_BANK - this.money));
+      if (amount <= 0) {
+        this.bankFull();
+        return;
+      }
+    }
     this.money += amount;
     if (amount > 0) {
       this.stats.earnedTotal += amount;
@@ -3587,6 +3600,45 @@ export class Game implements World, ItemHost {
     for (let i = 0; i < steps; i++) this.step(dt, false);
   }
 
+  private bankFullT = 0;
+
+  /** Tell the player (now and then) that the bank is full. */
+  private bankFull(): void {
+    if (this.bankFullT > 0 || this.state !== 'playing' || this.catchingUp) return;
+    this.bankFullT = 90;
+    this.notify(`${this.site === 'hotel' ? 'The hotel' : 'Your casino'}'s bank is full (${formatMoney(MAX_BANK)}). Move money into your house vault to keep earning.`, 'bad');
+  }
+
+  /** An older save over the cap: what doesn't fit goes into the house vault (as far as it holds). */
+  private overflowToVault(): void {
+    let moved = 0;
+    for (const which of ['casino', 'hotel'] as const) {
+      const bank = which === 'casino' ? this.money : this.hotel?.bank ?? 0;
+      const extra = Math.max(0, Math.round(bank - MAX_BANK));
+      if (!extra) continue;
+      const h = this.house;
+      const cap = vaultTier(h?.tier ?? 0)?.cap ?? 0;
+      const fit = h ? Math.max(0, Math.min(extra, cap - h.vault)) : 0;
+      if (h && fit > 0) {
+        h.vault += fit;
+        addLog(h, this.day, `Overflow from the ${which} (bank limit)`, fit);
+        moved += fit;
+      }
+      if (which === 'casino') this.money = MAX_BANK;
+      else if (this.hotel) this.hotel.bank = MAX_BANK;
+    }
+    if (moved > 0 && typeof window !== "undefined") window.setTimeout(() => this.notify(`Banks now hold at most ${formatMoney(MAX_BANK)}: ${formatMoney(moved)} was moved into your house vault.`, 'info'), 1500);
+  }
+
+  /** Keep the casino and hotel banks at most MAX_BANK (whatever path the money came in by). */
+  private capBanks(): void {
+    if (this.money > MAX_BANK) {
+      this.money = MAX_BANK;
+      this.bankFull();
+    }
+    if (this.hotel && this.hotel.bank > MAX_BANK) this.hotel.bank = MAX_BANK;
+  }
+
   /** Hotel buildings you're not standing in earn on their estimate from last time. */
   private tickHotel(sim: number): void {
     if (!this.hotel || this.state !== 'playing' || this.catchingUp) return;
@@ -3660,6 +3712,8 @@ export class Game implements World, ItemHost {
   }
 
   private step(dt: number, render: boolean): void {
+    this.bankFullT = Math.max(0, this.bankFullT - dt);
+    this.capBanks();
     const sim = this.paused && !this.visit ? 0 : dt * (this.visit ? 1 : this.speed);
     this.time += sim;
     const input = this.input;
@@ -4012,6 +4066,7 @@ export class Game implements World, ItemHost {
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
         hotel: this.hotelSave(),
         rebirths: this.rebirths,
+        net: JSON.parse(JSON.stringify(this.net)) as NetState,
         rival: { ...this.rival },
         savedAt: Date.now(),
       };
@@ -4035,6 +4090,7 @@ export class Game implements World, ItemHost {
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         rebirths: this.rebirths,
+        net: JSON.parse(JSON.stringify(this.net)) as NetState,
         savedAt: Date.now(),
       };
     }
@@ -4074,6 +4130,7 @@ export class Game implements World, ItemHost {
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
       rebirths: this.rebirths,
+      net: JSON.parse(JSON.stringify(this.net)) as NetState,
       savedAt: Date.now(),
     };
   }
@@ -4082,6 +4139,12 @@ export class Game implements World, ItemHost {
     this.state = 'playing';
     this.visit = null;
     this.street.activeId = 'me';
+    // Browser storage came back empty: take the multiplayer bookkeeping from the save.
+    const blank = !Object.keys(this.net.owes).length && !Object.keys(this.net.credited).length;
+    if (blank && s.net && typeof s.net === 'object') {
+      this.net = { ...emptyNet(), ...s.net, creditedEp: { ...(s.net.creditedEp ?? {}) } };
+      this.net.ep ||= newNetEpoch();
+    }
     this.money = s.money;
     this.xp = s.xp;
     this.level = s.level;
@@ -4105,6 +4168,7 @@ export class Game implements World, ItemHost {
     this.hotelAcc = 0;
     this.hotel = sanitizeHotel(s.hotel, s.look, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
     this.house = sanitizeHouse(s.house, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+    this.overflowToVault();
     this.guns = sanitizeGuns(s.guns);
     this.garage = sanitizeGarage(s.garage);
     this.drive.reset();

@@ -110,3 +110,24 @@ describe('gun mods over the network', () => {
     expect(decodeGunMods(gd('bat')!, code).sight).toBe('iron');
   });
 });
+
+import { creditBase } from '../src/net/net';
+import { MAX_BANK } from '../src/game/game';
+
+describe('visitor ledgers never wipe your bank', () => {
+  it('a visitor whose running total restarted is counted from zero, not as a huge win', () => {
+    // Same running total: normal difference.
+    expect(creditBase(5_000_000, 'a1', 'a1', 5_000_400)).toBe(5_000_000);
+    // They lost their browser storage (new id): rebase.
+    expect(creditBase(5_000_000, 'a1', 'b2', 300)).toBe(0);
+    // First time we see an id, or an old game without one, and the total collapsed: rebase.
+    expect(creditBase(5_000_000, undefined, 'b2', 300)).toBe(0);
+    expect(creditBase(5_000_000, undefined, '', 300)).toBe(0);
+    // A visitor really winning a bit back is still paid out.
+    expect(creditBase(100_000, 'a1', 'a1', 80_000)).toBe(100_000);
+  });
+
+  it('banks top out at 20 million', () => {
+    expect(MAX_BANK).toBe(20_000_000);
+  });
+});

@@ -49,6 +49,17 @@ export interface NetState {
   bans: Record<string, number>;
   /** pid → epoch ms before which you can't blacklist them again. */
   banCooldown: Record<string, number>;
+  /**
+   * Id of your `owes` running totals. A fresh one is made whenever they start again from
+   * zero (lost browser storage), so casino owners rebase instead of "paying back" the drop.
+   */
+  ep?: string;
+  /** The running-total id each visitor's `credited` amount belongs to. */
+  creditedEp?: Record<string, string>;
+}
+
+export function newNetEpoch(): string {
+  return Math.random().toString(36).slice(2, 10);
 }
 
 export interface SaveData extends CasinoSnapshot {
@@ -85,10 +96,12 @@ export interface SaveData extends CasinoSnapshot {
   playChips?: number;
   /** When this save was written (epoch ms): the newest of the local and cloud copies wins. */
   savedAt?: number;
+  /** Multiplayer bookkeeping (also kept in its own browser key; this copy rides the cloud save). */
+  net?: NetState;
 }
 
 export function emptyNet(): NetState {
-  return { owes: {}, credited: {}, bans: {}, banCooldown: {} };
+  return { owes: {}, credited: {}, bans: {}, banCooldown: {}, ep: newNetEpoch(), creditedEp: {} };
 }
 
 export function newRival(): RivalState {

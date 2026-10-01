@@ -133,6 +133,8 @@ interface Remote {
   visible: boolean;
   bans: Record<string, number>;
   owes: Record<string, number>;
+  /** Id of their running totals (NetState.ep). */
+  oe?: string;
   casino: LotDoc['info'] | null;
   since: number;
   fx: PlayerFx;
@@ -173,6 +175,8 @@ export class Net {
   private writable = true;
   private lots = new Map<string, LotDoc>();
   private ledgers = new Map<string, Record<string, number>>();
+  /** Each ledger's running-total id (see NetState.ep). */
+  private ledgerEps = new Map<string, string>();
   private remotes = new Map<string, Remote>();
   private labelRoot: HTMLElement;
   private presenceT = 0;
@@ -294,6 +298,7 @@ export class Net {
       if (d.id === this.pid || !d.exists) continue;
       const raw = d.data() ?? {};
       this.ledgers.set(d.id, cleanNumbers(raw.owes));
+      if (typeof raw.ep === 'string') this.ledgerEps.set(d.id, raw.ep.slice(0, 16));
     }
   }
 
@@ -371,6 +376,7 @@ export class Net {
       }
       r.bans = cleanNumbers(pr.bans);
       r.owes = cleanNumbers(pr.owes);
+      r.oe = typeof pr.oe === 'string' ? pr.oe.slice(0, 16) : '';
       r.since = num(pr.since) || r.since;
       const c = pr.casino as Record<string, unknown> | undefined;
       const snap = c ? sanitizeSnapshot({ ...c, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null;
@@ -770,6 +776,7 @@ export class Net {
       look: p.appearance,
       bans,
       owes: g.net.owes,
+      oe: g.net.ep,
       since: g.createdAt,
       cos: equipped(g.cosmetics, 'player'),
       rb: g.rebirths,
@@ -841,7 +848,7 @@ export class Net {
     const key = JSON.stringify(g.net.owes);
     if (key === this.lastLedger || key === '{}') return;
     try {
-      await this.db.collection('ledger').doc(this.pid).set({ owes: { ...g.net.owes }, name: g.player.name.slice(0, 24), t: Date.now() });
+      await this.db.collection('ledger').doc(this.pid).set({ owes: { ...g.net.owes }, ep: g.net.ep ?? '', name: g.player.name.slice(0, 24), t: Date.now() });
       this.lastLedger = key;
     } catch {
       /* try again later */
@@ -854,19 +861,24 @@ export class Net {
    */
   private creditVisitors(): void {
     const g = this.game;
-    const totals = new Map<string, { owed: number; name: string }>();
+    const totals = new Map<string, { owed: number; name: string; ep: string }>();
     for (const [pid, owes] of this.ledgers) {
-      if (typeof owes[this.pid] === 'number') totals.set(pid, { owed: owes[this.pid], name: 'A visitor' });
+      if (typeof owes[this.pid] === 'number') totals.set(pid, { owed: owes[this.pid], name: 'A visitor', ep: this.ledgerEps.get(pid) ?? '' });
     }
     for (const r of this.remotes.values()) {
-      if (typeof r.owes[this.pid] === 'number') totals.set(r.pid, { owed: r.owes[this.pid], name: r.name });
+      if (typeof r.owes[this.pid] === 'number') totals.set(r.pid, { owed: r.owes[this.pid], name: r.name, ep: r.oe ?? '' });
       else if (totals.has(r.pid)) totals.get(r.pid)!.name = r.name;
     }
-    for (const [pid, { owed, name }] of totals) {
-      const prev = g.net.credited[pid] ?? 0;
-      const delta = Math.round(owed - prev);
-      if (Math.abs(delta) < 1 || Math.abs(delta) > 1e12) continue;
+    g.net.creditedEp ??= {};
+    for (const [pid, { owed, name, ep }] of totals) {
+      const prev = creditBase(g.net.credited[pid] ?? 0, g.net.creditedEp[pid], ep, owed);
+      if (ep) g.net.creditedEp[pid] = ep;
+      let delta = Math.round(owed - prev);
       g.net.credited[pid] = owed;
+      if (Math.abs(delta) < 1 || Math.abs(delta) > 1e12) continue;
+      // A visitor's winnings are paid from what's actually in the bank, never past zero.
+      if (delta < 0) delta = -Math.min(-delta, Math.max(0, Math.round(g.money)));
+      if (!delta) continue;
       g.addMoney(delta, delta > 0 ? 'collect' : 'payout');
       g.notify(delta > 0 ? `${name} lost ${formatMoney(delta)} at your tables!` : `${name} won ${formatMoney(-delta)} at your tables.`, delta > 0 ? 'money' : 'bad');
       g.requestSave();
@@ -1055,4 +1067,15 @@ function hotelSnaps(raw: unknown): Record<string, CasinoSnapshot> {
 
 function rebirthsOf(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(99, Math.round(v))) : 0;
+}
+
+/**
+ * What a visitor's running total should be compared against. When it started again from
+ * zero (new id, or an old game whose big total collapsed) count from 0 instead, so the drop
+ * isn't read as the visitor winning everything back.
+ */
+export function creditBase(prev: number, seenEp: string | undefined, ep: string, owed: number): number {
+  if (ep && seenEp && ep !== seenEp) return 0;
+  if ((!ep || !seenEp) && prev > 20_000 && owed >= 0 && owed < prev * 0.5) return 0;
+  return prev;
 }

@@ -7,7 +7,7 @@ import '@fontsource/pacifico/latin-400.css';
 import '@fontsource/monoton/latin-400.css';
 import './styles/main.css';
 import { Game, type SaveData, type Settings } from './game/game';
-import { emptyNet, migrateSave, type NetState } from './game/save';
+import { emptyNet, migrateSave, newNetEpoch, type NetState } from './game/save';
 import { Net } from './net/net';
 import { Hud } from './ui/hud';
 import { TitleScreen } from './ui/title';
@@ -81,6 +81,8 @@ async function start(hotData: unknown): Promise<void> {
   const game = new Game(stage, settings);
   const hud = new Hud(app, game);
   game.net = { ...emptyNet(), ...(loadJSON<NetState>(NET_KEY) ?? {}) };
+  game.net.ep ||= newNetEpoch();
+  game.net.creditedEp ??= {};
   const net = new Net(game, hud);
   // Your save lives in this browser and, inside the Claude artifact viewer, in your own
   // private slot of the page's database too (browser storage there can come back empty).
