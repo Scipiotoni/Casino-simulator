@@ -500,7 +500,7 @@ export class CityView {
     poleGeo.translate(0, 2.1, 0);
     const armGeo = new THREE.BoxGeometry(0.08, 0.08, 1.1);
     armGeo.translate(0, 4.1, 0.5);
-    const headGeo = new THREE.SphereGeometry(0.22, 12, 8);
+    const headGeo = new THREE.SphereGeometry(0.22, 8, 5);
     headGeo.scale(1, 0.6, 1.3);
     headGeo.translate(0, 4.0, 1.0);
     const poleMat = mat(0x5b5668, { metal: 0.6, rough: 0.4 });
@@ -533,15 +533,15 @@ export class CityView {
       const im = instanced(geo, m, benches);
       if (im) s.add(im);
     }
-    const hyd = new THREE.CylinderGeometry(0.14, 0.17, 0.6, 10);
+    const hyd = new THREE.CylinderGeometry(0.14, 0.17, 0.6, 8);
     hyd.translate(0, 0.3, 0);
-    const hydTop = new THREE.SphereGeometry(0.15, 10, 6);
+    const hydTop = new THREE.SphereGeometry(0.15, 8, 4);
     hydTop.translate(0, 0.62, 0);
     for (const [geo, m] of [[hyd, mat(0xd62a2a, { rough: 0.5 })], [hydTop, mat(0xd62a2a, { rough: 0.5 })]] as const) {
       const im = instanced(geo, m, hydrants);
       if (im) s.add(im);
     }
-    const bin = new THREE.CylinderGeometry(0.24, 0.2, 0.8, 12);
+    const bin = new THREE.CylinderGeometry(0.24, 0.2, 0.8, 8);
     bin.translate(0, 0.4, 0);
     const im = instanced(bin, mat(0x2e5a3e, { rough: 0.6, metal: 0.3 }), bins);
     if (im) s.add(im);
@@ -587,7 +587,7 @@ export class CityView {
       const x = instanced(geo, m, list);
       if (x) s.add(x);
     }
-    const litGeo = new THREE.SphereGeometry(0.13, 10, 8);
+    const litGeo = new THREE.SphereGeometry(0.13, 8, 5);
     litGeo.scale(1, 1, 0.4);
     this.litLamps = new THREE.InstancedMesh(litGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), this.heads.length);
     this.litLamps.frustumCulled = false;

@@ -838,7 +838,7 @@ export class Hud {
       }
       if (!this.goalsCollapsed) this.updateGoalBars();
       this.fpsEl.hidden = !g.settings.showFps;
-      if (g.settings.showFps) this.fpsEl.textContent = `${g.fps.toFixed(0)} fps · ${g.customers.length} guests`;
+      if (g.settings.showFps) this.fpsEl.textContent = `${g.fps.toFixed(0)} fps · ${Math.round(g.renderer.renderScale * 100)}% res${g.renderer.liteMode ? ' · lite' : ''} · ${g.customers.length} guests`;
       const pb = this.placeBar.querySelector('.pb-reason') as HTMLElement | null;
       if (pb) {
         pb.textContent = g.build.valid ? 'Looks good!' : g.build.reason;

@@ -172,7 +172,7 @@ export class Sky {
 
     const ctex = cloudTexture();
     const crnd = seeded(7);
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 16; i++) {
       const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: ctex, transparent: true, depthWrite: false, fog: false, opacity: 0.85 }));
       const w = 260 + crnd() * 420;
       s.scale.set(w, w * (0.28 + crnd() * 0.15), 1);

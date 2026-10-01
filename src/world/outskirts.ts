@@ -172,7 +172,7 @@ export class Outskirts {
 
     // Desert and mountains
     const half = Math.max(this.x1 - this.x0, this.z1 - this.z0) / 2 + WILDS + 1000;
-    const seg = 220;
+    const seg = 140;
     const geo = new THREE.PlaneGeometry(half * 2, half * 2, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
@@ -292,11 +292,11 @@ export class Outskirts {
       im.receiveShadow = true;
       this.group.add(im);
     };
-    scatter(cactusGeometry(), mat(0x3f7f3a, { rough: 0.8 }), 340, 12, WILDS + 260, () => 0.7 + rnd() * 0.8, 0.5);
+    scatter(cactusGeometry(), mat(0x3f7f3a, { rough: 0.8 }), 260, 12, WILDS + 260, () => 0.7 + rnd() * 0.8, 0.5);
     scatter(joshuaGeometry(), mat(0x6f6a3a, { rough: 0.9, flat: true }), 160, 20, WILDS + 200, () => 0.8 + rnd() * 0.7, 0.45);
     scatter(new THREE.DodecahedronGeometry(1, 0), mat(0x9c6a48, { rough: 0.95, flat: true }), 380, 18, WILDS + 520, () => 0.5 + rnd() ** 2 * 3.5, 0.9, 0.8);
     scatter(new THREE.DodecahedronGeometry(1, 1), mat(0x7f4c34, { rough: 0.95, flat: true }), 140, WILDS - 20, WILDS + 700, () => 3 + rnd() * 9, 0.8, 0.6);
-    scatter(new THREE.IcosahedronGeometry(0.6, 0), mat(0x8a8a4a, { rough: 1, flat: true }), 700, 6, WILDS + 300, () => 0.4 + rnd() * 0.9, 0);
+    scatter(new THREE.IcosahedronGeometry(0.6, 0), mat(0x8a8a4a, { rough: 1, flat: true }), 450, 6, WILDS + 300, () => 0.4 + rnd() * 0.9, 0);
   }
 
   private buildLandmarks(): void {
@@ -554,14 +554,14 @@ function cactusGeometry(): THREE.BufferGeometry {
     g.translate(x, y, z);
     parts.push(g.toNonIndexed());
   };
-  add(new THREE.CylinderGeometry(0.28, 0.32, 3.4, 9), 0, 1.7, 0);
-  add(new THREE.SphereGeometry(0.28, 9, 6, 0, Math.PI * 2, 0, Math.PI / 2), 0, 3.4, 0);
-  add(new THREE.CylinderGeometry(0.17, 0.17, 0.8, 8), 0.5, 1.5, 0, Math.PI / 2);
-  add(new THREE.CylinderGeometry(0.17, 0.17, 1.2, 8), 0.86, 2.05, 0);
-  add(new THREE.SphereGeometry(0.17, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2), 0.86, 2.65, 0);
-  add(new THREE.CylinderGeometry(0.15, 0.15, 0.7, 8), -0.45, 2.1, 0, Math.PI / 2);
-  add(new THREE.CylinderGeometry(0.15, 0.15, 0.9, 8), -0.78, 2.5, 0);
-  add(new THREE.SphereGeometry(0.15, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2), -0.78, 2.95, 0);
+  add(new THREE.CylinderGeometry(0.28, 0.32, 3.4, 7), 0, 1.7, 0);
+  add(new THREE.SphereGeometry(0.28, 7, 3, 0, Math.PI * 2, 0, Math.PI / 2), 0, 3.4, 0);
+  add(new THREE.CylinderGeometry(0.17, 0.17, 0.8, 5), 0.5, 1.5, 0, Math.PI / 2);
+  add(new THREE.CylinderGeometry(0.17, 0.17, 1.2, 5), 0.86, 2.05, 0);
+  add(new THREE.SphereGeometry(0.17, 5, 2, 0, Math.PI * 2, 0, Math.PI / 2), 0.86, 2.65, 0);
+  add(new THREE.CylinderGeometry(0.15, 0.15, 0.7, 5), -0.45, 2.1, 0, Math.PI / 2);
+  add(new THREE.CylinderGeometry(0.15, 0.15, 0.9, 5), -0.78, 2.5, 0);
+  add(new THREE.SphereGeometry(0.15, 5, 2, 0, Math.PI * 2, 0, Math.PI / 2), -0.78, 2.95, 0);
   return mergeGeometries(parts)!;
 }
 

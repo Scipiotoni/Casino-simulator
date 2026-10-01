@@ -146,6 +146,8 @@ export interface Settings {
   camera?: CamMode;
   /** First-person mouse / drag look speed (1 = normal). */
   lookSens?: number;
+  /** Lower the resolution (and then effects) automatically to keep ~30+ fps. */
+  autoPerf?: boolean;
 }
 
 const DAY_SECONDS = 300;
@@ -3495,6 +3497,9 @@ export class Game implements World, ItemHost {
       this.fps = this.fpsFrames / this.fpsAcc;
       this.fpsAcc = 0;
       this.fpsFrames = 0;
+      // Keep the frame rate up by itself (not while a menu covers the game).
+      this.renderer.autoPerf = this.settings.autoPerf !== false;
+      if (this.state === 'playing' && !this.modalOpen && !document.hidden) this.renderer.autoTune(this.fps);
     }
     this.step(dt, true);
   }

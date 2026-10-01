@@ -743,6 +743,10 @@ export class Modals {
     };
     body.appendChild(toggle('Lounge music', () => st.musicOn, (v) => (st.musicOn = v)));
     body.appendChild(toggle('Show FPS', () => st.showFps, (v) => (st.showFps = v)));
+    body.appendChild(toggle('Auto performance (keeps ~30+ fps)', () => st.autoPerf !== false, (v) => {
+      st.autoPerf = v;
+      if (!v) g.setQuality(st.quality);
+    }));
     const q = h('div', { class: 'seg' });
     for (const [id, label] of [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
       q.appendChild(h('button', {
