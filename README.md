@@ -40,7 +40,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - **The city is busy.** Passers-by stroll every sidewalk, cross at the crosswalks and walk in and out of casinos, hotels, the gun shop and the apartments, most of all the casinos and hotels. Your casino and hotel are full of guests the moment you walk back in, even after time away.
 - Every unused lot holds a **filler building** (apartments, glass towers, diners, shops, motels, brownstones, villas, a chapel, a cinema, a gas station, parks and parking lots). When a player needs the space (a new casino, a hotel building or a house), the filler makes way for it.
 - Lots now go up to 68 tiles deep (the next street's buildings start behind them); old saves deeper than that are trimmed, with anything that no longer fits refunded.
-- A live **city map** (bottom right, `M` to enlarge) shows every building and player. Click a sidewalk or road to teleport there, or a building to land at its front door.
+- A live **city map** (bottom right, `M` to enlarge) shows every building and **every online player, wherever they are**: a dot with their name out on the street (a box if they're driving, their wanted stars, 💫 if knocked out), or a ring at the door of the building they're in, with where they are. Zoom with the mouse wheel (around the cursor) or the − / + buttons, drag to pan, ◎ to come back to you. The big map lists everyone online: click a name to zoom in and follow them. Click a sidewalk or road to teleport there, or a building to land at its front door.
 - **The Golden Viper**, a rival AI casino, sits across the road. It grows (wider, deeper, up to four floors) as players lose money there, and its security walks you out if you win too much.
 - You can't gamble in your own casino, so go and play somewhere else, with standard casino rules and paytables:
   - **Blackjack**: 6 decks, dealer stands on all 17s, 3:2 blackjack, insurance 2:1, double on any two, split up to four hands (aces once) and late surrender.
@@ -114,7 +114,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 | Camera | `Q` / `E` rotate, mouse wheel zooms, `V` third person (then `A`/`D` turn, `W`/`S` walk) | Pinch to zoom, on-screen camera buttons |
 | Floors | Walk into the elevator and press `Space`, or use the floor buttons | Floor buttons |
 | Other casinos | Walk out the front door, along the sidewalk or across the road, into their doorway | Same |
-| Street map | Click the map to teleport to the sidewalk or road; `M` enlarges it | Tap the map |
+| Street map | Click the map to teleport to the sidewalk or road; `M` enlarges it; wheel or − / + to zoom, drag to pan, ◎ back to you, click a player's name to follow them | Tap the map; − / + to zoom, drag to pan |
 | Select | Click a machine, guest or staff member | Tap |
 | Guns (street only) | Click or hold to shoot at the cursor, `R` reload, `G` switch / holster | Hold FIRE, ⟳ reload, ⇄ switch |
 | First person | `V` (top-down → third person → first person); mouse aims, `W`/`S` walk, `A`/`D` strafe, click to shoot, right-click to aim down the sights; click once to capture the mouse for full 360° look (`Esc` frees it) | Camera button; drag to look, AIM and FIRE buttons |

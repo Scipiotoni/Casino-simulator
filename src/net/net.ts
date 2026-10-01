@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { HotelInfo } from '../game/game';
+import type { HotelInfo, MapPlayer } from '../game/game';
 import { roman } from '../game/game';
 import { PlayerFx } from '../cosmetics/playerFx';
 import { cleanCosmetics, cosmetic, equipped } from '../cosmetics/catalog';
@@ -143,6 +143,8 @@ interface Remote {
   seenLoot?: number;
   hpEl: HTMLElement;
   nameEl: HTMLElement;
+  /** Wanted stars they publish. */
+  wl: number;
   /** The car they're driving (key = model + colour). */
   carKey: string;
   car: THREE.Object3D | null;
@@ -301,7 +303,7 @@ export class Net {
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, shots: 0, held: null, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false,
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, wl: 0,
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -313,6 +315,7 @@ export class Net {
       r.rb = rebirthsOf(pr.rb);
       const lux = cleanCosmetics(pr.cos).map((id) => cosmetic(id)?.icon ?? '').join('');
       const wl = Math.max(0, Math.min(5, Math.round(num(pr.wl))));
+      r.wl = wl;
       r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}${wl ? ` ${'★'.repeat(wl)}` : ''}`;
       this.readCombat(r, pr);
       this.readCar(r, pr);
@@ -656,6 +659,7 @@ export class Net {
         r.label.hidden = true;
       }
       g.remotes = [];
+      g.mapPlayers = [];
       return;
     }
     this.updateRemotes(dt);
@@ -839,6 +843,7 @@ export class Net {
   private updateRemotes(dt: number): void {
     const g = this.game;
     const views: { pid: string; name: string; x: number; z: number }[] = [];
+    const map: MapPlayer[] = [];
     const cam = g.renderer.camera;
     const { w, h: hh } = g.renderer.size;
     for (const r of this.remotes.values()) {
@@ -848,6 +853,14 @@ export class Net {
       const wp = known ? g.street.toActive(lotId, CENTER_X + r.tx, r.tz) : { x: 0, z: 0 };
       const wx = wp.x;
       const wz = wp.z;
+      if (known) {
+        // On the map: out on the street where they stand, inside a building at its door.
+        const inside = !outside;
+        const gp = inside ? g.street.toGlobal(lotId, CENTER_X, FACADE_Z + 1.2) : g.street.toGlobal(lotId, CENTER_X + r.tx, r.tz);
+        const lot = g.street.get(lotId);
+        const where = !inside ? '' : lotId === 'me' ? 'in your casino' : lot?.kind === 'house' ? (lot.houseOf === 'me' ? 'at your house' : `at ${lot.owner}'s house`) : `in ${lot?.info.look.name ?? 'a building'}`;
+        map.push({ pid: r.pid, name: r.name, x: gp.x, z: gp.z, inside, where, driving: !!r.car, wanted: r.wl, ko: r.ko });
+      }
       let visible = known && (outside || (lotId === g.street.activeId && g.inside && r.floor === g.viewFloor));
       if (visible && Math.hypot(wx - g.player.x, wz - g.player.z) > 90) visible = false;
       if (visible && !r.visible) {
@@ -892,6 +905,7 @@ export class Net {
       views.push({ pid: r.pid, name: r.name, x: r.x, z: r.z });
     }
     g.remotes = views;
+    g.mapPlayers = map;
   }
 
   // ------------------------------------------------------------------ UI

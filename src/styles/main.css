@@ -4668,3 +4668,37 @@ p.small {
   font-size: 11px;
   font-weight: 800;
 }
+/* City map zoom and players */
+.mm-btns {
+  display: flex;
+  gap: 4px;
+}
+.mm-canvas {
+  touch-action: none;
+}
+.mm-players {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  max-width: min(760px, calc(100vw - 32px));
+  padding: 6px 2px 2px;
+}
+.mm-ptitle {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.mm-pbtn {
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: rgba(47, 230, 255, 0.14);
+  border: 1px solid rgba(47, 230, 255, 0.4);
+  color: #bff6ff;
+  font: 800 11px var(--font-body);
+}
+.mm-pbtn.on {
+  background: rgba(255, 197, 61, 0.25);
+  border-color: var(--gold);
+  color: var(--gold);
+}

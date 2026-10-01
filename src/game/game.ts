@@ -204,6 +204,20 @@ export interface RemoteView {
   z: number;
 }
 
+/** Every online player for the city map, wherever they are (global frame). */
+export interface MapPlayer {
+  pid: string;
+  name: string;
+  x: number;
+  z: number;
+  /** Inside a building (shown at its door), and which one. */
+  inside: boolean;
+  where: string;
+  driving: boolean;
+  wanted: number;
+  ko: boolean;
+}
+
 export class Game implements World, ItemHost {
   readonly events = new Emitter<GameEvents>();
   readonly renderer: Renderer;
@@ -257,6 +271,8 @@ export class Game implements World, ItemHost {
   bannedBy: ((pid: string) => number) | null = null;
   /** Other players standing in the loaded casino / on the street (set by the net layer). */
   remotes: RemoteView[] = [];
+  /** Everyone online, for the city map. */
+  mapPlayers: MapPlayer[] = [];
   private dayAcc = { revenue: 0, payouts: 0, sales: 0, visitors: 0, byItem: new Map<string, number>() };
   private spawnT = 3;
   private eventT = 60;

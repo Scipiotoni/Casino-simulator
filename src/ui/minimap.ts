@@ -19,6 +19,16 @@ export class Minimap {
   private t = 0;
   /** Current view: global x/z of the canvas's left/top edge and pixels per tile. */
   private view = { x0: 0, z0: 0, s: 1 };
+  /** Zoom on top of the normal scale (separately for the small and big map). */
+  private zoomSmall = 1;
+  private zoomBig = 1;
+  /** Where the big map looks (global); null = the whole city / you. */
+  private center: { x: number; z: number } | null = null;
+  /** Follow a player on the map (pid), or yourself when null. */
+  private follow: string | null = null;
+  private drag: { x: number; y: number; cx: number; cz: number; moved: boolean } | null = null;
+  private list: HTMLElement;
+  private listKey = '';
 
   constructor(private game: Game) {
     this.canvas = h('canvas', { class: 'mm-canvas', 'aria-label': 'Street map: click to teleport' }) as HTMLCanvasElement;
@@ -30,15 +40,94 @@ export class Minimap {
         this.setBig(!this.big);
       },
     });
-    this.el = h('div', { class: 'minimap' }, h('div', { class: 'mm-head' }, h('span', { text: 'CITY MAP' }), toggle), this.canvas);
+    const zoomBtn = (label: string, f: number, title: string) => h('button', {
+      class: 'mm-toggle', text: label, title, 'aria-label': title,
+      onClick: (e: Event) => {
+        e.stopPropagation();
+        this.zoomAt(f);
+      },
+    });
+    const meBtn = h('button', {
+      class: 'mm-toggle', text: '◎', title: 'Back to you', 'aria-label': 'Center on you',
+      onClick: (e: Event) => {
+        e.stopPropagation();
+        this.follow = null;
+        this.center = null;
+        this.t = 0;
+        audio.play('click');
+      },
+    });
+    this.list = h('div', { class: 'mm-players' });
+    this.el = h('div', { class: 'minimap' },
+      h('div', { class: 'mm-head' }, h('span', { text: 'CITY MAP' }), h('span', { class: 'mm-btns' }, zoomBtn('−', 1 / 1.5, 'Zoom out'), zoomBtn('+', 1.5, 'Zoom in'), meBtn, toggle)),
+      this.canvas, this.list);
     this.canvas.addEventListener('click', (e) => this.click(e));
+    // Wheel zooms around the cursor; dragging pans the big map.
+    this.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = this.canvas.getBoundingClientRect();
+      this.zoomAt(Math.exp(-e.deltaY * 0.0015), ((e.clientX - r.left) / r.width) * this.canvas.width, ((e.clientY - r.top) / r.height) * this.canvas.height);
+    }, { passive: false });
+    this.canvas.addEventListener('pointerdown', (e) => {
+      const c = this.viewCenter();
+      this.drag = { x: e.clientX, y: e.clientY, cx: c.x, cz: c.z, moved: false };
+    });
+    window.addEventListener('pointermove', (e) => {
+      const d = this.drag;
+      if (!d) return;
+      const dx = e.clientX - d.x;
+      const dy = e.clientY - d.y;
+      if (!d.moved && Math.hypot(dx, dy) < 6) return;
+      d.moved = true;
+      const r = this.canvas.getBoundingClientRect();
+      const k = this.canvas.width / r.width / this.view.s;
+      this.center = { x: d.cx - dx * k, z: d.cz - dy * k };
+      this.follow = '';
+      this.t = 0;
+    });
+    window.addEventListener('pointerup', () => {
+      if (this.drag?.moved) this.dragged = performance.now();
+      this.drag = null;
+    });
     window.addEventListener('keydown', (e) => {
       if (e.code === 'KeyM' && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLTextAreaElement)) this.setBig(!this.big);
     });
   }
 
+  private dragged = 0;
+
+  /** The global point in the middle of the map right now. */
+  private viewCenter(): { x: number; z: number } {
+    const v = this.view;
+    return { x: v.x0 + this.canvas.width / v.s / 2, z: v.z0 + this.canvas.height / v.s / 2 };
+  }
+
+  /** Zoom by `f`, keeping the point under (px, py) in place (canvas pixels; default the middle). */
+  private zoomAt(f: number, px?: number, py?: number): void {
+    const v = this.view;
+    const before = px !== undefined && py !== undefined ? { x: v.x0 + px / v.s, z: v.z0 + py / v.s } : null;
+    if (this.big) this.zoomBig = Math.max(1, Math.min(14, this.zoomBig * f));
+    else this.zoomSmall = Math.max(0.35, Math.min(5, this.zoomSmall * f));
+    if (this.big && before && px !== undefined && py !== undefined) {
+      // Work out the new scale and shift the centre so `before` stays under the cursor.
+      const c = this.viewCenter();
+      const s2 = v.s * f;
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      const nx = before.x - (px - W / 2) / s2;
+      const nz = before.z - (py - H / 2) / s2;
+      void c;
+      this.center = { x: nx, z: nz };
+      this.follow = '';
+    }
+    this.t = 0;
+  }
+
   setBig(on: boolean): void {
     this.big = on;
+    this.center = null;
+    this.follow = null;
     this.el.classList.toggle('big', on);
     audio.play('click');
     this.t = 0;
@@ -61,6 +150,8 @@ export class Minimap {
   }
 
   private click(e: MouseEvent): void {
+    // The end of a drag isn't a click.
+    if (performance.now() - this.dragged < 250) return;
     const g = this.game;
     const r = this.canvas.getBoundingClientRect();
     const px = ((e.clientX - r.left) / r.width) * this.canvas.width;
@@ -107,13 +198,30 @@ export class Minimap {
     const W = cv.width;
     const H = cv.height;
     const me = st.worldToGlobal(g.player.x, g.player.z);
-    // Scale: the whole city when big, about a block around you when small.
+    // Scale: the whole city when big, about a block around you when small (then zoomed).
     const bd = st.bounds;
-    const s = this.big ? Math.min(W / (bd.x1 - bd.x0 + 8), H / (bd.z1 - bd.z0 + 8)) : Math.max(W / 110, H / 80);
+    const s = this.big ? Math.min(W / (bd.x1 - bd.x0 + 8), H / (bd.z1 - bd.z0 + 8)) * this.zoomBig : Math.max(W / 110, H / 80) * this.zoomSmall;
     const viewW = W / s;
     const viewH = H / s;
-    const x0 = this.big ? (bd.x0 + bd.x1) / 2 - viewW / 2 : me.x - viewW / 2;
-    const z0 = this.big ? (bd.z0 + bd.z1) / 2 - viewH / 2 : me.z - viewH / 2;
+    // Centre: a followed player, a dragged-to spot, you (small map) or the whole city (big map).
+    const followed = this.follow ? g.mapPlayers.find((p) => p.pid === this.follow) : null;
+    let cx: number;
+    let cz: number;
+    if (followed) {
+      cx = followed.x;
+      cz = followed.z;
+    } else if (this.center && this.follow !== null) {
+      cx = this.center.x;
+      cz = this.center.z;
+    } else if (this.big && this.zoomBig <= 1.01) {
+      cx = (bd.x0 + bd.x1) / 2;
+      cz = (bd.z0 + bd.z1) / 2;
+    } else {
+      cx = me.x;
+      cz = me.z;
+    }
+    const x0 = cx - viewW / 2;
+    const z0 = cz - viewH / 2;
     this.view = { x0, z0, s };
     const X = (x: number) => (x - x0) * s;
     const Z = (z: number) => (z - z0) * s;
@@ -196,19 +304,53 @@ export class Minimap {
       c.shadowBlur = 0;
     }
 
-    // Other players
-    c.font = `700 ${Math.max(9, font - 2)}px system-ui, sans-serif`;
-    for (const r of g.remotes) {
-      const p = st.worldToGlobal(r.x, r.z);
-      c.fillStyle = '#2fe6ff';
+    // Other players: a dot with their name (inside a building: a ring at its door)
+    const labels = this.big || s > 3;
+    c.font = `800 ${Math.max(10, Math.min(14, font))}px system-ui, sans-serif`;
+    for (const p of g.mapPlayers) {
+      const px = X(p.x);
+      const pz = Z(p.z);
+      if (px < -40 || px > W + 40 || pz < -40 || pz > H + 40) continue;
+      const rr = Math.max(4.5, Math.min(10, s * 0.7));
+      const followedNow = this.follow === p.pid;
+      c.lineWidth = 2.5;
+      c.strokeStyle = '#0b0714';
+      c.fillStyle = p.ko ? '#ff4d5e' : p.inside ? 'rgba(47,230,255,0.25)' : '#2fe6ff';
       c.beginPath();
-      c.arc(X(p.x), Z(p.z), Math.max(3.5, s * 0.6), 0, Math.PI * 2);
+      if (p.driving) c.rect(px - rr, pz - rr * 0.7, rr * 2, rr * 1.4);
+      else c.arc(px, pz, rr, 0, Math.PI * 2);
       c.fill();
-      if (this.big) {
-        c.fillStyle = '#bff6ff';
-        c.fillText(r.name, X(p.x), Z(p.z) - 10);
+      c.stroke();
+      if (p.inside) {
+        c.strokeStyle = '#2fe6ff';
+        c.lineWidth = 2;
+        c.beginPath();
+        c.arc(px, pz, rr, 0, Math.PI * 2);
+        c.stroke();
+      }
+      if (followedNow) {
+        c.strokeStyle = '#ffc53d';
+        c.lineWidth = 2;
+        c.beginPath();
+        c.arc(px, pz, rr + 4, 0, Math.PI * 2);
+        c.stroke();
+      }
+      if (labels || followedNow) {
+        const tag = `${p.driving ? '🚗 ' : ''}${p.name}${p.wanted ? ` ${'★'.repeat(p.wanted)}` : ''}${p.ko ? ' 💫' : ''}`;
+        c.shadowColor = 'rgba(0,0,0,0.95)';
+        c.shadowBlur = 4;
+        c.fillStyle = p.wanted ? '#ffc53d' : '#bff6ff';
+        c.fillText(tag, px, pz - rr - 8);
+        if (p.inside && (this.big || s > 5)) {
+          c.font = `700 ${Math.max(9, Math.min(12, font - 1))}px system-ui, sans-serif`;
+          c.fillStyle = 'rgba(191,246,255,0.75)';
+          c.fillText(p.where, px, pz + rr + 9);
+          c.font = `800 ${Math.max(10, Math.min(14, font))}px system-ui, sans-serif`;
+        }
+        c.shadowBlur = 0;
       }
     }
+    this.renderList();
     // The police: flashing red and blue
     const blink = Math.floor(performance.now() / 250) % 2 === 0;
     for (const d of st.police.dots) {
@@ -236,5 +378,34 @@ export class Minimap {
     c.stroke();
     c.fill();
     c.restore();
+  }
+
+  /** Big map: everyone online, click a name to find them on the map. */
+  private renderList(): void {
+    const g = this.game;
+    const players = this.big ? g.mapPlayers : [];
+    const key = players.map((p) => `${p.pid}|${p.name}|${p.inside}|${p.where}|${p.wanted}|${p.driving}`).join(';') + `|${this.follow}`;
+    if (key === this.listKey) return;
+    this.listKey = key;
+    this.list.replaceChildren();
+    this.list.hidden = !this.big;
+    if (!this.big) return;
+    this.list.appendChild(h('span', { class: 'mm-ptitle', text: players.length ? `Players online (${players.length}):` : 'No other players online right now.' }));
+    for (const p of players) {
+      this.list.appendChild(h('button', {
+        class: `mm-pbtn${this.follow === p.pid ? ' on' : ''}`,
+        text: `${p.driving ? '🚗' : p.inside ? '🏠' : '●'} ${p.name}${p.wanted ? ` ${'★'.repeat(p.wanted)}` : ''}`,
+        title: p.inside ? `${p.name} is ${p.where}` : `${p.name} is out on the street`,
+        onClick: (e: Event) => {
+          e.stopPropagation();
+          // Find them: follow and zoom in close.
+          this.follow = this.follow === p.pid ? null : p.pid;
+          if (this.follow) this.zoomBig = Math.max(this.zoomBig, 5);
+          this.listKey = '';
+          this.t = 0;
+          audio.play('click');
+        },
+      }));
+    }
   }
 }
