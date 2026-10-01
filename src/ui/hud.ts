@@ -17,6 +17,7 @@ import { cosmetic } from '../cosmetics/catalog';
 import { GunBar, openGunShop } from './guns';
 import { CombatHud } from './combatHud';
 import { openDealer } from './cars';
+import { ChatBox } from './chat';
 import { openVault } from './vault';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
@@ -60,6 +61,7 @@ export class Hud {
   private floorTag = h('div', { class: 'floor-tag', hidden: true });
   readonly gunBar: GunBar;
   readonly combatHud: CombatHud;
+  readonly chat: ChatBox;
   /** Extra card for another player you clicked (filled in by the multiplayer layer). */
   remoteCard: ((pid: string, el: HTMLElement) => void) | null = null;
 
@@ -71,6 +73,7 @@ export class Hud {
     this.minimap = new Minimap(game);
     this.gunBar = new GunBar(game);
     this.combatHud = new CombatHud(game);
+    this.chat = new ChatBox(game, () => this.modals.isOpen || game.build.active);
     this.build();
     this.bind();
     this.goalsCollapsed = window.innerWidth < 700;
@@ -159,7 +162,7 @@ export class Hud {
       h('button', { class: 'cam-btn', html: icon('zoomIn', 18), 'aria-label': 'Zoom in', onClick: () => g.cam.zoomBy(0.8) }),
       h('button', { class: 'cam-btn', html: icon('zoomOut', 18), 'aria-label': 'Zoom out', onClick: () => g.cam.zoomBy(1.25) }),
     );
-    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes · <b>V</b> camera (1st person) · <b>H</b> photo' });
+    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-5</b> weapons · <b>6-9</b> emotes · <b>Enter</b> chat · <b>V</b> camera · <b>H</b> photo' });
     this.fpsEl = h('div', { class: 'fps', hidden: true });
 
     // Visiting another casino
@@ -169,7 +172,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(this.combatHud.el, top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(this.combatHud.el, this.chat.el, top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {

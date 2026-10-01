@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { HotelInfo, MapPlayer } from '../game/game';
+import { cleanChat } from '../game/game';
 import { roman } from '../game/game';
 import { PlayerFx } from '../cosmetics/playerFx';
 import { cleanCosmetics, cosmetic, equipped } from '../cosmetics/catalog';
@@ -145,6 +146,8 @@ interface Remote {
   nameEl: HTMLElement;
   /** Wanted stars they publish. */
   wl: number;
+  /** Chat lines of theirs already shown (by id); undefined until first seen. */
+  chatSeen?: Set<string>;
   /** The car they're driving (key = model + colour). */
   carKey: string;
   car: THREE.Object3D | null;
@@ -181,6 +184,9 @@ export class Net {
   /** Damage you've dealt to each player and cash they owe you from knockouts (running totals this session). */
   private hits: Record<string, number> = {};
   private loot: Record<string, number> = {};
+  /** Your recent chat lines, sent along with your presence. */
+  private chatOut: { i: string; t: string; at: number }[] = [];
+  private chatN = 0;
   /** When you last hit each player (to credit you with the knockout). */
   private lastHitAt: Record<string, number> = {};
   status = 'Offline: just you and the rival down the street.';
@@ -194,6 +200,12 @@ export class Net {
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.openPlayers = () => this.openPlayers();
     game.combat.remoteTargets = () => this.targets();
+    game.chatOut = (text) => {
+      this.chatOut.push({ i: `${Date.now().toString(36)}${(this.chatN++).toString(36)}`, t: text, at: Date.now() });
+      if (this.chatOut.length > 4) this.chatOut.shift();
+      this.presenceT = 0;
+      return this.online && this.remotes.size > 0;
+    };
     game.combat.onHitRemote = (pid, dmg) => {
       this.hits[pid] = (this.hits[pid] ?? 0) + dmg;
       this.lastHitAt[pid] = Date.now();
@@ -319,6 +331,7 @@ export class Net {
       r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}${wl ? ` ${'★'.repeat(wl)}` : ''}`;
       this.readCombat(r, pr);
       this.readCar(r, pr);
+      this.readChat(r, pr);
       r.tx = num(pr.x);
       r.tz = num(pr.z);
       r.yaw = num(pr.yaw);
@@ -341,7 +354,10 @@ export class Net {
       }
       const shots = Math.round(num(pr.sh));
       if (shots !== r.shots) {
-        if (r.visible && r.gun && shots > r.shots) {
+        if (r.visible && r.gun && shots > r.shots && gunDef(r.gun)?.melee) {
+          r.model.swing = 1;
+          audio.playAt('whoosh', r.x, r.z, 0.5);
+        } else if (r.visible && r.gun && shots > r.shots) {
           r.model.recoil = 0.6;
           audio.playAt('gunshot', r.x, r.z, 0.7);
           this.game.effects.sparkle(r.x + Math.sin(r.model.root.rotation.y) * 0.8, 1.3, r.z + Math.cos(r.model.root.rotation.y) * 0.8, 4, 0xffd27a, 0.15);
@@ -401,6 +417,28 @@ export class Net {
       r.seenLoot = loot;
       g.combat.loot(Math.round(amount), r.name);
     }
+  }
+
+  /** New chat lines from another player: into the chat box and over their head. */
+  private readChat(r: Remote, pr: Record<string, unknown>): void {
+    const list = Array.isArray(pr.chat) ? pr.chat.slice(-6) : [];
+    const first = !r.chatSeen;
+    r.chatSeen ??= new Set();
+    for (const m of list) {
+      if (!m || typeof m !== 'object') continue;
+      const id = typeof (m as { i?: unknown }).i === 'string' ? (m as { i: string }).i.slice(0, 24) : '';
+      const text = cleanChat((m as { t?: unknown }).t);
+      if (!id || !text || r.chatSeen.has(id)) continue;
+      r.chatSeen.add(id);
+      // Lines that were already there when they came online are old news.
+      if (first) continue;
+      this.game.addChat({ from: r.name, text, t: Date.now(), me: false });
+      if (r.visible) {
+        const model = r.model;
+        this.game.floaters.bubble(() => (r.visible ? model.root.position.clone().setY(model.root.position.y + model.height + 0.9) : null), text, 4);
+      }
+    }
+    if (r.chatSeen.size > 50) r.chatSeen = new Set([...r.chatSeen].slice(-20));
   }
 
   /** Show the car another player is driving under them. */
@@ -720,6 +758,7 @@ export class Net {
       pr: g.combat.protect > 0 ? 1 : 0,
       wl: g.street.police.stars,
       car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color } : null,
+      chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
       loot: this.loot,
       look: p.appearance,
@@ -744,6 +783,7 @@ export class Net {
     if (JSON.stringify(data).length > 3800) delete casino.house;
     if (JSON.stringify(data).length > 3800) delete data.cos;
     if (JSON.stringify(data).length > 3800) data.hits = trimTop(this.hits, 8);
+    if (JSON.stringify(data).length > 3800) data.chat = (data.chat as unknown[]).slice(-1);
     return data;
   }
 

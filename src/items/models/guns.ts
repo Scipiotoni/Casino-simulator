@@ -110,6 +110,46 @@ export function buildGun(def: GunDef): { group: THREE.Group; muzzle: THREE.Vecto
       muzzle = new THREE.Vector3(0, 0.04, 0.36);
       break;
     }
+    case 'knuckles': {
+      box(g, 0.09, 0.035, 0.03, body, 0, 0.02, 0.06);
+      for (let i = 0; i < 4; i++) {
+        const r = cyl(g, 0.016, 0.016, 0.03, body, -0.033 + i * 0.022, 0.05, 0.06, 8);
+        r.rotation.x = Math.PI / 2;
+      }
+      muzzle = new THREE.Vector3(0, 0.03, 0.12);
+      break;
+    }
+    case 'bat': {
+      const b = cyl(g, 0.055, 0.022, 0.85, mat(def.color, { rough: 0.55 }), 0, 0, 0.4, 10);
+      b.rotation.x = Math.PI / 2;
+      const knob = cyl(g, 0.035, 0.035, 0.03, mat(0x2a1a12, { rough: 0.6 }), 0, 0, -0.03, 10);
+      knob.rotation.x = Math.PI / 2;
+      muzzle = new THREE.Vector3(0, 0, 0.82);
+      break;
+    }
+    case 'golf': {
+      const sh = cyl(g, 0.011, 0.016, 0.95, steel, 0, 0, 0.45, 8);
+      sh.rotation.x = Math.PI / 2;
+      box(g, 0.035, 0.04, 0.12, mat(0x17151f, { rough: 0.5 }), 0, 0, 0.0);
+      box(g, 0.1, 0.05, 0.035, steel, 0.04, -0.01, 0.93);
+      muzzle = new THREE.Vector3(0, 0, 0.93);
+      break;
+    }
+    case 'katana': {
+      box(g, 0.035, 0.035, 0.24, mat(0x17151f, { rough: 0.6 }), 0, 0, 0.04);
+      const guard = cyl(g, 0.05, 0.05, 0.015, gold(), 0, 0, 0.17, 12);
+      guard.rotation.x = Math.PI / 2;
+      box(g, 0.012, 0.04, 0.75, chrome(), 0, 0.005, 0.55);
+      muzzle = new THREE.Vector3(0, 0, 0.92);
+      break;
+    }
+    case 'hammer': {
+      const h = cyl(g, 0.02, 0.02, 0.8, wood, 0, 0, 0.36, 8);
+      h.rotation.x = Math.PI / 2;
+      box(g, 0.18, 0.1, 0.1, mat(0x5a5d66, { metal: 0.7, rough: 0.4 }), 0, 0, 0.78);
+      muzzle = new THREE.Vector3(0, 0, 0.8);
+      break;
+    }
     case 'confetti': {
       const tube = cyl(g, 0.05, 0.065, 0.42, body, 0, 0.04, 0.15, 14);
       tube.rotation.x = Math.PI / 2;

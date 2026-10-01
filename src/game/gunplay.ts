@@ -73,6 +73,8 @@ export class GunPlay {
   /** 0 = hip, 1 = fully aimed down the sights. */
   private adsK = 0;
   private swayX = 0;
+  /** Seconds left of a melee swing on screen. */
+  private swingT = 0;
   private aimX = 0;
   private aimY = 0;
   private swayY = 0;
@@ -233,6 +235,17 @@ export class GunPlay {
     this.aimX += ((ndc ? ndc.x : 0) - this.aimX) * Math.min(1, dt * 12);
     this.aimY += ((ndc ? ndc.y : 0) - this.aimY) * Math.min(1, dt * 12);
     vm.gun.rotation.set(this.vmKick * 0.18 + reload * 0.9 + near * 0.5 + this.aimY * 0.45 * (1 - k), this.swayX * 2 - this.aimX * 0.55 * (1 - k), reload * 0.5 + this.swayX * 1.5);
+    if (this.def?.melee) {
+      // Held up and ready; a swing chops down and across.
+      this.swingT = Math.max(0, this.swingT - dt);
+      const sw = this.swingT > 0 ? 1 - this.swingT / 0.35 : 0;
+      const arc = Math.sin(sw * Math.PI);
+      vm.gun.rotation.x = 0.9 - sw * 2.2 + this.swayY;
+      vm.gun.rotation.y = 0.35 - arc * 0.9;
+      vm.gun.rotation.z = -0.3 + arc * 0.5;
+      vm.gun.position.x += 0.04 - arc * 0.08;
+      vm.gun.position.y += -0.02 + arc * 0.04;
+    }
     vm.holder.visible = !this.scoped;
     if (vm.spin) vm.spin.rotation.z += this.spinV * dt;
   }
@@ -329,7 +342,8 @@ export class GunPlay {
           g.notify(g.inside ? 'Guns stay holstered indoors: step out onto the street to shoot.' : 'You can only shoot out on the street.', 'bad');
         }
       } else if (this.cool <= 0 && this.reloading <= 0) {
-        if (d.kind === 'minigun' && this.spinV < 12) {
+        if (d.melee) this.swing(d);
+        else if (d.kind === 'minigun' && this.spinV < 12) {
           // Barrels spin up first.
         } else this.fire(d);
       }
@@ -630,6 +644,97 @@ export class GunPlay {
     }
     if (d.kind === 'confetti') fx.confetti(hit.x, Math.max(1, hit.y), hit.z, 70, 0.9);
     this.tracer(d, muzzle, hit);
+  }
+
+  /**
+   * Swing a melee weapon: everyone (and everything) in a cone in front of you within reach
+   * gets hit. Same street-only rules, damage, knockouts and police heat as guns.
+   */
+  private swing(d: GunDef): void {
+    const g = this.g;
+    const st = g.street;
+    const p = g.player;
+    this.cool = 1 / d.rate;
+    this.shots++;
+    g.stats.shotsFired++;
+    const fp = g.cam.mode === 'first';
+    let yaw = this.aimYaw !== null && this.aimHold > 0 ? this.aimYaw : p.yaw;
+    if (fp) yaw = g.cam.lookYaw;
+    p.yaw = yaw;
+    p.model.root.rotation.y = yaw;
+    p.model.swing = 1;
+    this.swingT = 0.35;
+    audio.play('whoosh', { pitch: 1.3 + Math.random() * 0.3, volume: 0.6 });
+    const og = st.worldToGlobal(p.x, p.z);
+    const flip = st.placeOf(st.activeId).side === 1;
+    const gdx = (flip ? -1 : 1) * Math.sin(yaw);
+    const gdz = (flip ? -1 : 1) * Math.cos(yaw);
+    const reach = d.range + 0.35;
+    const cone = Math.cos(d.spread);
+    const inCone = (dx: number, dz: number) => {
+      const dist = Math.hypot(dx, dz);
+      return dist < reach && (dist < 0.4 || (dx * gdx + dz * gdz) / dist > cone);
+    };
+    const fx = g.effects;
+    const hitAt = (gx: number, gz: number, y: number) => {
+      const w = st.globalToWorld(gx, gz);
+      return new THREE.Vector3(w.x, y, w.z);
+    };
+    let landed = 0;
+    const thump = () => {
+      if (!landed) audio.play('thud', { pitch: 0.9 + Math.random() * 0.2 });
+      landed++;
+    };
+    for (const ped of st.crowd.around(og.x, og.z, reach)) {
+      if (!inCone(ped.x - og.x, ped.z - og.z)) continue;
+      const at = hitAt(ped.x, ped.z, 1.2);
+      const r = st.crowd.damage(ped, d.dmg, gdx, gdz);
+      st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
+      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.combat.landed(false, r.ko);
+      if (r.ko) g.onStreetKnockout(r.cash, at);
+      thump();
+    }
+    for (const o of st.police.officers) {
+      if (o.ko > 0 || o.leaving > 0 || !inCone(o.x - og.x, o.z - og.z)) continue;
+      const at = hitAt(o.x, o.z, 1.2);
+      const ko = st.police.damage(o, d.dmg);
+      fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
+      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.combat.landed(false, ko);
+      if (ko) g.stats.knockouts++;
+      thump();
+    }
+    for (const r of g.combat.remoteTargets()) {
+      const rg = st.worldToGlobal(r.x, r.z);
+      if (!inCone(rg.x - og.x, rg.z - og.z)) continue;
+      g.combat.onHitRemote?.(r.pid, d.dmg);
+      st.police.crime(HEAT.hitPerson);
+      fx.sparkle(r.x, 1.2, r.z, 6, 0xffffff, 0.3);
+      g.floaters.text(new THREE.Vector3(r.x, 1.7, r.z), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.combat.landed(false, false);
+      thump();
+    }
+    for (const tg of st.city.targets) {
+      if (!tg.alive || !inCone(tg.home.x - og.x, tg.home.z - og.z)) continue;
+      st.city.hitTarget(tg, gdx, gdz);
+      g.stats.targetsHit++;
+      g.onTargetHit();
+      audio.play(tg.kind === 'bottle' ? 'glass' : tg.kind === 'balloon' ? 'balloon' : 'ping');
+      landed++;
+    }
+    for (const c of st.city.traffic) {
+      if (!c.root.visible || !inCone(c.x - og.x, c.z - og.z)) continue;
+      st.city.hitCar(c);
+      g.stats.carsHit++;
+      st.police.crime(HEAT.car, false);
+      audio.play('carAlarm');
+      landed++;
+      break;
+    }
+    if (landed) g.cam.shake(0.05);
+    g.events.emit('guns', undefined);
   }
 
   /** A police bullet (world frame). */

@@ -163,6 +163,11 @@ export class Crowd {
     return out.sort((a, b) => a.s - b.s);
   }
 
+  /** People standing within `r` of a point (global), awake. */
+  around(gx: number, gz: number, r: number): Ped[] {
+    return this.peds.filter((p) => p.ko <= 0 && p.fade <= 0 && Math.hypot(p.x - gx, p.z - gz) < r);
+  }
+
   /** A bullet landed: they stagger (and run), or go down and drop their cash. */
   damage(p: Ped, dmg: number, dx: number, dz: number): { ko: boolean; cash: number } {
     if (p.ko > 0) return { ko: false, cash: 0 };

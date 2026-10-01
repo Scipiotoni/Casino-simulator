@@ -45,6 +45,7 @@ import {
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
+import { SLOTS, autoSlot } from './guns';
 import { Combat } from './combat';
 import { Driving, type GarageState, emptyGarage, sanitizeGarage } from './driving';
 import { type Activity, activityFor, PRACTICE_LABEL } from './activities';
@@ -122,6 +123,8 @@ export interface GameEvents {
   flash: void;
   /** Got into or out of a car. */
   driving: void;
+  /** A chat line arrived (or you sent one). */
+  chat: ChatLine;
   /** At the Velocity Motors counter. */
   dealer: void;
   /** You started or stopped doing something (sitting, punching the bag…). */
@@ -141,6 +144,12 @@ export interface Settings {
 }
 
 const DAY_SECONDS = 300;
+/** Chat text: one line, no control characters, at most 120 characters. */
+export function cleanChat(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+
 /** Practice chips you start with (and can refill to for free). */
 export const START_CHIPS = 10_000;
 const DAY_START = 10 * 60;
@@ -202,6 +211,16 @@ export interface RemoteView {
   name: string;
   x: number;
   z: number;
+}
+
+/** One line of the chat. */
+export interface ChatLine {
+  from: string;
+  text: string;
+  t: number;
+  me: boolean;
+  /** A note from the game (nobody's listening, slow down…). */
+  system?: boolean;
 }
 
 /** Every online player for the city map, wherever they are (global frame). */
@@ -579,7 +598,7 @@ export class Game implements World, ItemHost {
     const cos = { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] };
     const stats = { ...this.stats };
     const house = this.house;
-    const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped };
+    const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] };
     this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
     this.rebirths = n;
     this.stats = stats;
@@ -1238,12 +1257,37 @@ export class Game implements World, ItemHost {
       return false;
     }
     this.spend(d.price, 'purchase');
-    this.guns = { owned: [...this.guns.owned, id], equipped: id };
+    const slots = [...this.guns.slots];
+    const next = { owned: [...this.guns.owned, id], equipped: id, slots };
+    autoSlot(next, id);
+    this.guns = next;
     audio.play('reload');
-    this.notify(`🔫 ${d.name} is yours. It only fires out on the street: click (or hold) to shoot, R to reload.`, 'good');
+    const key = slots.indexOf(id);
+    this.notify(`${d.melee ? '🏏' : '🔫'} ${d.name} is yours${key >= 0 ? ` (key ${key + 1})` : ''}. It only works out on the street: ${d.melee ? 'click to swing' : 'click (or hold) to shoot, R to reload'}.`, 'good');
     this.events.emit('guns', undefined);
     this.saveNow();
     return true;
+  }
+
+  /** Put a weapon on one of the 1–5 keys (null empties the slot). */
+  assignSlot(slot: number, id: string | null): void {
+    if (slot < 0 || slot >= SLOTS || (id && !this.guns.owned.includes(id))) return;
+    const slots = this.guns.slots.map((x) => (x === id ? null : x));
+    slots[slot] = id;
+    this.guns = { ...this.guns, slots };
+    audio.play('click');
+    this.events.emit('guns', undefined);
+    this.requestSave();
+  }
+
+  /** Key 1–5: draw what's on that slot (again to holster). */
+  useSlot(slot: number): void {
+    const id = this.guns.slots[slot] ?? null;
+    if (!id) {
+      this.notify(`Nothing on key ${slot + 1}. Assign a weapon in the gun shop or by clicking the slot bar.`, 'info');
+      return;
+    }
+    this.equipGun(this.guns.equipped === id ? null : id);
   }
 
   /** Draw a gun you own, or holster (null). */
@@ -3258,6 +3302,36 @@ export class Game implements World, ItemHost {
     if (a.act.once && a.t >= a.act.once) this.stopActivity();
   }
 
+  /** Recent chat lines (newest last). */
+  chat: ChatLine[] = [];
+  /** Net hook: send a line to everyone (false when nobody can hear it). */
+  chatOut: ((text: string) => boolean) | null = null;
+  private lastChat = 0;
+
+  /** Say something to everyone online (it also pops up over your head). */
+  sendChat(raw: string): void {
+    const text = cleanChat(raw);
+    if (!text) return;
+    const now = Date.now();
+    if (now - this.lastChat < 900) {
+      this.addChat({ from: '', text: 'Slow down a little.', t: now, me: false, system: true });
+      return;
+    }
+    this.lastChat = now;
+    this.addChat({ from: this.player.name, text, t: now, me: true });
+    this.floaters.bubble(() => this.player.model.root.position.clone().setY(this.player.model.height + 0.9), text, 4);
+    const heard = this.chatOut?.(text) ?? false;
+    if (!heard && !this.chat.some((l) => l.system && now - l.t < 60_000)) {
+      this.addChat({ from: '', text: 'Nobody else is online to hear you right now.', t: now, me: false, system: true });
+    }
+  }
+
+  addChat(line: ChatLine): void {
+    this.chat.push(line);
+    if (this.chat.length > 80) this.chat.splice(0, this.chat.length - 80);
+    this.events.emit('chat', line);
+  }
+
   /** Practice play: put pretend chips down. */
   chipBet(amount: number): boolean {
     if (amount <= 0 || this.playChips < amount) return false;
@@ -3554,10 +3628,12 @@ export class Game implements World, ItemHost {
         else if (this.selection) this.select(null);
       }
       if (!this.build.active) {
-        if (input.hit('Digit1')) this.player.playEmote('wave', 2);
-        if (input.hit('Digit2')) this.player.playEmote('dance', 4);
-        if (input.hit('Digit3')) this.player.playEmote('cheer', 2);
-        if (input.hit('Digit4')) this.player.playEmote('clap', 2);
+        // 1–5: weapon slots. 6–9: emotes.
+        for (let k = 0; k < SLOTS; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.useSlot(k);
+        if (input.hit('Digit6')) this.player.playEmote('wave', 2);
+        if (input.hit('Digit7')) this.player.playEmote('dance', 4);
+        if (input.hit('Digit8')) this.player.playEmote('cheer', 2);
+        if (input.hit('Digit9')) this.player.playEmote('clap', 2);
       }
     }
 
@@ -3799,7 +3875,7 @@ export class Game implements World, ItemHost {
         ...home,
         ...live,
         house: this.houseSave(),
-        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
+        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
         day: this.day,
@@ -3827,7 +3903,7 @@ export class Game implements World, ItemHost {
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
         hotel: this.hotelSave(),
         house: this.houseSave(),
-        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
+        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
         rebirths: this.rebirths,
@@ -3866,7 +3942,7 @@ export class Game implements World, ItemHost {
       cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
       hotel: this.hotelSave(),
       house: this.houseSave(),
-      guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
+      guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
       rebirths: this.rebirths,

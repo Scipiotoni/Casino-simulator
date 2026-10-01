@@ -817,6 +817,8 @@ export class CharacterModel {
   recoil = 0;
   /** Flinch from being hit (decays by itself). */
   flinch = 0;
+  /** A melee swing (1 = arms raised, falling to 0 as it lands). */
+  swing = 0;
   /** A punch being thrown (decays by itself); `jabLeft` picks the arm. */
   jab = 0;
   jabLeft = false;
@@ -1128,6 +1130,18 @@ export class CharacterModel {
       }
     }
     this.recoil = Math.max(0, this.recoil - dt * 6);
+    if (this.swing > 0) {
+      // Raised overhead, then down and across.
+      const T = this.target;
+      T.armRx = -0.5 - this.swing * 2.4;
+      T.armRz = -0.1 - this.swing * 0.3;
+      if (this.aim > 1) {
+        T.armLx = T.armRx + 0.1;
+        T.armLz = 0.3;
+      }
+      T.bodyRz = (this.swing - 0.5) * 0.3;
+      this.swing = Math.max(0, this.swing - dt * 5);
+    }
     if (this.jab > 0) {
       const T = this.target;
       if (this.jabLeft) {
