@@ -24,12 +24,14 @@ export class CombatHud {
   private markT = -1;
   private wanted = h('div', { class: 'wanted', hidden: true, 'aria-label': 'Wanted level' });
   private wantedKey = '';
+  private speedo = h('div', { class: 'speedo', hidden: true });
+  private speedoKey = '';
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo);
   }
 
   update(dt: number): void {
@@ -74,14 +76,15 @@ export class CombatHud {
     }
     if (c.mark && performance.now() - c.mark.t > 260) this.marker.classList.remove('show');
     // Health: shown out on the street, or whenever you're hurt.
-    const showHp = playing && (c.hp < MAX_HP || c.ko > 0 || (!g.inside && armed));
+    const showHp = playing && (c.hp < MAX_HP || c.ko > 0 || c.teleportLock > 0 || (!g.inside && armed));
     this.hpWrap.hidden = !showHp;
     if (showHp) {
       const pct = Math.max(0, c.hp) / MAX_HP;
       this.hpFill.style.width = `${(pct * 100).toFixed(1)}%`;
       this.hpWrap.classList.toggle('low', pct < 0.35);
       this.hpWrap.classList.toggle('prot', c.protect > 0);
-      this.hpText.textContent = c.protect > 0 ? 'Safe' : `${Math.ceil(c.hp)}`;
+      const lock = c.teleportLock;
+      this.hpText.textContent = `${c.protect > 0 ? 'Safe' : Math.ceil(c.hp)}${lock > 0 ? ` · 📍✕ ${Math.ceil(lock)}s` : ''}`;
     }
     this.vignette.style.opacity = String(Math.min(0.85, c.flash + (c.hp < 35 && c.ko <= 0 ? 0.25 + Math.sin(performance.now() / 160) * 0.08 : 0)));
     if (c.hitFrom !== null && c.flash > 0.05) {
@@ -102,7 +105,7 @@ export class CombatHud {
           h('div', { class: 'ko-title', text: c.lastKo?.busted ? 'BUSTED' : 'KNOCKED OUT' }),
           h('div', { class: 'ko-by', text: c.lastKo?.busted ? 'The police caught up with you' : c.lastKo ? `by ${c.lastKo.by}` : '' }),
           h('div', { class: 'ko-lost', text: c.lastKo && c.lastKo.lost > 0 ? `−${formatMoney(c.lastKo.lost)} ${c.lastKo.busted ? 'fine' : 'taken from your pockets'}` : 'Your pockets were empty' }),
-          h('div', { class: 'ko-tip', text: 'Money in your vault at home is always safe.' }),
+          h('div', { class: 'ko-tip', text: g.house?.vault ? `Your vault is untouched: ${formatMoney(g.house.vault)} safe at home.` : 'Money in your vault at home is always safe.' }),
           h('div', { class: 'ko-timer', text: `Back on your feet in ${Math.ceil(c.ko)}…` }),
         );
       }
@@ -118,6 +121,14 @@ export class CombatHud {
       this.wanted.innerHTML = `<span class="w-label">${pol.spotted ? 'WANTED' : 'HIDING'}</span><span class="w-stars">${'<b>★</b>'.repeat(stars)}${'<i>★</i>'.repeat(5 - stars)}</span>`;
     }
     this.scope.hidden = !(fp && gp.scoped);
+    // Speedometer behind the wheel
+    const car = playing ? g.drive.driving : null;
+    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}` : '';
+    if (skey !== this.speedoKey) {
+      this.speedoKey = skey;
+      this.speedo.hidden = !car;
+      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>`;
+    }
     // Desktop first person with the mouse free: invite a click.
     this.lockHint.hidden = !(fp && !g.input.isTouch && !g.input.locked && !g.input.lockFailed && !g.modalOpen && !g.build.active && c.ko <= 0);
     void dt;

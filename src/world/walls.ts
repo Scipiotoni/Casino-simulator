@@ -41,9 +41,9 @@ export const WALL_STYLES: WallStyle[] = [
   { id: 'hedge', name: 'Garden Hedge', price: 45, color: 0xffffff, trim: 0x2e5a22, rough: 1, pattern: 'hedge', swatch: '#3f7a2e' },
 ];
 
-/** A wall's thickness and how tall it stands. */
-const T = 0.22;
-const CAP = 0.07;
+/** A wall's thickness, and how tall built walls stand (a little taller than the building's own). */
+const T = 0.24;
+export const BUILT_WALL_H = WALL_H + 0.5;
 
 const texCache = new Map<string, THREE.Texture>();
 const neonMats = new Map<number, THREE.Material>();
@@ -263,7 +263,7 @@ export class WallRenderer {
       if (!b) m.set(s, (b = new BoxBatch()));
       return b;
     };
-    const H = WALL_H;
+    const H = BUILT_WALL_H;
     for (let z = g.zMin; z < g.zMin + g.d; z++) {
       for (let x = 0; x < g.w; x++) {
         const s = g.wallAt(x, z);
@@ -288,12 +288,54 @@ export class WallRenderer {
         }
         const body = batch(bodies, s);
         const trim = batch(trims, s);
+        const neon = st.neon ? batch(neons, s) : null;
+        const plain = st.glass || st.pattern === 'hedge';
+        // Grow a piece sideways (away from the wall face) only, never along its length.
+        const proud = (sx: number, sz: number, d: number): [number, number] => sx > sz ? [sx, sz + d * 2] : sz > sx ? [sx + d * 2, sz] : [sx + d * 2, sz + d * 2];
         for (const [px, pz, sx, sz] of pieces) {
-          body.add(px, (H - CAP) / 2 + 0.06, pz, sx, H - CAP - 0.12, sz);
-          // Cap and skirting, slightly proud of the wall.
-          trim.add(px, H - CAP / 2, pz, sx + (sx > T ? 0 : 0.05), CAP, sz + (sz > T ? 0 : 0.05));
-          trim.add(px, 0.06, pz, sx + (sx > T ? 0 : 0.03), 0.12, sz + (sz > T ? 0 : 0.03));
-          if (st.neon) batch(neons, s).add(px, H - CAP - 0.05, pz, sx + (sx > T ? 0 : 0.07), 0.05, sz + (sz > T ? 0 : 0.07));
+          if (st.glass) {
+            // Glass pane in a metal frame: rails top and bottom.
+            body.add(px, H / 2, pz, sx, H - 0.24, sz);
+            const [bx, bz] = proud(sx, sz, 0.02);
+            trim.add(px, 0.08, pz, bx, 0.16, bz);
+            trim.add(px, H - 0.06, pz, bx, 0.12, bz);
+            continue;
+          }
+          body.add(px, H / 2, pz, sx, H, sz);
+          // Skirting board
+          const [kx, kz] = proud(sx, sz, 0.025);
+          trim.add(px, 0.09, pz, kx, 0.18, kz);
+          if (!plain) {
+            // Chair rail
+            const [rx, rz] = proud(sx, sz, 0.02);
+            trim.add(px, 1.05, pz, rx, 0.05, rz);
+          }
+          // Crown moulding: two steps.
+          const [c1x, c1z] = proud(sx, sz, 0.03);
+          trim.add(px, H - 0.1, pz, c1x, 0.08, c1z);
+          const [c2x, c2z] = proud(sx, sz, 0.06);
+          trim.add(px, H - 0.025, pz, c2x, 0.05, c2z);
+          if (neon) {
+            const [nx, nz] = proud(sx, sz, 0.045);
+            neon.add(px, H - 0.17, pz, nx, 0.04, nz);
+            neon.add(px, 0.2, pz, nx, 0.03, nz);
+          }
+        }
+        // Pilasters at the ends and corners of every run.
+        const count = (e ? 1 : 0) + (w ? 1 : 0) + (so ? 1 : 0) + (n ? 1 : 0);
+        const corner = (e || w) && (so || n);
+        if (count <= 1 || corner || lone) {
+          const ends: [number, number][] = lone ? [[cx - 0.5 + 0.17, cz], [cx + 0.5 - 0.17, cz]] : [[cx, cz]];
+          for (const [ex, ez] of ends) {
+            const P = st.glass ? 0.12 : 0.36;
+            trim.add(ex, H / 2, ez, P, H, P);
+            trim.add(ex, H - 0.03, ez, P + 0.08, 0.06, P + 0.08);
+            trim.add(ex, 0.1, ez, P + 0.06, 0.2, P + 0.06);
+            if (neon) neon.add(ex, H + 0.02, ez, P * 0.6, 0.03, P * 0.6);
+          }
+        } else if (st.glass) {
+          // A slim mullion between panes.
+          trim.add(cx, H / 2, cz, 0.06, H, 0.06);
         }
       }
     }

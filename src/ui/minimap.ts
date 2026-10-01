@@ -77,7 +77,7 @@ export class Minimap {
       const d = g.street.toGlobal(lot.id, CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
       ok = g.teleportTo(d.x, d.z);
     } else ok = g.teleportTo(gx, gz);
-    if (!ok) {
+    if (!ok && g.combat.teleportLock <= 0) {
       audio.play('error');
       g.notify('You can only teleport onto a sidewalk or a road, never inside a building.', 'bad');
     }
@@ -168,7 +168,7 @@ export class Minimap {
       if (this.big && !mine && lot.kind !== 'shop') continue;
       const north = st.placeOf(lot.id).side === 0;
       const ty = north ? Z(b.z1) - font * 0.9 : Z(b.z0) + font * 0.9;
-      const icon = lot.kind === 'shop' ? '🔫 ' : lot.kind === 'house' ? '🏠 ' : lot.kind === 'hotel' ? '🏨 ' : lot.id === 'me' ? '★ ' : '';
+      const icon = lot.kind === 'shop' ? (lot.info.style === 'dealer' ? '🚗 ' : '🔫 ') : lot.kind === 'house' ? '🏠 ' : lot.kind === 'hotel' ? '🏨 ' : lot.id === 'me' ? '★ ' : '';
       const name = `${icon}${lot.kind === 'house' && lot.houseOf !== 'me' ? `${lot.owner}'s house` : lot.info.look.name}`;
       c.fillStyle = '#fff';
       c.shadowColor = 'rgba(0,0,0,0.8)';

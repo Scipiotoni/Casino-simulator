@@ -5,7 +5,7 @@ import { Dyn, bake, box, cyl, sph, disposeTree } from '../items/models/common';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z1, WIDTHS, START_DEPTH, DEPTH_STEP } from './grid';
 import { SIGN_FONTS, type CasinoLook } from './building';
 import { type FillerSpec, MAX_DEPTH_STEPS } from './city';
-import { type Built, buildFiller, buildGunShop, buildHouse } from './cityBuildings';
+import { type Built, buildDealer, buildFiller, buildGunShop, buildHouse } from './cityBuildings';
 
 /** Height of one storey seen from outside. */
 export const STORY_H = 3;
@@ -21,7 +21,7 @@ export interface LotLook {
   /** Casino cosmetics switched on (searchlights, fireworks, gold facade, rainbow neon). */
   cos?: string[];
   /** A hotel tower (balconies, tall HOTEL sign), an open-air Pool Garden, a player's house, the gun shop or city scenery. */
-  style?: 'hotel' | 'garden' | 'house' | 'filler' | 'gunshop';
+  style?: 'hotel' | 'garden' | 'house' | 'filler' | 'gunshop' | 'dealer';
   /** What a filler building looks like. */
   filler?: FillerSpec;
 }
@@ -145,6 +145,7 @@ export class Exterior {
     const i = this.info;
     if (i.style === 'filler' && i.filler) this.extra = buildFiller(s, i.filler);
     else if (i.style === 'gunshop') this.extra = buildGunShop(s, i.look.name);
+    else if (i.style === 'dealer') this.extra = buildDealer(s, i.look.name);
     else {
       const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, i.width))].w;
       const d = START_DEPTH + Math.min(MAX_DEPTH_STEPS, Math.max(0, i.depth)) * DEPTH_STEP;
@@ -156,7 +157,7 @@ export class Exterior {
 
   private build(): void {
     if (this.info.style === 'garden') return this.buildGarden();
-    if (this.info.style === 'filler' || this.info.style === 'gunshop' || this.info.style === 'house') return this.buildCity();
+    if (this.info.style === 'filler' || this.info.style === 'gunshop' || this.info.style === 'dealer' || this.info.style === 'house') return this.buildCity();
     const { look, floors } = this.info;
     const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, this.info.width))].w;
     const d = START_DEPTH + Math.min(MAX_DEPTH_STEPS, Math.max(0, this.info.depth)) * DEPTH_STEP;

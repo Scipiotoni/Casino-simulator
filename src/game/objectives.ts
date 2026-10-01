@@ -29,6 +29,7 @@ export interface ObjectiveView {
   gardenItems: number;
   /** City life: guns owned, the house and its vault. */
   gunsOwned: number;
+  carsOwned: number;
   houseOwned: boolean;
   vaultTier: number;
   vaultMoney: number;
@@ -74,6 +75,8 @@ export interface LifetimeStats {
   /** Times the police got you, and the most stars you've had. */
   busted: number;
   maxWanted: number;
+  /** Cars taken out of traffic. */
+  carsStolen: number;
 }
 
 export function emptyStats(): LifetimeStats {
@@ -81,7 +84,7 @@ export function emptyStats(): LifetimeStats {
     collected: 0, earnedTotal: 0, visitors: 0, jackpots: 0, bigWins: 0, biggestWin: 0, cheatersCaught: 0, repairs: 0,
     trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0, managerSpins: 0,
     awayNet: 0, awayHands: 0, turnedAway: 0, roomsDecorated: 0, floorSetups: 0,
-    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0, wallsBuilt: 0, knockouts: 0, looted: 0, knockedDown: 0, busted: 0, maxWanted: 0,
+    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0, wallsBuilt: 0, knockouts: 0, looted: 0, knockedDown: 0, busted: 0, maxWanted: 0, carsStolen: 0,
   };
 }
 
@@ -115,6 +118,7 @@ export const OBJECTIVES: Objective[] = [
   { id: 'visit', text: 'Play a hand at another casino', hint: 'Walk out the front door and down the street.', target: 1, reward: 500, xp: 120, progress: (v) => v.stats.awayHands },
   { id: 'gun', text: 'Buy a gun at Bullseye Guns', hint: 'The gun shop is on the Strip, next to the rival. Guns only fire out on the street.', target: 1, reward: 400, xp: 100, progress: (v) => v.gunsOwned },
   { id: 'targets_10', text: 'Shoot 10 targets', hint: 'Tin cans, bottles and balloons wait on the sidewalks.', target: 10, reward: 500, xp: 150, progress: (v) => v.stats.targetsHit },
+  { id: 'car', text: 'Buy a car at Velocity Motors', hint: 'The dealership is on Downtown Boulevard (🚗 on the city map), or Menu → Cars.', target: 1, reward: 1500, xp: 300, progress: (v) => v.carsOwned },
   { id: 'house', text: 'Buy a house on Palm Avenue', hint: 'Open Home on the toolbar (casino level 3).', target: 1, reward: 1500, xp: 300, progress: (v) => (v.houseOwned ? 1 : 0) },
   { id: 'vault', text: 'Put a vault in your house', hint: 'In your house: Build → Security → Vault, then pick a code.', target: 1, reward: 1000, xp: 250, progress: (v) => v.vaultTier },
   { id: 'bank_10k', text: 'Keep $10,000 in your vault', hint: 'Open the vault and deposit casino cash. It earns interest every day.', target: 10000, reward: 1500, xp: 300, progress: (v) => v.vaultMoney },

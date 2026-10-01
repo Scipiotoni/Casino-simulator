@@ -4,6 +4,7 @@ import { canvasTexture, makeCanvas, seeded } from '../render/textures';
 import { box, cyl, sph } from '../items/models/common';
 import { CENTER_X, FACADE_Z } from './grid';
 import { type FillerSpec, hash01 } from './city';
+import { CARS, buildCar } from './vehicles';
 
 /** Facade textures: `map` is the wall (white, tinted by the material) with dark windows, `glow` lights some of them. */
 interface Facade {
@@ -622,6 +623,90 @@ export function buildGunShop(s: THREE.Group, name: string): Built {
   b.keep.push(om);
   b.update = (_dt, time) => {
     (om.material as THREE.MeshStandardMaterial).emissiveIntensity = Math.sin(time * 2.2) > -0.6 ? 1 : 0.2;
+  };
+  return b;
+}
+
+/** Velocity Motors: a glass car showroom with cars turning on turntables. */
+export function buildDealer(s: THREE.Group, name: string): Built {
+  const b: Built = { keep: [], textures: [] };
+  const w = 20;
+  const d = 14;
+  const x0 = CENTER_X - w / 2;
+  const x1 = CENTER_X + w / 2;
+  const zF = FACADE_Z;
+  const z0 = zF - d;
+  const H = 6;
+  const frame = mat(0x1b1d24, { metal: 0.7, rough: 0.35 });
+  const glass = mat(0x9fd6ff, { transparent: true, opacity: 0.22, rough: 0.05, metal: 0.3, depthWrite: false });
+  // Floor, back and side walls, roof
+  box(s, w, 0.08, d, mat(0xe8e8ee, { rough: 0.12, metal: 0.2 }), CENTER_X, 0.04, (z0 + zF) / 2);
+  box(s, w, H, 0.3, mat(0x2a2c33, { rough: 0.6 }), CENTER_X, H / 2, z0);
+  box(s, 0.3, H, d, mat(0x2a2c33, { rough: 0.6 }), x0, H / 2, (z0 + zF) / 2);
+  box(s, 0.3, H, d, mat(0x2a2c33, { rough: 0.6 }), x1, H / 2, (z0 + zF) / 2);
+  box(s, w + 0.8, 0.5, d + 0.8, frame, CENTER_X, H + 0.25, (z0 + zF) / 2);
+  // Glass front with mullions and a neon line along the top
+  const pane = new THREE.Mesh(new THREE.BoxGeometry(w, H, 0.06), glass);
+  pane.position.set(CENTER_X, H / 2, zF);
+  pane.renderOrder = 3;
+  s.add(pane);
+  for (let i = 0; i <= 5; i++) box(s, 0.14, H, 0.14, frame, x0 + (i * w) / 5, H / 2, zF);
+  box(s, w, 0.12, 0.12, glow(0x2fe6ff, 2.6), CENTER_X, H - 0.15, zF + 0.1);
+  // Ceiling lights
+  for (let i = 0; i < 4; i++) box(s, 3, 0.06, 0.4, glow(0xffffff, 1.6), x0 + 2.5 + i * 5, H - 0.05, (z0 + zF) / 2);
+  // Cars on turntables
+  const shown: { def: string; color: number; x: number; z: number }[] = [
+    { def: 'super', color: 0xff2a2a, x: CENTER_X - 5, z: zF - 4.5 },
+    { def: 'hyper', color: 0xf2b632, x: CENTER_X + 5, z: zF - 4.5 },
+    { def: 'muscle', color: 0xff8a1f, x: CENTER_X, z: zF - 10 },
+  ];
+  const tables: THREE.Group[] = [];
+  for (const c of shown) {
+    const def = CARS.find((x) => x.id === c.def);
+    if (!def) continue;
+    const t = new THREE.Group();
+    t.position.set(c.x, 0.1, c.z);
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 0.12, 40), mat(0x2b2d36, { metal: 0.6, rough: 0.3 }));
+    t.add(disc);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(3, 0.05, 6, 48), glow(0xff3fa4, 2.4));
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.07;
+    t.add(ring);
+    const car = buildCar(def, c.color);
+    car.root.position.y = 0.06;
+    t.add(car.root);
+    s.add(t);
+    tables.push(t);
+    b.keep.push(t);
+  }
+  // Big sign on the roof
+  const { canvas, ctx } = makeCanvas(1024, 256);
+  ctx.fillStyle = '#0d0f16';
+  ctx.fillRect(0, 0, 1024, 256);
+  const grad = ctx.createLinearGradient(0, 0, 1024, 0);
+  grad.addColorStop(0, '#2fe6ff');
+  grad.addColorStop(1, '#ff3fa4');
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 10;
+  ctx.strokeRect(10, 10, 1004, 236);
+  ctx.fillStyle = grad;
+  ctx.font = 'italic 400 100px Bungee, "Arial Black", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(name.toUpperCase(), 512, 112, 960);
+  ctx.font = '700 34px Nunito, Arial, sans-serif';
+  ctx.fillStyle = '#c9f7ff';
+  ctx.fillText('SUPERCARS · MUSCLE · LIMOS · EVS', 512, 206, 900);
+  const t = canvasTexture(canvas);
+  b.textures.push(t);
+  b.keep.push(signMesh(s, t, 14, 3.5, CENTER_X, H + 2.4, zF + 0.1));
+  // Flags out front
+  for (const fx of [x0 + 0.6, x1 - 0.6]) {
+    box(s, 0.08, 4.5, 0.08, chrome(), fx, 2.25, zF + 1.2);
+    box(s, 0.05, 1, 1.4, glow(fx < CENTER_X ? 0x2fe6ff : 0xff3fa4, 1.2), fx, 4, zF + 0.5);
+  }
+  b.update = (dt) => {
+    for (const tb of tables) tb.rotation.y += dt * 0.35;
   };
   return b;
 }

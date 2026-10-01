@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildCar, type CarDef } from '../world/vehicles';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { buildModel } from '../items/models';
 import type { ItemDef } from '../items/catalog';
@@ -91,6 +92,15 @@ export function gunThumb(def: GunDef): string {
   try {
     thumbs ??= new ThumbRenderer();
     return thumbs.object(`gun:${def.id}`, () => buildGun(def).group, new THREE.Vector3(1, 0.35, 0.12));
+  } catch {
+    return '';
+  }
+}
+
+export function carThumb(def: CarDef, color: number): string {
+  try {
+    thumbs ??= new ThumbRenderer();
+    return thumbs.object(`car:${def.id}:${color}`, () => buildCar(def, color).root, new THREE.Vector3(0.9, 0.45, 0.75));
   } catch {
     return '';
   }

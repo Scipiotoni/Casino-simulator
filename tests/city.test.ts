@@ -66,7 +66,8 @@ describe('the city street', () => {
     const keys = new Set(st.lots.map((l) => JSON.stringify(st.placeOf(l.id))));
     expect(keys.size).toBe(st.lots.length);
     expect(st.lots.length).toBe(STREET_ROWS * st.cols * 2);
-    expect(st.lots.filter((l) => l.kind === 'filler').length).toBe(st.lots.length - 7);
+    expect(st.lots.filter((l) => l.kind === 'filler').length).toBe(st.lots.length - 8);
+    expect(st.get('shop:cars')?.info.style).toBe('dealer');
   });
 
   it('puts houses on Palm Avenue behind their casinos', () => {

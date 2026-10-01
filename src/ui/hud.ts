@@ -16,6 +16,7 @@ import { Minimap } from './minimap';
 import { cosmetic } from '../cosmetics/catalog';
 import { GunBar, openGunShop } from './guns';
 import { CombatHud } from './combatHud';
+import { openDealer } from './cars';
 import { openVault } from './vault';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
@@ -210,6 +211,26 @@ export class Hud {
         rebirthHinted = true;
         g.notify(`You can be reborn once you have ${formatMoney(g.rebirthReq.money)}: open the menu and pick Rebirth.`, 'good');
       }
+    });
+    g.events.on('practice', (item) => {
+      if (this.modals.isOpen) return;
+      // The home slot machine is furniture: give it a real slot machine's rules for the game.
+      const real = item.isGambling ? item : (Object.create(item, {
+        def: { value: { ...item.def, kind: 'slot', minBet: 1, maxBet: 1000, params: { ...(item.def.params ?? {}) } } },
+        level: { value: 1 },
+      }) as PlacedItem);
+      openTableGame({ game: g, modals: this.modals, item: real, practice: true });
+    });
+    g.events.on('dealer', () => {
+      if (!this.modals.isOpen) openDealer(g, this.modals);
+    });
+    g.events.on('wardrobe', () => {
+      if (!this.modals.isOpen) this.modals.openCreator('player');
+    });
+    g.events.on('flash', () => {
+      const f = h('div', { class: 'photo-flash' });
+      this.root.appendChild(f);
+      window.setTimeout(() => f.remove(), 450);
     });
     g.events.on('minigame', (item) => {
       if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });

@@ -39,8 +39,9 @@ export interface Vec2 {
 }
 
 /** Fixed buildings everybody shares (they never move, whoever plays). */
-const SPECIALS: { id: string; slot: SlotRef; name: string; tagline: string }[] = [
-  { id: 'shop:guns', slot: { row: 0, col: 1, side: 0 }, name: 'Bullseye Guns', tagline: 'PISTOLS · SHOTGUNS · RIFLES' },
+const SPECIALS: { id: string; slot: SlotRef; name: string; tagline: string; style: 'gunshop' | 'dealer'; color: number }[] = [
+  { id: 'shop:guns', slot: { row: 0, col: 1, side: 0 }, name: 'Bullseye Guns', tagline: 'PISTOLS · SHOTGUNS · RIFLES', style: 'gunshop', color: 0xff4d4d },
+  { id: 'shop:cars', slot: { row: 2, col: 1, side: 0 }, name: 'Velocity Motors', tagline: 'SUPERCARS · MUSCLE · LIMOS', style: 'dealer', color: 0x2fe6ff },
 ];
 
 /**
@@ -109,7 +110,7 @@ export class Street {
     for (const sp of SPECIALS) {
       const lot: StreetLot = {
         id: sp.id, kind: 'shop', owner: sp.name, order: 0, online: true,
-        info: { look: { name: sp.name, signFont: 'bungee', signColor: 0xff4d4d, wallColor: 0x3b3f46, trimColor: 0xff4d4d }, width: 1, depth: 1, floors: 1, tagline: sp.tagline, style: 'gunshop' },
+        info: { look: { name: sp.name, signFont: 'bungee', signColor: sp.color, wallColor: 0x3b3f46, trimColor: sp.color }, width: 1, depth: 1, floors: 1, tagline: sp.tagline, style: sp.style },
       };
       take(lot, sp.slot);
       out.push(lot);

@@ -17,7 +17,7 @@ export type Expression = 'neutral' | 'happy' | 'excited' | 'sad' | 'angry' | 'su
 export type Pose =
   | 'idle' | 'walk' | 'run' | 'sneak' | 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'cheer' | 'celebrate' | 'dance'
   | 'angry' | 'sad' | 'repair' | 'sweep' | 'deal' | 'bartend' | 'drink' | 'wave' | 'clap' | 'point' | 'handsUp'
-  | 'sing' | 'think' | 'phone' | 'crouch' | 'sleep' | 'ko';
+  | 'sing' | 'think' | 'phone' | 'crouch' | 'sleep' | 'ko' | 'box' | 'drum' | 'strum';
 
 const MATTE = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0 });
 const SHINY = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.6 });
@@ -817,6 +817,9 @@ export class CharacterModel {
   recoil = 0;
   /** Flinch from being hit (decays by itself). */
   flinch = 0;
+  /** A punch being thrown (decays by itself); `jabLeft` picks the arm. */
+  jab = 0;
+  jabLeft = false;
   /** Right hand, for holding props (a gun's +z points where the arm points). */
   readonly hand = new THREE.Group();
 
@@ -1014,6 +1017,30 @@ export class CharacterModel {
         T.armRz = 0.18;
         T.headRx = -0.1 + Math.sin(t * 0.8) * 0.03;
         break;
+      case 'box':
+        // Boxing guard: fists up, bouncing on the toes.
+        T.armLx = -1.35;
+        T.armRx = -1.25;
+        T.armLz = 0.55;
+        T.armRz = -0.55;
+        T.bodyY = Math.abs(Math.sin(t * 6)) * 0.03;
+        T.headRx = 0.12;
+        break;
+      case 'drum':
+        T.armRx = -0.95 + Math.sin(t * 17) * 0.45;
+        T.armLx = -0.95 + Math.sin(t * 17 + Math.PI) * 0.45;
+        T.armLz = 0.35;
+        T.armRz = -0.35;
+        T.headRx = 0.15 + Math.sin(t * 8.5) * 0.12;
+        break;
+      case 'strum':
+        T.armLx = -1.15;
+        T.armLz = 0.65;
+        T.armRx = -0.7 + Math.sin(t * 13) * 0.22;
+        T.armRz = -0.55;
+        T.headRz = Math.sin(t * 4) * 0.12;
+        T.bodyRz = Math.sin(t * 4) * 0.05;
+        break;
       case 'ko':
         // Knocked out flat on the pavement, arms out, seeing stars.
         T.bodyRx = -Math.PI / 2;
@@ -1101,6 +1128,18 @@ export class CharacterModel {
       }
     }
     this.recoil = Math.max(0, this.recoil - dt * 6);
+    if (this.jab > 0) {
+      const T = this.target;
+      if (this.jabLeft) {
+        T.armLx = -1.62;
+        T.armLz = 0.08;
+      } else {
+        T.armRx = -1.62;
+        T.armRz = -0.08;
+      }
+      T.bodyRz = this.jabLeft ? 0.12 : -0.12;
+      this.jab = Math.max(0, this.jab - dt * 4);
+    }
     if (this.flinch > 0) {
       const T = this.target;
       T.bodyRx -= this.flinch * 0.35;

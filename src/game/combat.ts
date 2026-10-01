@@ -11,6 +11,9 @@ export const KO_MAX_LOSS = 250_000;
 export const KO_SECONDS = 5;
 export const PROTECT_SECONDS = 5;
 
+/** No map teleports for this long after you're hurt (no escaping a fight by teleporting). */
+export const TELEPORT_LOCK_SECONDS = 20;
+
 /** Cash a knockout costs you. */
 export function koLoss(cash: number): number {
   return Math.max(0, Math.min(KO_MAX_LOSS, Math.floor(Math.max(0, cash) * KO_SHARE)));
@@ -50,7 +53,7 @@ export class Combat {
   /** Seconds of "just woke up" safety. */
   protect = 0;
   /** Seconds since you were last hurt (health comes back after a while). */
-  private sinceHurt = 99;
+  sinceHurt = 99;
   /** Red flash on screen when you're hit (0..1). */
   flash = 0;
   /** The direction the last hit came from, relative to where you face (radians), for the damage arrow. */
@@ -70,10 +73,15 @@ export class Combat {
 
   constructor(private g: Game) {}
 
+  /** Seconds before you can teleport again (0 = free to go). */
+  get teleportLock(): number {
+    return Math.max(0, TELEPORT_LOCK_SECONDS - this.sinceHurt);
+  }
+
   /** Out on the street, where fights happen. */
   get exposed(): boolean {
     const g = this.g;
-    return g.state === 'playing' && !g.inside && g.player.floor === 0 && !g.player.seat;
+    return g.state === 'playing' && !g.inside && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
   }
 
   update(dt: number): void {
@@ -185,6 +193,7 @@ export class Combat {
 
   /** Forget everything (new game, title screen). */
   reset(): void {
+    this.sinceHurt = 99;
     this.hp = MAX_HP;
     this.ko = 0;
     this.protect = 0;

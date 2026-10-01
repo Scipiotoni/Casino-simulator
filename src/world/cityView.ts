@@ -217,6 +217,8 @@ export class CityView {
   readonly group = new THREE.Group();
   private statics = new THREE.Group();
   private cars: Car[] = [];
+  /** Parked or driven player cars the traffic must stop for (global). */
+  obstacles: { x: number; z: number }[] = [];
   private carGroup = new THREE.Group();
   private litLamps: THREE.InstancedMesh | null = null;
   private heads: { x: number; z: number; yaw: number; axis: Axis }[] = [];
@@ -778,6 +780,11 @@ export class CityView {
         this.onHonk?.(c);
       }
     }
+    for (const ob of this.obstacles) {
+      const ox = c.axis === 'x' ? (ob.x - c.pos) * c.dir : (ob.z - c.pos) * c.dir;
+      const ol = c.axis === 'x' ? Math.abs(ob.z - c.z) : Math.abs(ob.x - c.x);
+      if (ox > 0 && ox < 9 && ol < 2) target = Math.min(target, Math.max(0, (ox - 4.5) * 1.5));
+    }
     c.speed += (target - c.speed) * Math.min(1, dt * (target < c.speed ? 4 : 1.5));
     if (c.speed < 0.05 && target === 0) c.speed = 0;
     c.pos += c.dir * c.speed * dt;
@@ -863,6 +870,18 @@ export class CityView {
   }
 
   /** A bullet hit this car: it stops with its hazard lights on. */
+  /** The traffic cars on the road right now. */
+  get traffic(): readonly Car[] {
+    return this.cars;
+  }
+
+  /** Take a car out of the traffic (stolen!): it stays where it is, the city stops driving it. */
+  releaseCar(c: Car): void {
+    const i = this.cars.indexOf(c);
+    if (i >= 0) this.cars.splice(i, 1);
+    c.hazard.visible = false;
+  }
+
   hitCar(c: Car): void {
     c.shaken = 4;
     c.speed = 0;

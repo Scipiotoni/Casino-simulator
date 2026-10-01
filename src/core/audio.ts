@@ -11,7 +11,8 @@ export type SfxName =
   | 'break' | 'drink' | 'objective' | 'rotate' | 'paint' | 'doorbell' | 'chips' | 'claw' | 'purchase'
   | 'gunshot' | 'gunHeavy' | 'shotgun' | 'smg' | 'laser' | 'paintball' | 'confettiGun' | 'reload' | 'empty' | 'ping' | 'glass'
   | 'carAlarm' | 'honk' | 'balloon' | 'ricochet' | 'keyBeep' | 'keyError' | 'vaultClunk' | 'vaultHiss' | 'vaultWheel' | 'alarm'
-  | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat' | 'siren' | 'whiz' | 'busted';
+  | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat' | 'siren' | 'whiz' | 'busted'
+  | 'thud' | 'drumhit' | 'cymbal' | 'strum' | 'piano' | 'clack' | 'shutter' | 'blip' | 'splash' | 'sizzle';
 
 interface ToneOpts {
   type?: OscillatorType;
@@ -385,6 +386,42 @@ class AudioEngine {
         break;
       case 'empty':
         this.noise(t, 0.025, { type: 'highpass', freq: 4000, gain: 0.2, dest });
+        break;
+      case 'thud':
+        this.tone(95 * p, t, 0.16, { type: 'sine', gain: 0.5, freqEnd: 50, dest });
+        this.noise(t, 0.07, { type: 'lowpass', freq: 900, gain: 0.35, dest });
+        break;
+      case 'drumhit':
+        this.tone(140 * p, t, 0.18, { type: 'sine', gain: 0.5, freqEnd: 55, dest });
+        this.noise(t, 0.09, { type: 'bandpass', freq: 1800 * p, q: 0.7, gain: 0.35, dest });
+        break;
+      case 'cymbal':
+        this.noise(t, 0.9, { type: 'highpass', freq: 6000, gain: 0.22, dest });
+        break;
+      case 'strum':
+        for (let i = 0; i < 5; i++) this.tone([196, 247, 294, 392, 494][i] * p, t + i * 0.018, 0.7, { type: 'sawtooth', gain: 0.03, filter: 1800, dest });
+        break;
+      case 'piano': {
+        const root = [262, 294, 330, 349, 392, 440][Math.floor(Math.random() * 6)] * p;
+        for (const [k, m] of [[0, 1], [1, 1.26], [2, 1.5]] as const) this.bell(root * m, t + k * 0.06, 0.9, 0.06, dest);
+        break;
+      }
+      case 'clack':
+        this.noise(t, 0.04, { type: 'bandpass', freq: 2600 * p, q: 3, gain: 0.5, dest });
+        this.tone(1900 * p, t, 0.04, { type: 'sine', gain: 0.08, dest });
+        break;
+      case 'shutter':
+        this.noise(t, 0.03, { type: 'highpass', freq: 3000, gain: 0.35, dest });
+        this.noise(t + 0.07, 0.04, { type: 'highpass', freq: 2500, gain: 0.3, dest });
+        break;
+      case 'blip':
+        this.tone(880 * p, t, 0.06, { type: 'square', gain: 0.05, freqEnd: 1320 * p, filter: 4000, dest });
+        break;
+      case 'splash':
+        this.noise(t, 0.5, { type: 'lowpass', freq: 1500, freqEnd: 400, gain: 0.3, dest });
+        break;
+      case 'sizzle':
+        this.noise(t, 0.8, { type: 'highpass', freq: 4000, gain: 0.12, dest });
         break;
       case 'siren':
         // Wail up and down.

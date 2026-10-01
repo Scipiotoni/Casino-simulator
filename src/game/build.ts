@@ -8,8 +8,7 @@ import { FLOOR_STYLES } from '../render/textures';
 import { audio } from '../core/audio';
 import { formatMoney } from '../core/math';
 import { floorName } from './game';
-import { WALL_STYLES } from '../world/walls';
-import { WALL_H } from '../world/building';
+import { BUILT_WALL_H, WALL_STYLES } from '../world/walls';
 
 export type Mode =
   | { kind: 'play' }
@@ -411,7 +410,7 @@ export class BuildController {
     let cost = 0;
     let n = 0;
     const st = WALL_STYLES[m.style] ?? WALL_STYLES[0];
-    const h = WALL_H * 0.42;
+    const h = BUILT_WALL_H * 0.42;
     for (const [x, z] of line) {
       let ok: boolean;
       if (m.erase) ok = grid.isWall(x, z);

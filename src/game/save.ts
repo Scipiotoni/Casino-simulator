@@ -80,6 +80,9 @@ export interface SaveData extends CasinoSnapshot {
   house?: import('./house').HouseState | null;
   /** Guns you own (see src/game/guns.ts). */
   guns?: import('./guns').GunState;
+  garage?: import('./driving').GarageState;
+  /** Pretend chips for practice play (home slot machine, your own tables). */
+  playChips?: number;
   /** When this save was written (epoch ms): the newest of the local and cloud copies wins. */
   savedAt?: number;
 }

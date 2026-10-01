@@ -19,6 +19,7 @@ import { Relay } from './relay';
 import { gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, type RemoteTarget } from '../game/combat';
+import { buildCar, carDef } from '../world/vehicles';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -142,6 +143,10 @@ interface Remote {
   seenLoot?: number;
   hpEl: HTMLElement;
   nameEl: HTMLElement;
+  /** The car they're driving (key = model + colour). */
+  carKey: string;
+  car: THREE.Object3D | null;
+  carOpen: boolean;
 }
 
 const tmp = new THREE.Vector3();
@@ -296,7 +301,7 @@ export class Net {
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, shots: 0, held: null, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl,
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false,
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -310,6 +315,7 @@ export class Net {
       const wl = Math.max(0, Math.min(5, Math.round(num(pr.wl))));
       r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}${wl ? ` ${'★'.repeat(wl)}` : ''}`;
       this.readCombat(r, pr);
+      this.readCar(r, pr);
       r.tx = num(pr.x);
       r.tz = num(pr.z);
       r.yaw = num(pr.yaw);
@@ -350,6 +356,7 @@ export class Net {
     for (const [k, r] of this.remotes) {
       if (seen.has(k)) continue;
       r.fx.dispose();
+      r.car?.removeFromParent();
       r.model.root.removeFromParent();
       r.model.dispose();
       r.label.remove();
@@ -391,6 +398,24 @@ export class Net {
       r.seenLoot = loot;
       g.combat.loot(Math.round(amount), r.name);
     }
+  }
+
+  /** Show the car another player is driving under them. */
+  private readCar(r: Remote, pr: Record<string, unknown>): void {
+    const c = pr.car as { k?: unknown; c?: unknown } | null | undefined;
+    const def = c && typeof c.k === 'string' ? carDef(c.k) : null;
+    const key = c ? `${def?.id ?? 't'}|${typeof c.c === 'number' ? c.c : 0}` : '';
+    if (key === r.carKey) return;
+    r.carKey = key;
+    r.car?.removeFromParent();
+    r.car = null;
+    r.carOpen = false;
+    if (!c) return;
+    const color = typeof c.c === 'number' && Number.isFinite(c.c) ? Math.max(0, Math.min(0xffffff, c.c)) : 0x9aa0ab;
+    const m = buildCar(def ?? carDef('hatch')!, def ? color : 0x9aa0ab);
+    r.car = m.root;
+    r.carOpen = m.open;
+    this.game.renderer.scene.add(m.root);
   }
 
   /** Other players you could shoot right now: out on the street, awake, not just woken up. */
@@ -690,6 +715,7 @@ export class Net {
       ko: g.combat.ko > 0 ? 1 : 0,
       pr: g.combat.protect > 0 ? 1 : 0,
       wl: g.street.police.stars,
+      car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color } : null,
       hits: this.hits,
       loot: this.loot,
       look: p.appearance,
@@ -830,6 +856,7 @@ export class Net {
       }
       r.visible = visible;
       r.model.root.visible = visible;
+      if (r.car) r.car.visible = visible;
       r.label.hidden = !visible;
       if (!visible) {
         r.fx.update(0, false);
@@ -842,7 +869,14 @@ export class Net {
       m.root.position.set(r.x, outside ? g.streetDrop : 0, r.z);
       r.fx.update(dt, true);
       m.root.rotation.y = dampAngle(m.root.rotation.y, r.yaw + (known ? g.street.rotOf(lotId) : 0), 12, dt);
+      if (r.car) {
+        r.car.visible = true;
+        r.car.position.set(r.x, m.root.position.y, r.z);
+        r.car.rotation.y = m.root.rotation.y;
+        m.root.visible = r.carOpen;
+      }
       if (r.ko) m.setPose('ko');
+      else if (r.car) m.setPose('sit');
       else if (r.moving) {
         m.moveSpeed = 2.6;
         m.setPose('walk');

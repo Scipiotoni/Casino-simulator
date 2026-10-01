@@ -46,6 +46,8 @@ import {
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
 import { Combat } from './combat';
+import { Driving, type GarageState, emptyGarage, sanitizeGarage } from './driving';
+import { type Activity, activityFor, PRACTICE_LABEL } from './activities';
 
 export type { SaveData } from './save';
 
@@ -110,6 +112,20 @@ export interface GameEvents {
   wallLine: void;
   /** Your health, a knockout or a hit you landed on someone. */
   combat: void;
+  /** Practice chips changed. */
+  chips: void;
+  /** Practice play (pretend chips) at one of your own games, or the home slot machine. */
+  practice: PlacedItem;
+  /** Walked up to the wardrobe: open the character creator. */
+  wardrobe: void;
+  /** Camera flash (photo booth). */
+  flash: void;
+  /** Got into or out of a car. */
+  driving: void;
+  /** At the Velocity Motors counter. */
+  dealer: void;
+  /** You started or stopped doing something (sitting, punching the bag…). */
+  activity: void;
 }
 
 export interface Settings {
@@ -125,6 +141,8 @@ export interface Settings {
 }
 
 const DAY_SECONDS = 300;
+/** Practice chips you start with (and can refill to for free). */
+export const START_CHIPS = 10_000;
 const DAY_START = 10 * 60;
 const START_MONEY = 3000;
 const JACKPOT_SEED = 5000;
@@ -276,9 +294,14 @@ export class Game implements World, ItemHost {
   private doorCooldown = 0;
   /** Guns you own and the one in your hand. */
   guns: GunState = emptyGuns();
+  /** Pretend chips for practice play. Never real money. */
+  playChips = START_CHIPS;
   readonly gunplay: GunPlay;
   /** Health, knockouts and hit markers out on the street. */
   readonly combat: Combat;
+  /** Cars: driving, stealing, your garage. */
+  readonly drive: Driving;
+  garage: GarageState = emptyGarage();
 
   constructor(container: HTMLElement, settings: Settings) {
     this.settings = settings;
@@ -297,6 +320,8 @@ export class Game implements World, ItemHost {
     this.build = new BuildController(this);
     this.gunplay = new GunPlay(this);
     this.combat = new Combat(this);
+    this.drive = new Driving(this);
+    this.street.city.group.add(this.drive.group);
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : 14;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
@@ -1807,6 +1832,7 @@ export class Game implements World, ItemHost {
       reviewAvg: this.reviewAverage,
       gardenItems: this.gardenSite ? this.items.items.length : Math.max(0, ...(this.hotel?.buildings.filter((b) => b.kind === 'garden').map((b) => b.snap.items.length) ?? [0])),
       gunsOwned: this.guns.owned.length,
+      carsOwned: this.garage.owned.length,
       houseOwned: !!this.house,
       vaultTier: this.house?.tier ?? 0,
       vaultMoney: this.house?.vault ?? 0,
@@ -2457,9 +2483,11 @@ export class Game implements World, ItemHost {
     this.requestSave();
   }
 
-  setCameraMode(mode: CamMode): void {
+  setCameraMode(mode: CamMode, remember = true): void {
+    // Behind the wheel the camera stays behind the car.
+    if (this.drive?.driving && remember) return;
     this.cam.setMode(mode);
-    this.settings.camera = mode;
+    if (remember) this.settings.camera = mode;
     this.events.emit('camera', mode);
   }
 
@@ -2498,6 +2526,17 @@ export class Game implements World, ItemHost {
    */
   teleportTo(gx: number, gz: number): boolean {
     if (this.state !== 'playing' || this.photoMode) return false;
+    if (this.drive.driving) {
+      audio.play('error');
+      this.notify('Get out of the car first.', 'bad');
+      return false;
+    }
+    const lock = this.combat.teleportLock;
+    if (lock > 0) {
+      audio.play('error');
+      this.notify(`You were just hurt: no teleporting for ${Math.ceil(lock)} more seconds.`, 'bad');
+      return false;
+    }
     const w = this.street.globalToWorld(gx, gz);
     const tx = Math.floor(w.x);
     const tz = Math.floor(w.z);
@@ -2723,6 +2762,34 @@ export class Game implements World, ItemHost {
     // Context action
     let target: typeof this.interactTarget = null;
     let bestD = Infinity;
+    const car = this.drive.driving;
+    if (car) {
+      const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
+      this.interactTarget = { kind: `carout${car.uid}`, label: 'Get out · W/S drive · A/D steer · Shift boost · C horn', hold: false, anchor, act: () => this.drive.exit() };
+      this.handleTarget(dt, this.interactTarget);
+      return;
+    }
+    if (!this.inside && this.player.floor === 0 && this.combat.ko <= 0) {
+      const near = this.drive.nearest();
+      if (near && near.d < 1.6) {
+        const v = near.v;
+        const tc = near.traffic;
+        const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
+        const label = v ? (v.owned ? `🚗 Drive your ${v.name}` : '🚗 Get in') : '🚗 Steal this car';
+        bestD = near.d;
+        target = { kind: `car${v ? v.uid : 't'}`, label, hold: false, anchor, act: () => (v ? this.drive.enter(v) : tc && this.drive.steal(tc)) };
+      }
+    }
+    const act = this.activity;
+    if (act) {
+      const ac = act.act.action;
+      const anchor = () => new THREE.Vector3(this.player.x, this.player.model.height + 1.1, this.player.z);
+      this.interactTarget = ac
+        ? { kind: `actdo${act.item.uid}`, label: `${ac.label} · move to stop`, hold: false, anchor, act: () => this.activityAction() }
+        : { kind: `actstop${act.item.uid}`, label: 'Get up', hold: false, anchor, act: () => this.stopActivity() };
+      this.handleTarget(dt, this.interactTarget);
+      return;
+    }
     if (!this.visit) {
       for (const it of this.items.items) {
         if (!it.dirty || it.floor !== pf || it.repairClaim !== null) continue;
@@ -2845,6 +2912,27 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    // Things to do: sit, nap, punch the bag, play the drums… and practice play at your own games.
+    if (!target && !this.tableFocus) {
+      let bestUse = 1.25;
+      for (const it of this.items.items) {
+        if (it.floor !== pf || it.broken) continue;
+        const own = !this.visit;
+        const a = activityFor((it.def.params?.kit as string | undefined) ?? it.def.id);
+        const practice = !a && own && it.isGambling;
+        if (!a && !practice) continue;
+        if (a?.game && !own) continue;
+        const bb = it.bounds;
+        const d = distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1);
+        if (d >= bestUse) continue;
+        bestUse = d;
+        target = {
+          kind: `use${it.uid}`, label: a ? `${a.label}` : `🎲 ${PRACTICE_LABEL}`, hold: false,
+          anchor: () => new THREE.Vector3(it.cx, Math.min(2.4, it.model.height) + 0.6, it.cz),
+          act: () => (a ? this.startActivity(it, a) : this.events.emit('practice', it)),
+        };
+      }
+    }
     // The elevator
     const lp = this.gridAt(pf).portal;
     if (!target && this.floors > 1 && Math.hypot(p.x - (lp[0] + 0.5), p.z - (lp[1] + 0.5)) < 1.2) {
@@ -2864,10 +2952,11 @@ export class Game implements World, ItemHost {
         if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2) {
           const a = this.street.toActive(lot.id, CENTER_X, FACADE_Z + 0.8);
           if (lot.kind === 'shop') {
+            const cars = lot.info.style === 'dealer';
             target = {
-              kind: `shop${lot.id}`, label: `🔫 Shop at ${lot.info.look.name}`, hold: false,
+              kind: `shop${lot.id}`, label: `${cars ? '🚗' : '🔫'} Shop at ${lot.info.look.name}`, hold: false,
               anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
-              act: () => this.events.emit('gunshop', undefined),
+              act: () => (cars ? this.events.emit('dealer', undefined) : this.events.emit('gunshop', undefined)),
             };
           } else {
             const block = this.entryBlock(lot);
@@ -2883,8 +2972,13 @@ export class Game implements World, ItemHost {
       }
     }
     if (this.photoMode) target = null;
-    const key = target ? `${target.kind}:${target.label}:${bestD < Infinity}` : '';
     this.interactTarget = target;
+    this.handleTarget(dt, target);
+  }
+
+  /** Show the prompt for the nearest thing to do and run it on Space (or hold Space). */
+  private handleTarget(dt: number, target: typeof this.interactTarget): void {
+    const key = target ? `${target.kind}:${target.label}` : '';
     if (key !== this.lastInteractKey) {
       this.lastInteractKey = key;
       this.holdT = 0;
@@ -2924,7 +3018,7 @@ export class Game implements World, ItemHost {
   /** Walking into a doorway on the street takes you inside that casino. */
   private checkDoors(dt: number): void {
     this.doorCooldown = Math.max(0, this.doorCooldown - dt);
-    if (this.doorCooldown > 0 || this.player.floor !== 0) return;
+    if (this.doorCooldown > 0 || this.player.floor !== 0 || this.drive.driving) return;
     const tx = Math.floor(this.player.x);
     const tz = Math.floor(this.player.z);
     const lot = this.street.doorAt(tx, tz);
@@ -2983,6 +3077,192 @@ export class Game implements World, ItemHost {
     this.player.unstick(g);
     this.cam.distTarget = f.dist;
     this.cam.setMode(f.mode);
+  }
+
+  /** What you're doing right now (sitting on the sofa, hitting the bag…). */
+  activity: { item: PlacedItem; act: Activity; t: number; amb: number; count: number; poseT: number; exit: { x: number; z: number }; swing: number; swingV: number } | null = null;
+
+  /** Go and do the thing this item is for. */
+  startActivity(item: PlacedItem, act: Activity): void {
+    if (act.game) {
+      this.events.emit('practice', item);
+      return;
+    }
+    if (item.def.params?.kit === 'wardrobe') this.events.emit('wardrobe', undefined);
+    this.stopActivity(false);
+    this.standUp();
+    if (this.build.active) this.build.cancel();
+    const yaw = (item.rot * Math.PI) / 2;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    const b = item.bounds;
+    const half = Math.abs(fx) * ((b.x1 - b.x0) / 2) + Math.abs(fz) * ((b.z1 - b.z0) / 2);
+    let x = item.cx;
+    let z = item.cz;
+    let face = yaw;
+    const sit = act.pose === 'sit' || act.pose === 'sitPlay' || act.pose === 'drink';
+    const front = { x: item.cx + fx * (half + 0.55), z: item.cz + fz * (half + 0.55) };
+    switch (act.spot) {
+      case 'sit':
+        x -= fx * 0.12;
+        z -= fz * 0.12;
+        break;
+      case 'lie':
+        // The body lies back from the feet: start a little forward so it ends up centred.
+        x += fx * 0.55;
+        z += fz * 0.55;
+        break;
+      case 'edge':
+        x += fx * (half + 0.12);
+        z += fz * (half + 0.12);
+        face = yaw + Math.PI;
+        break;
+      case 'front':
+        x = front.x;
+        z = front.z;
+        face = yaw + Math.PI;
+        break;
+      case 'on':
+        break;
+    }
+    this.select(null);
+    this.player.seat = { x, z, yaw: face, sit, height: act.seatY ?? (act.spot === 'lie' ? 0.5 : 0) };
+    this.player.playEmote(act.pose, 999);
+    this.activity = { item, act, t: 0, amb: 0, count: 0, poseT: 0, exit: front, swing: 0, swingV: 0 };
+    if (act.lines?.length) this.floaters.bubble(() => this.player.model.root.position.clone().setY(this.player.model.height + 0.9), act.lines[Math.floor(Math.random() * act.lines.length)]);
+    audio.play('pop', { volume: 0.5 });
+    this.events.emit('activity', undefined);
+  }
+
+  /** Get up (or step off) and carry on. */
+  stopActivity(emit = true): void {
+    const a = this.activity;
+    if (!a) return;
+    this.activity = null;
+    a.item.model.root.rotation.x = 0;
+    this.player.seat = null;
+    this.player.emote = null;
+    const g = this.gridAt(this.player.floor);
+    const tx = Math.floor(a.exit.x);
+    const tz = Math.floor(a.exit.z);
+    const near = g.isWalkable(tx, tz) ? [tx, tz] : g.nearestWalkable(tx, tz);
+    if (near) {
+      this.player.x = near[0] === tx && near[1] === tz ? a.exit.x : near[0] + 0.5;
+      this.player.z = near[0] === tx && near[1] === tz ? a.exit.z : near[1] + 0.5;
+    }
+    this.player.unstick(g);
+    this.player.halt();
+    if (emit) this.events.emit('activity', undefined);
+  }
+
+  /** Space while you're at it: punch, strum, take a shot… */
+  private activityAction(): void {
+    const a = this.activity;
+    if (!a?.act.action) {
+      this.stopActivity();
+      return;
+    }
+    const ac = a.act.action;
+    const p = this.player;
+    const head = new THREE.Vector3(p.x, p.model.height + 0.6, p.z);
+    const it = a.item;
+    const at = new THREE.Vector3(it.cx, Math.min(1.6, it.model.height * 0.8), it.cz);
+    if (ac.sfx) audio.play(ac.sfx, { pitch: 0.92 + Math.random() * 0.16 });
+    if (ac.pose) a.poseT = 1.1;
+    a.count += ac.counter === 'points' ? 50 + Math.floor(Math.random() * 950) : 1;
+    switch (ac.effect) {
+      case 'punch':
+        p.model.jab = 1;
+        p.model.jabLeft = !p.model.jabLeft;
+        a.swingV -= 2.6 + Math.random();
+        this.effects.sparkle(at.x, 1.2, at.z, 4, 0xffffff, 0.3);
+        this.cam.shake(0.03);
+        break;
+      case 'sparkle':
+        this.effects.sparkle(at.x, at.y, at.z, 12, 0xffe08a, 0.6);
+        break;
+      case 'smoke':
+        this.effects.smoke(at.x, at.y + 0.2, at.z, 3);
+        break;
+      case 'confetti':
+        this.effects.confetti(head.x, head.y, head.z, 40, 0.6);
+        break;
+      case 'bubbles':
+        this.effects.sparkle(at.x, at.y, at.z, 16, 0xbfe9ff, 0.9);
+        break;
+      case 'flash':
+        this.effects.sparkle(at.x, 1.4, at.z, 30, 0xffffff, 1.2);
+        this.events.emit('flash', undefined);
+        break;
+      case 'notes':
+        this.floaters.text(head, ['♪', '♫', '♬'][Math.floor(Math.random() * 3)], 'good', 1.2, 1.2);
+        break;
+      case 'hearts':
+        this.floaters.text(head, '❤', 'bad', 1.2, 1.2);
+        break;
+    }
+    if (ac.counter) this.floaters.text(head.clone().setY(head.y + 0.3), `${a.count.toLocaleString()} ${ac.counter}`, 'good', 1, 0.6);
+    if (ac.lines?.length && Math.random() < 0.6) this.floaters.bubble(() => this.player.model.root.position.clone().setY(this.player.model.height + 0.9), ac.lines[Math.floor(Math.random() * ac.lines.length)]);
+    if (ac.counter === 'punches' && a.count % 25 === 0) {
+      audio.play('objective');
+      this.notify(`${a.count} punches! You're a machine.`, 'good');
+    }
+    if (ac.counter === 'drinks') this.player.model.tipsy = Math.min(1, this.player.model.tipsy + 0.2);
+  }
+
+  private updateActivity(dt: number): void {
+    const a = this.activity;
+    if (!a) return;
+    // The thing was sold or moved away: stop.
+    if (!this.items.items.includes(a.item) || a.item.floor !== this.player.floor) {
+      this.stopActivity();
+      return;
+    }
+    a.t += dt;
+    a.poseT = Math.max(0, a.poseT - dt);
+    const pose = a.poseT > 0 && a.act.action?.pose ? a.act.action.pose : a.act.pose;
+    this.player.playEmote(pose, 999);
+    if (a.act.pose === 'run') this.player.model.moveSpeed = 2.4;
+    if (a.act.ambient) {
+      a.amb -= dt;
+      if (a.amb <= 0) {
+        a.amb = a.act.ambient.every * (0.8 + Math.random() * 0.4);
+        audio.play(a.act.ambient.sfx, { volume: 0.5, pitch: 0.9 + Math.random() * 0.2 });
+      }
+    }
+    // The punching bag swings back on its chain.
+    if (a.swing || a.swingV) {
+      a.swingV += (-a.swing * 60 - a.swingV * 4) * dt;
+      a.swing += a.swingV * dt;
+      a.swing = clamp(a.swing, -0.35, 0.35);
+      a.item.model.root.rotation.x = a.swing;
+      if (Math.abs(a.swing) < 0.001 && Math.abs(a.swingV) < 0.01) a.swing = a.swingV = 0;
+    }
+    if (a.act.pose === 'sleep' && Math.random() < dt * 0.6) this.floaters.text(new THREE.Vector3(this.player.x, 1.2, this.player.z), 'Z', 'good', 1.6, 1);
+    if (a.act.once && a.t >= a.act.once) this.stopActivity();
+  }
+
+  /** Practice play: put pretend chips down. */
+  chipBet(amount: number): boolean {
+    if (amount <= 0 || this.playChips < amount) return false;
+    this.playChips -= amount;
+    this.events.emit('chips', undefined);
+    return true;
+  }
+
+  /** Practice play: a round is over (nothing real is won or lost). */
+  chipSettle(bet: number, payout: number, item: PlacedItem): void {
+    this.playChips += payout;
+    const net = payout - bet;
+    if (Math.abs(net) >= 1) this.floaters.text(new THREE.Vector3(item.cx, item.model.height + 0.3, item.cz), `${net >= 0 ? '+' : '−'}${Math.abs(Math.round(net)).toLocaleString()} chips`, net >= 0 ? 'good' : 'bad', 1.4);
+    this.events.emit('chips', undefined);
+    this.requestSave();
+  }
+
+  /** Free top-up of practice chips. */
+  refillChips(): void {
+    this.playChips = Math.max(this.playChips, START_CHIPS);
+    this.events.emit('chips', undefined);
   }
 
   /** Money you bet at someone else's table (returns false if you can't cover it). */
@@ -3265,6 +3545,9 @@ export class Game implements World, ItemHost {
       }
     }
 
+    // Driving (before the player, who sits in the car)
+    if (playing && sim > 0) this.drive.update(sim);
+
     // Player movement
     const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0;
     this.transitionT = Math.max(0, this.transitionT - dt);
@@ -3282,6 +3565,13 @@ export class Game implements World, ItemHost {
       const sprint = input.down('ShiftLeft') || input.down('ShiftRight') || Math.hypot(input.joy.x, input.joy.y) > 0.92;
       // The city is big: you stride out faster on the sidewalks.
       this.player.speedMult = this.inside ? 1 : 1.5;
+      // Behind the wheel the keys drive the car, not you.
+      if (this.drive.driving) ix = iz = 0;
+      // Walking off gets you up from whatever you were doing.
+      if (this.activity) {
+        if (Math.hypot(ix, iz) > 0.1) this.stopActivity();
+        else ix = iz = 0;
+      }
       // Aiming down the sights slows you to a careful walk.
       if (first && this.gunplay.aiming) {
         ix *= 0.55;
@@ -3292,16 +3582,18 @@ export class Game implements World, ItemHost {
       this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third, first && !this.player.seat && this.combat.ko <= 0 ? this.cam.lookYaw : null);
     }
     if (playing) this.combat.update(dt);
+    if (playing) this.updateActivity(dt);
     if (playing && sim > 0) this.updatePolice(sim);
     if (playing) this.gunplay.update(dt);
     if (this.cam.mode !== 'first') this.cam.lookYaw = this.player.yaw;
     this.cam.followYaw = this.player.yaw;
     // In first person you don't see your own head (you'd be looking out through it).
-    const ownBody = playing && (!first || !!this.player.seat);
-    this.player.model.root.visible = ownBody || (first && this.combat.ko > 0);
+    const ownBody = playing && (!first || !!this.tableFocus);
+    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving && !this.drive.driving.open);
     if (first) {
       const ko = this.combat.ko > 0;
-      const eyeY = ko ? 0.35 : this.player.model.height + 0.04;
+      const st = this.player.seat;
+      const eyeY = ko ? 0.35 : st && this.activity?.act.spot === 'lie' ? st.height + 0.35 : st?.sit ? st.height + 0.8 : this.player.model.height + 0.04;
       this.cam.eye.set(this.player.x, eyeY, this.player.z);
       this.cam.bobSpeed = this.player.seat || ko ? 0 : this.player.speed;
       if (ko) this.player.model.root.visible = false;
@@ -3492,6 +3784,8 @@ export class Game implements World, ItemHost {
         ...live,
         house: this.houseSave(),
         guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
+        playChips: Math.round(this.playChips),
+        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
         day: this.day,
         dayMinutes: this.dayMinutes,
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
@@ -3518,6 +3812,8 @@ export class Game implements World, ItemHost {
         hotel: this.hotelSave(),
         house: this.houseSave(),
         guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
+        playChips: Math.round(this.playChips),
+        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
         rebirths: this.rebirths,
         savedAt: Date.now(),
       };
@@ -3555,6 +3851,8 @@ export class Game implements World, ItemHost {
       hotel: this.hotelSave(),
       house: this.houseSave(),
       guns: { owned: [...this.guns.owned], equipped: this.guns.equipped },
+        playChips: Math.round(this.playChips),
+        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
       rebirths: this.rebirths,
       savedAt: Date.now(),
     };
@@ -3588,6 +3886,9 @@ export class Game implements World, ItemHost {
     this.hotel = sanitizeHotel(s.hotel, s.look, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
     this.house = sanitizeHouse(s.house, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
     this.guns = sanitizeGuns(s.guns);
+    this.garage = sanitizeGarage(s.garage);
+    this.drive.reset();
+    this.playChips = typeof s.playChips === 'number' && Number.isFinite(s.playChips) ? Math.max(0, Math.min(1e12, s.playChips)) : START_CHIPS;
     this.gunplay.reset();
     this.combat.reset();
     this.street.police.reset();

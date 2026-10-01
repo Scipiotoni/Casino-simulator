@@ -11,6 +11,8 @@ export interface GameCtx {
   game: Game;
   modals: Modals;
   item: PlacedItem;
+  /** Practice play with pretend chips: no real money changes hands. */
+  practice?: boolean;
 }
 
 export const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
@@ -41,11 +43,28 @@ export class Session {
 
   constructor(readonly ctx: GameCtx) {
     this.seat = Math.max(0, ctx.game.sitAt(ctx.item));
-    this.head = h('div', { class: 'tg-head' },
-      h('span', { class: 'tg-where', text: `${ctx.game.hereName} · min ${formatMoney(this.min)} · no max bet` }),
-      h('span', {}, 'Bank ', this.bankEl, ' ', this.netEl),
-    );
-    this.offMoney = ctx.game.events.on('money', () => this.refresh());
+    const refill = h('button', {
+      class: 'btn small', text: 'Refill chips', title: 'Practice chips are free',
+      onClick: () => {
+        ctx.game.refillChips();
+        audio.play('chips');
+      },
+    });
+    this.head = ctx.practice
+      ? h('div', { class: 'tg-head practice' },
+        h('span', { class: 'tg-where', text: '🎲 Practice play: pretend chips, no real money' }),
+        h('span', {}, 'Chips ', this.bankEl, ' ', this.netEl, ' ', refill),
+      )
+      : h('div', { class: 'tg-head' },
+        h('span', { class: 'tg-where', text: `${ctx.game.hereName} · min ${formatMoney(this.min)} · no max bet` }),
+        h('span', {}, 'Bank ', this.bankEl, ' ', this.netEl),
+      );
+    const off1 = ctx.game.events.on('money', () => this.refresh());
+    const off2 = ctx.game.events.on('chips', () => this.refresh());
+    this.offMoney = () => {
+      off1();
+      off2();
+    };
     this.refresh();
   }
 
@@ -59,21 +78,22 @@ export class Session {
   }
 
   get bank(): number {
-    return this.ctx.game.money;
+    return this.ctx.practice ? this.ctx.game.playChips : this.ctx.game.money;
   }
 
   refresh(): void {
-    this.bankEl.textContent = formatMoney(Math.floor(this.ctx.game.money));
-    this.netEl.textContent = this.net ? `(session ${this.net >= 0 ? '+' : ''}${formatMoney(this.net)})` : '';
+    this.bankEl.textContent = this.ctx.practice ? `🪙 ${Math.floor(this.bank).toLocaleString()}` : formatMoney(Math.floor(this.ctx.game.money));
+    const amt = this.ctx.practice ? `${Math.abs(this.net).toLocaleString()} chips` : formatMoney(Math.abs(this.net));
+    this.netEl.textContent = this.net ? `(session ${this.net >= 0 ? '+' : '−'}${amt})` : '';
     this.netEl.className = `tg-net ${this.net > 0 ? 'pos' : this.net < 0 ? 'neg' : ''}`;
   }
 
   /** Put chips down. Returns false (and complains) if you can't cover it. */
   bet(amount: number): boolean {
     if (this.closed) return false;
-    if (!this.ctx.game.visitorBet(amount)) {
+    if (this.ctx.practice ? !this.ctx.game.chipBet(amount) : !this.ctx.game.visitorBet(amount)) {
       audio.play('error');
-      this.ctx.game.notify('Not enough cash in the bank for that bet!', 'bad');
+      this.ctx.game.notify(this.ctx.practice ? 'Out of practice chips: press Refill chips.' : 'Not enough cash in the bank for that bet!', 'bad');
       return false;
     }
     audio.play('chips');
@@ -103,11 +123,12 @@ export class Session {
     const oc: Outcome = { bet: stake, payout, label: '', tier: payout > stake ? 'win' : payout === stake ? 'push' : 'lose', visual: { kind: 'none' } };
     this.ctx.item.model.event({ type: 'tableResult', seats: [this.seat], outcomes: new Map([[this.seat, oc]]), shared: { kind: 'none' } });
     this.roundStake = 0;
-    this.ctx.game.visitorSettle(stake, payout, this.ctx.item);
+    if (this.ctx.practice) this.ctx.game.chipSettle(stake, payout, this.ctx.item);
+    else this.ctx.game.visitorSettle(stake, payout, this.ctx.item);
     const d = payout - stake;
     if (d > 0) audio.play(d >= stake * 5 ? 'bigwin' : 'win');
     this.refresh();
-    if (this.ctx.game.checkWinnerLimit()) {
+    if (!this.ctx.practice && this.ctx.game.checkWinnerLimit()) {
       this.closed = true;
       this.ctx.modals.closeAll();
     }
