@@ -224,7 +224,7 @@ export class GunPlay {
     const near = !g.street.isOutdoors(g.player.x + fwd.x * 0.75, g.player.z + fwd.z * 0.75) ? 1 : 0;
     const k = this.adsK;
     const sightY = -0.03 - vm.muzzle.y * vm.scale;
-    const hip = { x: 0.085, y: -0.075, z: -0.24 };
+    const hip = { x: 0.072, y: -0.075, z: -0.24 };
     const ads = { x: -vm.muzzle.x * vm.scale, y: sightY, z: -0.25 };
     const x = hip.x + (ads.x - hip.x) * k + this.swayX * 0.5 + Math.cos(this.bobT) * 0.006 * bob;
     const y = hip.y + (ads.y - hip.y) * k + this.swayY * 0.5 - Math.abs(Math.sin(this.bobT)) * 0.007 * bob - reload * 0.06 - near * 0.05;

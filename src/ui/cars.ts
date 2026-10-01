@@ -3,8 +3,10 @@ import type { Modals } from './modals';
 import { h, clear } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
-import { CARS } from '../world/vehicles';
+import { CARS, tunedSpecs } from '../world/vehicles';
 import { carThumb } from './preview';
+import { modsOf } from '../game/driving';
+import { modsSummary, openCustomize } from './carGarage';
 
 /**
  * Velocity Motors: buy cars (with your casino cash), pick a colour, and have any car you
@@ -24,10 +26,11 @@ export function openDealer(game: Game, modals: Modals, mine = false): void {
       const owned = g.garage.owned.includes(d.id);
       if (mine && !owned) continue;
       const locked = !owned && g.homeLevel < d.unlock;
-      const color = pick[d.id] ?? g.garage.colors[d.id] ?? d.colors[0];
-      const img = h('img', { class: 'car-thumb', src: carThumb(d, color), alt: '' }) as HTMLImageElement;
+      const mods = owned ? modsOf(g.garage, d.id) : undefined;
+      const color = pick[d.id] ?? mods?.color ?? d.colors[0];
+      const img = h('img', { class: 'car-thumb', src: carThumb(d, color, mods), alt: '' }) as HTMLImageElement;
       const swatches = h('div', { class: 'car-colors' });
-      if (d.colors.length > 1) {
+      if (d.colors.length > 1 && !owned) {
         for (const c of d.colors) {
           swatches.appendChild(h('button', {
             class: `car-sw${c === color ? ' on' : ''}`, style: `background:#${c.toString(16).padStart(6, '0')}`, 'aria-label': 'Colour',
@@ -43,15 +46,19 @@ export function openDealer(game: Game, modals: Modals, mine = false): void {
           }));
         }
       }
-      const stats = `Top speed ${Math.round(d.top * 3.6)} km/h · 0–100 in ${(27.8 / d.accel).toFixed(1)} s`;
+      const sp = tunedSpecs(d, mods ?? null);
+      const stats = `Top speed ${Math.round(sp.top * 3.6)} km/h · 0–100 in ${(27.8 / sp.accel).toFixed(1)} s`;
       grid.appendChild(h('div', { class: `car-card${owned ? ' owned' : ''}${locked ? ' locked' : ''}` },
         img,
         h('div', { class: 'car-name', text: d.name }),
         h('div', { class: 'muted small', text: d.blurb }),
         h('div', { class: 'car-stats', text: stats }),
         swatches,
+        owned && mods && modsSummary(mods) ? h('div', { class: 'car-stats pos', text: modsSummary(mods) }) : null,
         owned
-          ? h('button', { class: 'btn small gold', text: '🚗 Bring it here', onClick: () => { if (g.drive.bring(d.id)) modals.closeAll(); } })
+          ? h('div', { class: 'btn-row' },
+            h('button', { class: 'btn small gold', text: '🚗 Bring it here', onClick: () => { if (g.drive.bring(d.id)) modals.closeAll(); } }),
+            h('button', { class: 'btn small', text: '🔧 Customize', onClick: () => { modals.close(); openCustomize(g, modals, d.id); } }))
           : h('button', {
             class: 'btn small gold', disabled: locked,
             html: locked ? `Casino level ${d.unlock}` : `Buy <b>${formatMoney(d.price)}</b>`,

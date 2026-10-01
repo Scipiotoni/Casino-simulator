@@ -20,7 +20,7 @@ import { Relay } from './relay';
 import { gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, type RemoteTarget } from '../game/combat';
-import { buildCar, carDef } from '../world/vehicles';
+import { buildCar, carDef, sanitizeMods } from '../world/vehicles';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -443,9 +443,9 @@ export class Net {
 
   /** Show the car another player is driving under them. */
   private readCar(r: Remote, pr: Record<string, unknown>): void {
-    const c = pr.car as { k?: unknown; c?: unknown } | null | undefined;
+    const c = pr.car as { k?: unknown; c?: unknown; m?: unknown } | null | undefined;
     const def = c && typeof c.k === 'string' ? carDef(c.k) : null;
-    const key = c ? `${def?.id ?? 't'}|${typeof c.c === 'number' ? c.c : 0}` : '';
+    const key = c ? `${def?.id ?? 't'}|${typeof c.c === 'number' ? c.c : 0}|${JSON.stringify(c.m ?? null).slice(0, 400)}` : '';
     if (key === r.carKey) return;
     r.carKey = key;
     r.car?.removeFromParent();
@@ -453,7 +453,7 @@ export class Net {
     r.carOpen = false;
     if (!c) return;
     const color = typeof c.c === 'number' && Number.isFinite(c.c) ? Math.max(0, Math.min(0xffffff, c.c)) : 0x9aa0ab;
-    const m = buildCar(def ?? carDef('hatch')!, def ? color : 0x9aa0ab);
+    const m = def ? buildCar(def, color, c.m ? { ...sanitizeMods(def, c.m), color } : undefined) : buildCar(carDef('hatch')!, 0x9aa0ab);
     r.car = m.root;
     r.carOpen = m.open;
     this.game.renderer.scene.add(m.root);
@@ -757,7 +757,7 @@ export class Net {
       ko: g.combat.ko > 0 ? 1 : 0,
       pr: g.combat.protect > 0 ? 1 : 0,
       wl: g.street.police.stars,
-      car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color } : null,
+      car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color, m: g.drive.driving.mods ? { ...g.drive.driving.mods, engine: 0, turbo: 0, tires: 0, nitro: 0 } : undefined } : null,
       chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
       loot: this.loot,

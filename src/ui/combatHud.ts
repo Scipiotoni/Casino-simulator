@@ -123,11 +123,12 @@ export class CombatHud {
     this.scope.hidden = !(fp && gp.scoped);
     // Speedometer behind the wheel
     const car = playing ? g.drive.driving : null;
-    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}` : '';
+    const nitro = car?.mods?.nitro ? Math.round(g.drive.nitro * 20) : -1;
+    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}|${nitro}` : '';
     if (skey !== this.speedoKey) {
       this.speedoKey = skey;
       this.speedo.hidden = !car;
-      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>`;
+      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
     }
     // Desktop first person with the mouse free: invite a click.
     this.lockHint.hidden = !(fp && !g.input.isTouch && !g.input.locked && !g.input.lockFailed && !g.modalOpen && !g.build.active && c.ko <= 0);

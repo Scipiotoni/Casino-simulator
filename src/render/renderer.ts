@@ -61,12 +61,12 @@ export class Renderer {
     this.sun.shadow.normalBias = 0.03;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
-    this.overlay.add(new THREE.HemisphereLight(0xfff1dd, 0x3a2a4a, 1.1));
-    const key = new THREE.DirectionalLight(0xfff0dc, 1.4);
+    this.overlay.add(new THREE.HemisphereLight(0xfff1dd, 0x3a2a4a, 0.85));
+    const key = new THREE.DirectionalLight(0xfff0dc, 1.1);
     key.position.set(0.6, 1, 0.4);
     this.overlay.add(key);
     this.overlay.environment = this.scene.environment;
-    this.overlay.environmentIntensity = 0.5;
+    this.overlay.environmentIntensity = 0.12;
 
     this.setQuality(quality);
     window.addEventListener('resize', () => this.resize());

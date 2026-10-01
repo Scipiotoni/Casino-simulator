@@ -3877,7 +3877,7 @@ export class Game implements World, ItemHost {
         house: this.houseSave(),
         guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
         playChips: Math.round(this.playChips),
-        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
+        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         day: this.day,
         dayMinutes: this.dayMinutes,
         player: { ...home.player, look: this.player.appearance, name: this.player.name },
@@ -3905,7 +3905,7 @@ export class Game implements World, ItemHost {
         house: this.houseSave(),
         guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
         playChips: Math.round(this.playChips),
-        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
+        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         rebirths: this.rebirths,
         savedAt: Date.now(),
       };
@@ -3944,7 +3944,7 @@ export class Game implements World, ItemHost {
       house: this.houseSave(),
       guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
         playChips: Math.round(this.playChips),
-        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors } },
+        garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
       rebirths: this.rebirths,
       savedAt: Date.now(),
     };

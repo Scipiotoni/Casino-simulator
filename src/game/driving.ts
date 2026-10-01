@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Game } from './game';
-import { type CarDef, CARS, STOLEN_SPECS, buildCar, carDef } from '../world/vehicles';
+import { type CarDef, type CarMods, CARS, STOLEN_SPECS, buildCar, carDef, defaultMods, sanitizeMods, tunedSpecs } from '../world/vehicles';
 import type { Car } from '../world/cityView';
 import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, onRoadNetwork, streetZ } from '../world/city';
 import { HEAT } from '../world/police';
@@ -29,16 +29,29 @@ export interface Vehicle {
   owned: boolean;
   /** Was stolen from traffic (the police care). */
   stolen: boolean;
+  /** Your customization and tuning (null for stolen cars). */
+  mods: CarMods | null;
+  flames: THREE.Object3D[];
+  brakeLights: THREE.Mesh[];
 }
 
 /** Cars you own (saved). */
 export interface GarageState {
   owned: string[];
   colors: Record<string, number>;
+  /** Customization and tuning per car you own. */
+  mods: Record<string, CarMods>;
 }
 
 export function emptyGarage(): GarageState {
-  return { owned: [], colors: {} };
+  return { owned: [], colors: {}, mods: {} };
+}
+
+/** A car's mods (made from its defaults the first time). */
+export function modsOf(gs: GarageState, id: string): CarMods {
+  const def = carDef(id)!;
+  gs.mods[id] ??= defaultMods(def, gs.colors[id]);
+  return gs.mods[id];
 }
 
 export function sanitizeGarage(raw: unknown): GarageState {
@@ -50,7 +63,14 @@ export function sanitizeGarage(raw: unknown): GarageState {
       if (carDef(k) && typeof v === 'number' && Number.isFinite(v)) colors[k] = Math.max(0, Math.min(0xffffff, Math.round(v)));
     }
   }
-  return { owned, colors };
+  const mods: Record<string, CarMods> = {};
+  if (r.mods && typeof r.mods === 'object') {
+    for (const [k, v] of Object.entries(r.mods as Record<string, unknown>)) {
+      const d = carDef(k);
+      if (d) mods[k] = sanitizeMods(d, v);
+    }
+  }
+  return { owned, colors, mods };
 }
 
 let nextUid = 1;
@@ -66,6 +86,8 @@ export class Driving {
   driving: Vehicle | null = null;
   private prevCam: { mode: 'top' | 'third' | 'first'; dist: number } | null = null;
   private crashT = 0;
+  /** Nitro tank (0..1). */
+  nitro = 1;
   private engineT = 0;
 
   constructor(private g: Game) {}
@@ -133,8 +155,9 @@ export class Driving {
     }
     if (this.driving) this.exit();
     const pg = this.playerGlobal();
-    const color = g.garage.colors[id] ?? def.colors[0];
-    const probe = buildCar(def, color);
+    const mods = modsOf(g.garage, id);
+    const color = mods.color;
+    const probe = buildCar(def, undefined, mods);
     const spot = this.roadSpot(pg.x, pg.z, probe.length);
     if (!spot) {
       g.notify('No room at the curb here. Try somewhere else.', 'bad');
@@ -143,19 +166,19 @@ export class Driving {
     // Only one of each of your cars on the street at a time.
     const old = this.vehicles.find((v) => v.owned && v.def?.id === id);
     if (old) this.remove(old);
-    const v = this.addVehicle(def, probe, color, spot.x, spot.z, spot.yaw, true, false);
+    const v = this.addVehicle(def, probe, color, spot.x, spot.z, spot.yaw, true, false, mods);
     audio.play('honk');
     g.notify(`Your ${def.name} is at the curb. Walk up to it and press Space.`, 'good');
     return !!v;
   }
 
-  private addVehicle(def: CarDef, m: ReturnType<typeof buildCar>, color: number, x: number, z: number, yaw: number, owned: boolean, stolen: boolean): Vehicle {
+  private addVehicle(def: CarDef, m: ReturnType<typeof buildCar>, color: number, x: number, z: number, yaw: number, owned: boolean, stolen: boolean, mods: CarMods | null = null): Vehicle {
     m.root.position.set(x, 0, z);
     m.root.rotation.y = yaw;
     this.group.add(m.root);
     const v: Vehicle = {
       uid: nextUid++, def, name: def.name, color, root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat,
-      x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : 1.95, owned, stolen,
+      x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : 1.95, owned, stolen, mods, flames: m.flames, brakeLights: m.brakeLights,
     };
     this.vehicles.push(v);
     return v;
@@ -173,7 +196,7 @@ export class Driving {
     g.street.city.releaseCar(c);
     const v: Vehicle = {
       uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
-      x: c.x, z: c.z, yaw: c.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: true,
+      x: c.x, z: c.z, yaw: c.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: true, mods: null, flames: [], brakeLights: [],
     };
     this.vehicles.push(v);
     g.street.police.crime(HEAT.knockout);
@@ -269,13 +292,24 @@ export class Driving {
     }
     throttle = clamp(throttle, -1, 1);
     steer = clamp(steer, -1, 1);
-    const spec = v.def ?? STOLEN_SPECS;
-    const top = 'top' in spec ? spec.top : STOLEN_SPECS.top;
+    const spec = v.def ? tunedSpecs(v.def, v.mods) : { ...STOLEN_SPECS, brake: 1, nitro: 0 };
+    const top = spec.top;
     const accel = spec.accel;
     const grip = spec.grip;
-    const boost = input.down('ShiftLeft') || input.down('ShiftRight') ? 1.25 : 1;
-    if (throttle > 0) v.speed += (v.speed < 0 ? accel * 2.2 : accel * boost) * throttle * dt;
-    else if (throttle < 0) v.speed += (v.speed > 0 ? accel * 2.4 : accel * 0.6) * throttle * dt;
+    // Shift: nitro if fitted (a tank that refills), otherwise a little extra push.
+    const shift = input.down('ShiftLeft') || input.down('ShiftRight');
+    const nitroOn = shift && spec.nitro > 0 && this.nitro > 0 && throttle > 0;
+    if (nitroOn) this.nitro = Math.max(0, this.nitro - dt / (2 + spec.nitro));
+    else this.nitro = Math.min(1, this.nitro + dt * 0.12);
+    const boost = nitroOn ? 1.3 + spec.nitro * 0.12 : shift ? 1.1 : 1;
+    for (const f of v.flames) {
+      f.visible = nitroOn;
+      if (nitroOn) f.scale.set(1, 0.7 + Math.random() * 0.6, 1);
+    }
+    for (const b of v.brakeLights) b.scale.y = throttle < 0 && v.speed > 0.5 ? 1.6 : 1;
+    if (nitroOn && Math.random() < dt * 6) audio.play('whoosh', { volume: 0.3, pitch: 0.6 });
+    if (throttle > 0) v.speed += (v.speed < 0 ? accel * 2.2 : accel * (nitroOn ? boost * 1.6 : boost)) * throttle * dt;
+    else if (throttle < 0) v.speed += (v.speed > 0 ? accel * 2.4 * spec.brake : accel * 0.6) * throttle * dt;
     else v.speed = damp(v.speed, 0, 0.8, dt);
     v.speed = clamp(v.speed, -9, top * boost);
     v.steer = damp(v.steer, steer, 8, dt);
@@ -371,6 +405,20 @@ export class Driving {
     void v;
   }
 
+  /** After customizing: swap the model of that car if it's out on the street. */
+  refresh(id: string): void {
+    const v = this.vehicles.find((o) => o.owned && o.def?.id === id);
+    if (!v || !v.def) return;
+    const mods = modsOf(this.g.garage, id);
+    const m = buildCar(v.def, undefined, mods);
+    const parent = v.root.parent;
+    v.root.removeFromParent();
+    m.root.position.copy(v.root.position);
+    m.root.rotation.copy(v.root.rotation);
+    parent?.add(m.root);
+    Object.assign(v, { root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat, length: m.length, color: mods.color, mods, flames: m.flames, brakeLights: m.brakeLights });
+  }
+
   /** Buy a car at Velocity Motors (cash from your casino). */
   buy(id: string, color?: number): boolean {
     const g = this.g;
@@ -388,6 +436,7 @@ export class Driving {
     g.spend(def.price, 'purchase');
     g.garage.owned.push(id);
     if (color !== undefined) g.garage.colors[id] = color;
+    g.garage.mods[id] = defaultMods(def, color);
     audio.play('purchase');
     g.notify(`You bought a ${def.name}! Have it brought to you from the Cars panel.`, 'good');
     g.requestSave();

@@ -102,3 +102,28 @@ describe('the police', async () => {
     expect(bustFine(1e12, 5)).toBe(250000);
   });
 });
+
+describe('car tuning', async () => {
+  const v = await import('../src/world/vehicles');
+  it('tuning makes cars faster and grippier, stock cars drive as listed', () => {
+    const d = v.carDef('muscle')!;
+    const stock = v.tunedSpecs(d, v.defaultMods(d));
+    expect(stock.top).toBe(d.top);
+    const tuned = v.tunedSpecs(d, { ...v.defaultMods(d), engine: 3, turbo: 3, tires: 3, brakes: 3, nitro: 2 });
+    expect(tuned.top).toBeGreaterThan(stock.top);
+    expect(tuned.accel).toBeGreaterThan(stock.accel);
+    expect(tuned.grip).toBeGreaterThan(stock.grip);
+    expect(tuned.brake).toBeGreaterThan(1);
+    expect(tuned.nitro).toBe(2);
+  });
+  it('mods from saves or other players are cleaned up', () => {
+    const d = v.carDef('super')!;
+    const m = v.sanitizeMods(d, { finish: 'plutonium', rims: 'mesh', engine: 99, plate: 'hi <b>!', glow: -5, spoiler: 'gt' });
+    expect(m.finish).toBe(v.defaultMods(d).finish);
+    expect(m.rims).toBe('mesh');
+    expect(m.engine).toBe(3);
+    expect(m.plate).toBe('HI B');
+    expect(m.glow).toBe(0);
+    expect(m.spoiler).toBe('gt');
+  });
+});
