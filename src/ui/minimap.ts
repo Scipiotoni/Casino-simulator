@@ -209,6 +209,15 @@ export class Minimap {
         c.fillText(r.name, X(p.x), Z(p.z) - 10);
       }
     }
+    // The police: flashing red and blue
+    const blink = Math.floor(performance.now() / 250) % 2 === 0;
+    for (const d of st.police.dots) {
+      c.fillStyle = (d.car ? blink : !blink) ? '#ff3b4d' : '#3b7bff';
+      c.beginPath();
+      if (d.car) c.rect(X(d.x) - 4, Z(d.z) - 4, 8, 8);
+      else c.arc(X(d.x), Z(d.z), Math.max(3, s * 0.5), 0, Math.PI * 2);
+      c.fill();
+    }
     // You: an arrow showing which way you face
     const yaw = g.player.yaw + (st.placeOf(st.activeId).side ? Math.PI : 0);
     const r = Math.max(6, s * 1.1);

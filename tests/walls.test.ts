@@ -76,3 +76,29 @@ describe('street fights', () => {
     expect(GUNS.find((d) => d.kind === 'sniper')?.adsFov).toBeLessThan(20);
   });
 });
+
+describe('the police', async () => {
+  const { Police, HEAT } = await import('../src/world/police');
+  const { bustFine } = await import('../src/game/combat');
+
+  it('crimes raise the wanted level; hurting someone is always at least one star', () => {
+    const p = new Police();
+    expect(p.stars).toBe(0);
+    p.crime(HEAT.car, false);
+    expect(p.stars).toBe(0);
+    p.crime(HEAT.hitPerson);
+    expect(p.stars).toBe(1);
+    for (let i = 0; i < 20; i++) p.crime(HEAT.koCop);
+    expect(p.stars).toBe(5);
+    p.clear();
+    expect(p.stars).toBe(0);
+  });
+
+  it('getting busted costs more the more stars you had, never more than you carry', () => {
+    expect(bustFine(10000, 1)).toBe(750);
+    expect(bustFine(10000, 5)).toBe(3750);
+    expect(bustFine(100, 3)).toBe(100);
+    expect(bustFine(0, 2)).toBe(0);
+    expect(bustFine(1e12, 5)).toBe(250000);
+  });
+});

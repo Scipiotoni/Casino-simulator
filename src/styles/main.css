@@ -4425,11 +4425,11 @@ p.small {
 }
 .lock-hint {
   left: 50%;
-  top: 24%;
+  bottom: calc(var(--safe-bottom, 0px) + 100px);
   transform: translateX(-50%);
   display: grid;
-  gap: 4px;
-  padding: 12px 18px;
+  gap: 2px;
+  padding: 7px 14px;
   border-radius: 16px;
   background: rgba(23, 21, 31, 0.86);
   border: 1px solid rgba(255, 255, 255, 0.18);
@@ -4535,4 +4535,45 @@ p.small {
 .placebar,
 .paintbar {
   z-index: 7;
+}
+/* Wanted level */
+.wanted {
+  left: 50%;
+  top: calc(var(--safe-top, 0px) + 92px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 99px;
+  background: rgba(23, 21, 31, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.w-label {
+  font: 900 11px var(--font-body);
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+.w-stars b,
+.w-stars i {
+  font-style: normal;
+  font-size: 19px;
+  line-height: 1;
+}
+.w-stars b {
+  color: var(--gold);
+  text-shadow: 0 0 8px rgba(255, 197, 61, 0.8);
+}
+.w-stars i {
+  color: rgba(255, 255, 255, 0.18);
+}
+.wanted.spotted {
+  animation: wanted-flash 0.5s steps(1) infinite;
+}
+.wanted.spotted .w-label {
+  color: #fff;
+}
+@keyframes wanted-flash {
+  0% { box-shadow: 0 0 18px rgba(255, 40, 60, 0.9); border-color: #ff3b4d; }
+  50% { box-shadow: 0 0 18px rgba(50, 110, 255, 0.9); border-color: #3b7bff; }
 }

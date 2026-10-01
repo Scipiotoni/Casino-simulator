@@ -35,6 +35,8 @@ export class CameraRig {
   /** Sideways recoil wobble. */
   kickYaw = 0;
   fovTarget = 72;
+  /** First person with the mouse free: where the cursor aims on screen (-1..1), or null for the centre. */
+  aimNdc: { x: number; y: number } | null = null;
   private bob = 0;
   /** Walking speed for the head bob (m/s). */
   bobSpeed = 0;

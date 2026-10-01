@@ -5,6 +5,7 @@ import { buildGun } from '../items/models/guns';
 import { audio, type SfxName } from '../core/audio';
 import { softDotTexture } from '../render/textures';
 import type { Ped } from '../world/crowd';
+import { HEAT, type Officer } from '../world/police';
 import { mat } from '../render/materials';
 
 interface Tracer {
@@ -36,6 +37,7 @@ type Hit =
   | { kind: 'target'; t: number; target: import('../world/cityView').Target }
   | { kind: 'car'; t: number; car: import('../world/cityView').Car }
   | { kind: 'ped'; t: number; ped: Ped; head: boolean }
+  | { kind: 'cop'; t: number; cop: Officer; head: boolean }
   | { kind: 'player'; t: number; pid: string; name: string; head: boolean };
 
 /**
@@ -71,6 +73,8 @@ export class GunPlay {
   /** 0 = hip, 1 = fully aimed down the sights. */
   private adsK = 0;
   private swayX = 0;
+  private aimX = 0;
+  private aimY = 0;
   private swayY = 0;
   private vmKick = 0;
   private bobT = 0;
@@ -224,7 +228,11 @@ export class GunPlay {
     const y = hip.y + (ads.y - hip.y) * k + this.swayY * 0.5 - Math.abs(Math.sin(this.bobT)) * 0.007 * bob - reload * 0.06 - near * 0.05;
     const z = hip.z + (ads.z - hip.z) * k + this.vmKick * 0.035 + near * 0.04;
     vm.gun.position.set(x, y, z);
-    vm.gun.rotation.set(this.vmKick * 0.18 + reload * 0.9 + near * 0.5, this.swayX * 2, reload * 0.5 + this.swayX * 1.5);
+    // With the cursor free the gun turns to point at it.
+    const ndc = g.cam.aimNdc;
+    this.aimX += ((ndc ? ndc.x : 0) - this.aimX) * Math.min(1, dt * 12);
+    this.aimY += ((ndc ? ndc.y : 0) - this.aimY) * Math.min(1, dt * 12);
+    vm.gun.rotation.set(this.vmKick * 0.18 + reload * 0.9 + near * 0.5 + this.aimY * 0.45 * (1 - k), this.swayX * 2 - this.aimX * 0.55 * (1 - k), reload * 0.5 + this.swayX * 1.5);
     vm.holder.visible = !this.scoped;
     if (vm.spin) vm.spin.rotation.z += this.spinV * dt;
   }
@@ -289,9 +297,8 @@ export class GunPlay {
     }
     const input = g.input;
     const blocked = g.modalOpen || g.build.active || g.state !== 'playing';
-    // First person on desktop: the trigger only works while the mouse is captured.
-    const fpDesk = g.cam.mode === 'first' && !input.isTouch;
-    const mouseOk = !input.isTouch && (!fpDesk || input.locked);
+    // (In first person the click that captures the mouse never reaches here.)
+    const mouseOk = !input.isTouch;
     const pressed = !blocked && (input.mousePresses > 0 && mouseOk ? true : this.firePressed);
     const held = !blocked && ((input.mouseHeld && mouseOk && input.pointer.over) || this.fireHeld);
     this.firePressed = false;
@@ -410,7 +417,15 @@ export class GunPlay {
     } else g.cam.shake(d.kind === 'cannon' ? 0.1 : d.kind === 'shotgun' || d.kind === 'sniper' ? 0.07 : 0.025);
     // Where the bullets start and which way they go.
     const origin = fp ? g.renderer.camera.position.clone() : muzzle.clone();
-    const base = fp ? g.cam.lookDir(new THREE.Vector3()) : new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    let base = fp ? g.cam.lookDir(new THREE.Vector3()) : new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const ndc = g.cam.aimNdc;
+    if (fp && ndc) {
+      // Mouse free: shoot where the cursor is.
+      const ray = new THREE.Raycaster();
+      g.renderer.camera.updateMatrixWorld();
+      ray.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), g.renderer.camera);
+      base = ray.ray.direction.clone().normalize();
+    }
     // Accuracy: aimed shots are tight, running and spraying open it up.
     const acc = fp ? (this.aiming ? 0.25 : 0.85) * (1 + this.spreadK * 1.2) : 1;
     for (let i = 0; i < d.pellets; i++) {
@@ -496,6 +511,16 @@ export class GunPlay {
           break;
         }
       }
+      // The police.
+      for (const c of st.police.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
+        const t = c.s / hlen;
+        const y = yAt(t);
+        const h = c.cop.model.height;
+        if (t < best.t && (flat || (y > 0 && y < h + 0.15))) {
+          best = { kind: 'cop', t, cop: c.cop, head: !flat && y > h - 0.42 };
+          break;
+        }
+      }
       // Other players out on the street (world frame).
       const wx = dir.x / hlen;
       const wz = dir.z / hlen;
@@ -523,6 +548,7 @@ export class GunPlay {
         }
         city.hitCar(best.car);
         g.stats.carsHit++;
+        st.police.crime(HEAT.car, false);
         fx.sparkle(hit.x, Math.max(0.5, hit.y), hit.z, 8, 0xfff2c8, 0.4);
         if (Math.random() < 0.4) audio.playAt('ricochet', hit.x, hit.z, 0.6);
         break;
@@ -552,6 +578,7 @@ export class GunPlay {
         if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
         if (dmg <= 0) break;
         const r = st.crowd.damage(best.ped, dmg, gdx, gdz);
+        st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
         fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
         g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
         g.combat.landed(best.head, r.ko);
@@ -565,7 +592,23 @@ export class GunPlay {
         fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
         g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
         g.combat.onHitRemote?.(best.pid, Math.round(dmg));
+        st.police.crime(HEAT.hitPerson);
         g.combat.landed(best.head, false);
+        break;
+      }
+      case 'cop': {
+        const dmg = d.dmg * (best.head ? 2 : 1);
+        if (flat) hit.y = 1.2;
+        if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
+        if (dmg <= 0) break;
+        const ko = st.police.damage(best.cop, dmg);
+        fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
+        if (ko) {
+          g.stats.knockouts++;
+          audio.play('knockout', { volume: 0.7 });
+        }
         break;
       }
       case 'wall': {
@@ -587,6 +630,19 @@ export class GunPlay {
     }
     if (d.kind === 'confetti') fx.confetti(hit.x, Math.max(1, hit.y), hit.z, 70, 0.9);
     this.tracer(d, muzzle, hit);
+  }
+
+  /** A police bullet (world frame). */
+  enemyTracer(a: THREE.Vector3, b: THREE.Vector3): void {
+    const len = a.distanceTo(b);
+    if (len < 0.2) return;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.025, len), new THREE.MeshBasicMaterial({
+      color: 0xffb45a, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }));
+    m.position.copy(a).lerp(b, 0.5);
+    m.lookAt(b);
+    this.group.add(m);
+    this.tracers.push({ mesh: m, life: 0.07, max: 0.07 });
   }
 
   private tracer(d: GunDef, a: THREE.Vector3, b: THREE.Vector3): void {

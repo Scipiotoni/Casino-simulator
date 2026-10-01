@@ -409,6 +409,7 @@ export class Game implements World, ItemHost {
     this.guns = emptyGuns();
     this.gunplay.reset();
     this.combat.reset();
+    this.street.police.reset();
     this.cosmetics = emptyCosmetics();
     this.applyCosmetics();
     this.setFloorCount(1);
@@ -2531,6 +2532,40 @@ export class Game implements World, ItemHost {
     this.events.emit('select', sel);
   }
 
+  /** The police chase (global frame), fed with where you are and what they can hit. */
+  private updatePolice(dt: number): void {
+    const st = this.street;
+    const pol = st.police;
+    const pg = st.worldToGlobal(this.player.x, this.player.z);
+    pol.update(dt, {
+      px: pg.x,
+      pz: pg.z,
+      exposed: this.combat.exposed && this.combat.ko <= 0,
+      speed: this.player.speed,
+      height: this.player.model.height,
+      toWorld: (x, z) => st.globalToWorld(x, z),
+      onShot: (hit, dmg, gx, gz) => {
+        const w = st.globalToWorld(gx, gz);
+        if (hit) this.combat.damage(dmg, 'police', 'The police', w.x, w.z);
+        else audio.play('whiz', { volume: 0.6 });
+      },
+      onTracer: (ax, ay, az, bx, by, bz) => {
+        const a = st.globalToWorld(ax, az);
+        const b = st.globalToWorld(bx, bz);
+        this.gunplay.enemyTracer(new THREE.Vector3(a.x, ay, a.z), new THREE.Vector3(b.x, by, b.z));
+      },
+    }, true);
+    if (pol.stars > (this.stats.maxWanted ?? 0)) this.stats.maxWanted = pol.stars;
+    if (pol.stars !== this.lastStars) {
+      if (pol.stars > this.lastStars && this.lastStars === 0) this.notify('The police are after you! Get out of sight to lose them.', 'bad');
+      else if (pol.stars === 0 && this.lastStars > 0 && this.combat.ko <= 0) this.notify('You lost the police.', 'good');
+      this.lastStars = pol.stars;
+      this.events.emit('combat', undefined);
+    }
+  }
+
+  private lastStars = 0;
+
   /** You knocked out a passer-by: their cash flies into your pockets. */
   onStreetKnockout(cash: number, at: THREE.Vector3): void {
     this.stats.knockouts++;
@@ -3159,6 +3194,7 @@ export class Game implements World, ItemHost {
     const first = this.cam.mode === 'first' && playing;
 
     // First person: the mouse is captured while you look around; menus and other views free it.
+    if (!first) input.wantLock = false;
     if (input.locked && (!first || this.modalOpen || this.photoMode || this.tableFocus)) input.exitLock();
     if (input.locked) {
       input.pointer.x = this.renderer.size.w / 2;
@@ -3170,6 +3206,8 @@ export class Game implements World, ItemHost {
       const sens = 0.0024 * (this.settings.lookSens ?? 1) * ads;
       let dx = 0;
       let dy = 0;
+      this.cam.aimNdc = null;
+      input.wantLock = !input.isTouch && !this.build.active && !this.modalOpen && this.combat.ko <= 0;
       if (input.locked) {
         dx = input.lookDX;
         dy = input.lookDY;
@@ -3177,10 +3215,17 @@ export class Game implements World, ItemHost {
         // Drag anywhere off the joystick to look around.
         dx = input.dragDX * 1.6;
         dy = input.dragDY * 1.6;
-      } else if (!input.isTouch && !this.build.active && input.mousePresses > 0 && !this.modalOpen) {
-        input.requestLock();
-        input.mousePresses = 0;
-        input.clicks.length = 0;
+      } else if (!input.isTouch && input.pointer.over && !this.build.active && !this.modalOpen && this.combat.ko <= 0) {
+        // Mouse not captured: the crosshair follows the cursor, and pushing toward the edge
+        // of the screen turns you (all the way round if you hold it there).
+        const { w, h } = this.renderer.size;
+        const ox = clamp((input.pointer.x - w / 2) / (w / 2), -1, 1);
+        const oy = clamp((input.pointer.y - h / 2) / (h / 2), -1, 1);
+        this.cam.aimNdc = { x: ox, y: -oy };
+        const edge = (o: number) => (Math.abs(o) > 0.4 ? Math.sign(o) * ((Math.abs(o) - 0.4) / 0.6) ** 1.4 : 0);
+        const k = (this.settings.lookSens ?? 1) * ads;
+        this.cam.lookYaw -= edge(ox) * 3.2 * k * dt;
+        this.cam.pitch = clamp(this.cam.pitch - edge(oy) * 1.8 * k * dt, -1.35, 1.35);
       }
       if (this.combat.ko <= 0) {
         this.cam.lookYaw -= dx * sens;
@@ -3245,6 +3290,7 @@ export class Game implements World, ItemHost {
       this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third, first && !this.player.seat && this.combat.ko <= 0 ? this.cam.lookYaw : null);
     }
     if (playing) this.combat.update(dt);
+    if (playing && sim > 0) this.updatePolice(sim);
     if (playing) this.gunplay.update(dt);
     if (this.cam.mode !== 'first') this.cam.lookYaw = this.player.yaw;
     this.cam.followYaw = this.player.yaw;
@@ -3542,6 +3588,7 @@ export class Game implements World, ItemHost {
     this.guns = sanitizeGuns(s.guns);
     this.gunplay.reset();
     this.combat.reset();
+    this.street.police.reset();
     this.vaultOpen = false;
     this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
     this.applyCosmetics();

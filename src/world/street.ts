@@ -6,6 +6,7 @@ import {
 } from './city';
 import { CityView } from './cityView';
 import { Crowd, type DoorSpot } from './crowd';
+import { Police } from './police';
 import { SIDEWALK_Z0 } from './grid';
 export { ROAD_MID } from './grid';
 
@@ -56,6 +57,8 @@ export class Street {
   readonly city = new CityView();
   /** People walking the sidewalks (drawn in the city's global frame). */
   readonly crowd = new Crowd();
+  /** The city police (they come when you shoot people). */
+  readonly police = new Police();
   private doors: DoorSpot[] = [];
   lots: StreetLot[] = [];
   activeId = 'me';
@@ -69,7 +72,7 @@ export class Street {
 
   constructor() {
     this.group.add(this.city.group);
-    this.city.group.add(this.crowd.group);
+    this.city.group.add(this.crowd.group, this.police.group);
   }
 
   /**
@@ -169,6 +172,7 @@ export class Street {
       return { lotId: l.id, x: d.x, z: d.z, wx: w.x, wz: w.z, row: s.row, weight };
     }).filter((d) => d.weight > 0);
     this.crowd.cols = this.cols;
+    this.police.cols = this.cols;
   }
 
   get(id: string): StreetLot | undefined {

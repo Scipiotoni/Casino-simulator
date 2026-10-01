@@ -16,6 +16,12 @@ export function koLoss(cash: number): number {
   return Math.max(0, Math.min(KO_MAX_LOSS, Math.floor(Math.max(0, cash) * KO_SHARE)));
 }
 
+/** What getting busted costs: 5% of your cash per wanted star, plus a flat fee. */
+export function bustFine(cash: number, stars: number): number {
+  const s = Math.max(1, Math.min(5, stars));
+  return Math.max(0, Math.min(KO_MAX_LOSS, Math.floor(Math.max(0, cash) * 0.05 * s) + 250 * s, Math.floor(Math.max(0, cash))));
+}
+
 /** Another player you could hit, in the world frame you're looking at. */
 export interface RemoteTarget {
   pid: string;
@@ -51,7 +57,7 @@ export class Combat {
   hitFrom: number | null = null;
   mark: HitMark | null = null;
   /** Who knocked you out last, and what it cost. */
-  lastKo: { by: string; lost: number } | null = null;
+  lastKo: { by: string; lost: number; busted?: boolean } | null = null;
   private beatT = 0;
   /** Net hooks: tell the other player they hit you / they get your cash. */
   onLoot: ((pid: string, amount: number) => void) | null = null;
@@ -118,6 +124,22 @@ export class Combat {
     const g = this.g;
     this.ko = KO_SECONDS;
     this.hp = 0;
+    if (fromPid === 'police') {
+      // Busted: the police fine you and the chase is over.
+      const police = g.street.police;
+      const fine = bustFine(g.money, police.stars);
+      if (fine > 0) g.spend(fine, 'robbed');
+      police.clear();
+      this.lastKo = { by: 'the police', lost: fine, busted: true };
+      g.stats.knockedDown++;
+      g.stats.busted = (g.stats.busted ?? 0) + 1;
+      g.gunplay.drop();
+      audio.play('busted');
+      g.cam.shake(0.2);
+      g.notify(fine > 0 ? `BUSTED! The police fined you ${formatMoney(fine)}. Cash in your vault is safe.` : 'BUSTED! Lucky for you, your pockets were empty.', 'bad');
+      g.requestSave();
+      return;
+    }
     const lost = koLoss(g.money);
     if (lost > 0) {
       g.spend(lost, 'robbed');

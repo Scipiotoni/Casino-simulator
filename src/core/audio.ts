@@ -11,7 +11,7 @@ export type SfxName =
   | 'break' | 'drink' | 'objective' | 'rotate' | 'paint' | 'doorbell' | 'chips' | 'claw' | 'purchase'
   | 'gunshot' | 'gunHeavy' | 'shotgun' | 'smg' | 'laser' | 'paintball' | 'confettiGun' | 'reload' | 'empty' | 'ping' | 'glass'
   | 'carAlarm' | 'honk' | 'balloon' | 'ricochet' | 'keyBeep' | 'keyError' | 'vaultClunk' | 'vaultHiss' | 'vaultWheel' | 'alarm'
-  | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat';
+  | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat' | 'siren' | 'whiz' | 'busted';
 
 interface ToneOpts {
   type?: OscillatorType;
@@ -386,6 +386,18 @@ class AudioEngine {
       case 'empty':
         this.noise(t, 0.025, { type: 'highpass', freq: 4000, gain: 0.2, dest });
         break;
+      case 'siren':
+        // Wail up and down.
+        this.tone(640, t, 0.55, { type: 'sawtooth', gain: 0.045, freqEnd: 1250, filter: 2600, dest });
+        this.tone(1250, t + 0.55, 0.55, { type: 'sawtooth', gain: 0.045, freqEnd: 640, filter: 2600, dest });
+        break;
+      case 'whiz':
+        this.noise(t, 0.12, { type: 'bandpass', freq: 3200, freqEnd: 1200, q: 2, gain: 0.25, dest });
+        break;
+      case 'busted':
+        for (let i = 0; i < 4; i++) this.tone(i % 2 ? 784 : 988, t + i * 0.22, 0.2, { type: 'square', gain: 0.06, filter: 2400, dest });
+        this.tone(110, t, 0.5, { type: 'sine', gain: 0.4, freqEnd: 55, dest });
+        break;
       case 'hitmarker':
         this.tone(1900 * p, t, 0.05, { type: 'square', gain: 0.05, filter: 3500, dest });
         this.noise(t, 0.03, { type: 'highpass', freq: 6000, gain: 0.12, dest });
@@ -584,7 +596,7 @@ const PROGRESSION: { root: number; tones: number[] }[] = [
 ];
 
 const MIN_GAP: Partial<Record<SfxName, number>> = {
-  smg: 0.04, ping: 0.03, glass: 0.06, honk: 1, carAlarm: 1.2, alarm: 1.4, keyBeep: 0.02,
+  smg: 0.04, ping: 0.03, glass: 0.06, honk: 1, carAlarm: 1.2, alarm: 1.4, keyBeep: 0.02, siren: 1, whiz: 0.08,
   coin: 0.05, spin: 0.12, tick: 0.05, win: 0.15, chips: 0.1, cards: 0.08, dice: 0.2, paint: 0.06, click: 0.03,
 };
 

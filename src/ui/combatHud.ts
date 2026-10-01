@@ -22,12 +22,14 @@ export class CombatHud {
   private scope = h('div', { class: 'scope', hidden: true });
   private lockHint = h('button', { class: 'lock-hint', hidden: true });
   private markT = -1;
+  private wanted = h('div', { class: 'wanted', hidden: true, 'aria-label': 'Wanted level' });
+  private wantedKey = '';
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
-    this.lockHint.innerHTML = '<b>Click to look around</b><span>Mouse aims · click shoots · right-click aims down the sights · Esc frees the mouse · V switches camera</span>';
+    this.lockHint.innerHTML = '<b>🖱 Click to capture the mouse</b><span>Then the mouse turns you all the way round · A/D strafe · click shoots · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted);
   }
 
   update(dt: number): void {
@@ -40,6 +42,23 @@ export class CombatHud {
     // Crosshair: first person always; other views only with a gun out.
     const showCross = fp && !gp.scoped && c.ko <= 0;
     this.cross.hidden = !showCross;
+    // Mouse free: the crosshair rides on the cursor (which is hidden over the game).
+    const ndc = fp ? g.cam.aimNdc : null;
+    const canvas = g.renderer.renderer.domElement;
+    const cur = ndc ? 'none' : '';
+    if (canvas.style.cursor !== cur) canvas.style.cursor = cur;
+    if (ndc) {
+      const { w, h: hh } = g.renderer.size;
+      this.cross.style.left = `${((ndc.x + 1) / 2) * w}px`;
+      this.cross.style.top = `${((1 - ndc.y) / 2) * hh}px`;
+      this.marker.style.left = this.cross.style.left;
+      this.marker.style.top = this.cross.style.top;
+    } else if (this.cross.style.left) {
+      this.cross.style.left = '';
+      this.cross.style.top = '';
+      this.marker.style.left = '';
+      this.marker.style.top = '';
+    }
     if (showCross) {
       const gap = 5 + (armed ? (gp.aiming ? 0 : 6) + gp.spreadK * 18 : 2);
       this.cross.style.setProperty('--gap', `${gap.toFixed(1)}px`);
@@ -79,17 +98,27 @@ export class CombatHud {
         this.koKey = key;
         this.koEl.innerHTML = '';
         this.koEl.append(
-          h('div', { class: 'ko-title', text: 'KNOCKED OUT' }),
-          h('div', { class: 'ko-by', text: c.lastKo ? `by ${c.lastKo.by}` : '' }),
-          h('div', { class: 'ko-lost', text: c.lastKo && c.lastKo.lost > 0 ? `−${formatMoney(c.lastKo.lost)} taken from your pockets` : 'Your pockets were empty' }),
+          h('div', { class: 'ko-title', text: c.lastKo?.busted ? 'BUSTED' : 'KNOCKED OUT' }),
+          h('div', { class: 'ko-by', text: c.lastKo?.busted ? 'The police caught up with you' : c.lastKo ? `by ${c.lastKo.by}` : '' }),
+          h('div', { class: 'ko-lost', text: c.lastKo && c.lastKo.lost > 0 ? `−${formatMoney(c.lastKo.lost)} ${c.lastKo.busted ? 'fine' : 'taken from your pockets'}` : 'Your pockets were empty' }),
           h('div', { class: 'ko-tip', text: 'Money in your vault at home is always safe.' }),
           h('div', { class: 'ko-timer', text: `Back on your feet in ${Math.ceil(c.ko)}…` }),
         );
       }
     }
+    // Wanted stars, flashing red and blue while the police can see you.
+    const pol = g.street.police;
+    const stars = playing ? pol.stars : 0;
+    const wkey = `${stars}|${pol.spotted}`;
+    if (wkey !== this.wantedKey) {
+      this.wantedKey = wkey;
+      this.wanted.hidden = stars === 0;
+      this.wanted.classList.toggle('spotted', pol.spotted);
+      this.wanted.innerHTML = `<span class="w-label">${pol.spotted ? 'WANTED' : 'HIDING'}</span><span class="w-stars">${'<b>★</b>'.repeat(stars)}${'<i>★</i>'.repeat(5 - stars)}</span>`;
+    }
     this.scope.hidden = !(fp && gp.scoped);
     // Desktop first person with the mouse free: invite a click.
-    this.lockHint.hidden = !(fp && !g.input.isTouch && !g.input.locked && !g.modalOpen && !g.build.active && c.ko <= 0);
+    this.lockHint.hidden = !(fp && !g.input.isTouch && !g.input.locked && !g.input.lockFailed && !g.modalOpen && !g.build.active && c.ko <= 0);
     void dt;
   }
 }

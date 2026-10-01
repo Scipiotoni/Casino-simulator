@@ -307,7 +307,8 @@ export class Net {
       r.name = typeof pr.nm === 'string' && pr.nm.trim() ? pr.nm.slice(0, 20) : 'Player';
       r.rb = rebirthsOf(pr.rb);
       const lux = cleanCosmetics(pr.cos).map((id) => cosmetic(id)?.icon ?? '').join('');
-      r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}`;
+      const wl = Math.max(0, Math.min(5, Math.round(num(pr.wl))));
+      r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}${wl ? ` ${'★'.repeat(wl)}` : ''}`;
       this.readCombat(r, pr);
       r.tx = num(pr.x);
       r.tz = num(pr.z);
@@ -688,6 +689,7 @@ export class Net {
       hp: Math.round(g.combat.hp),
       ko: g.combat.ko > 0 ? 1 : 0,
       pr: g.combat.protect > 0 ? 1 : 0,
+      wl: g.street.police.stars,
       hits: this.hits,
       loot: this.loot,
       look: p.appearance,

@@ -71,6 +71,9 @@ export interface LifetimeStats {
   knockouts: number;
   looted: number;
   knockedDown: number;
+  /** Times the police got you, and the most stars you've had. */
+  busted: number;
+  maxWanted: number;
 }
 
 export function emptyStats(): LifetimeStats {
@@ -78,7 +81,7 @@ export function emptyStats(): LifetimeStats {
     collected: 0, earnedTotal: 0, visitors: 0, jackpots: 0, bigWins: 0, biggestWin: 0, cheatersCaught: 0, repairs: 0,
     trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0, managerSpins: 0,
     awayNet: 0, awayHands: 0, turnedAway: 0, roomsDecorated: 0, floorSetups: 0,
-    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0, wallsBuilt: 0, knockouts: 0, looted: 0, knockedDown: 0,
+    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0, wallsBuilt: 0, knockouts: 0, looted: 0, knockedDown: 0, busted: 0, maxWanted: 0,
   };
 }
 

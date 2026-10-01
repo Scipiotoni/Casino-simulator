@@ -36,6 +36,10 @@ export class Input {
   lookDY = 0;
   /** Right mouse button held (aim down sights). */
   rightHeld = false;
+  /** First person wants the mouse captured: the next left click on the canvas grabs it. */
+  wantLock = false;
+  /** The page isn't allowed to capture the mouse (some embeds): aim with the cursor instead. */
+  lockFailed = false;
   panDX = 0;
   panDY = 0;
   private lastMid: { x: number; y: number } | null = null;
@@ -70,6 +74,7 @@ export class Input {
       this.pointer.over = true;
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('pointerlockerror', () => (this.lockFailed = true));
     canvas.addEventListener(
       'wheel',
       (e) => {
@@ -143,13 +148,14 @@ export class Input {
       const r = (this.canvas as HTMLElement & { requestPointerLock(o?: unknown): Promise<void> | void }).requestPointerLock({ unadjustedMovement: true });
       if (r && typeof (r as Promise<void>).catch === 'function') (r as Promise<void>).catch(() => {
         try {
-          this.canvas.requestPointerLock();
+          const r2 = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+          if (r2 && typeof r2.catch === 'function') r2.catch(() => (this.lockFailed = true));
         } catch {
-          /* not allowed here */
+          this.lockFailed = true;
         }
       });
     } catch {
-      /* not allowed here */
+      this.lockFailed = true;
     }
   }
 
@@ -191,6 +197,11 @@ export class Input {
       return;
     }
     if (e.button === 2) this.rightHeld = true;
+    // First person: this click captures the mouse (inside the click, as browsers require).
+    if (e.button === 0 && this.wantLock && !this.locked && !this.lockFailed) {
+      this.requestLock();
+      return;
+    }
     this.mouseDown = { x: p.x, y: p.y, t0: performance.now(), button: e.button };
     if (e.button === 0) this.mousePresses++;
     if (e.button === 0) this.primaryDown = true;
