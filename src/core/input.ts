@@ -55,6 +55,8 @@ export class Input {
   private touches = new Map<number, TouchTrack>();
   private pinchDist = 0;
   private mouseDown: { x: number; y: number; t0: number; button: number } | null = null;
+  /** Left mouse button is down (tracked separately so it works while the right button aims). */
+  private leftHeld = false;
   private suppressTap = false;
 
   constructor(private canvas: HTMLElement) {
@@ -64,6 +66,7 @@ export class Input {
       this.keys.clear();
       this.primaryDown = false;
       this.rightHeld = false;
+      this.leftHeld = false;
       this.endJoystick();
     });
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
@@ -208,12 +211,16 @@ export class Input {
       return;
     }
     this.mouseDown = { x: p.x, y: p.y, t0: performance.now(), button: e.button };
+    if (e.button === 0) this.leftHeld = true;
     if (e.button === 0) this.mousePresses++;
     if (e.button === 0) this.primaryDown = true;
     if (e.button === 2) this.rightClicks++;
   }
 
   private onMove(e: PointerEvent): void {
+    // A second mouse button pressed or released while another is held comes as a move
+    // ("chorded" buttons), not as pointerdown/up: aim with the right button, fire with the left.
+    if (e.pointerType === 'mouse' && e.button >= 0) this.onChord(e);
     if (this.locked && e.pointerType === 'mouse') {
       this.lookDX += e.movementX || 0;
       this.lookDY += e.movementY || 0;
@@ -268,8 +275,27 @@ export class Input {
     this.pointer.moved = true;
   }
 
+  private onChord(e: PointerEvent): void {
+    const left = (e.buttons & 1) !== 0;
+    const right = (e.buttons & 2) !== 0;
+    if (e.button === 0) {
+      if (left && !this.leftHeld) {
+        this.leftHeld = true;
+        this.mousePresses++;
+        this.primaryDown = true;
+      } else if (!left) {
+        this.leftHeld = false;
+        this.primaryDown = false;
+      }
+    } else if (e.button === 2) {
+      if (right && !this.rightHeld) this.rightClicks++;
+      this.rightHeld = right;
+    }
+  }
+
   private onUp(e: PointerEvent, cancelled = false): void {
     if (e.pointerType === 'mouse' && e.button === 2) this.rightHeld = false;
+    if (e.pointerType === 'mouse' && e.button === 0) this.leftHeld = false;
     if (e.pointerId === this.joyId) {
       this.endJoystick();
       return;
@@ -308,7 +334,7 @@ export class Input {
 
   /** Left mouse button held right now (not touch). */
   get mouseHeld(): boolean {
-    return this.mouseDown?.button === 0;
+    return this.leftHeld;
   }
 
   /** Left mouse presses since the last frame (for guns: a tap fires even when shorter than a frame). */

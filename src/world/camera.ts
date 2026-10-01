@@ -40,6 +40,12 @@ export class CameraRig {
   private bob = 0;
   /** Walking speed for the head bob (m/s). */
   bobSpeed = 0;
+  /** Behind the wheel: a low chase camera that looks down the road to the horizon. */
+  chase = false;
+  /** Car speed (m/s) for the chase camera's speed feel. */
+  chaseSpeed = 0;
+  private chaseK = 0;
+  private chaseFov = 0;
   private readonly baseFov: number;
   private readonly baseNear: number;
 
@@ -152,7 +158,8 @@ export class CameraRig {
       this.yawTarget = this.followYaw + Math.PI;
       this.yaw = dampAngle(this.yaw, this.yawTarget, 5, dt);
       this.thirdDist = damp(this.thirdDist, this.thirdTarget, 8, dt);
-      const pitch = lerp(0.28, 0.5, (this.thirdDist - 3) / 8);
+      this.chaseK = damp(this.chaseK, this.chase ? 1 : 0, 4, dt);
+      const pitch = lerp(lerp(0.28, 0.5, (this.thirdDist - 3) / 8), 0.13, this.chaseK);
       const horiz = Math.cos(pitch) * this.thirdDist;
       const cam = this.camera;
       cam.position.set(
@@ -166,7 +173,15 @@ export class CameraRig {
         cam.position.y += Math.sin(this.shakeT * 1.7) * this.shakeAmt * 0.6;
         this.shakeAmt = damp(this.shakeAmt, 0, 5, dt);
       }
-      cam.lookAt(this.focus.x, 1.25, this.focus.z);
+      // Chasing a car: look well ahead of it (the road and the horizon), and widen the lens with speed.
+      const ahead = 14 * this.chaseK;
+      cam.lookAt(this.focus.x - Math.sin(this.yaw) * ahead, 1.25 - 0.2 * this.chaseK, this.focus.z - Math.cos(this.yaw) * ahead);
+      const fov = this.chaseK * Math.min(14, Math.abs(this.chaseSpeed) * 0.3);
+      if (Math.abs(fov - this.chaseFov) > 0.05) {
+        this.chaseFov = damp(this.chaseFov, fov, 3, dt);
+        cam.fov = (cam.aspect < 0.8 ? 52 : this.baseFov) + this.chaseFov;
+        cam.updateProjectionMatrix();
+      }
       return;
     }
     if (this.orbit) {

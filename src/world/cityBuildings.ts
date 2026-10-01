@@ -474,7 +474,7 @@ export function buildFiller(s: THREE.Group, spec: FillerSpec): Built {
  * A player's house from the street: a modern two-storey villa sized to the lot's floor plan,
  * with big windows, a flat roof, a garage with a sports car beside it, hedges and a mailbox.
  */
-export function buildHouse(s: THREE.Group, x0: number, x1: number, z0: number, H: number, wallColor: number, trimColor: number, name: string): Built {
+export function buildHouse(s: THREE.Group, x0: number, x1: number, z0: number, H: number, wallColor: number, trimColor: number, name: string, garage = true): Built {
   const b: Built = { keep: [], textures: [] };
   const z1 = FACADE_Z;
   const w = x1 - x0;
@@ -533,13 +533,15 @@ export function buildHouse(s: THREE.Group, x0: number, x1: number, z0: number, H
   const t = plate(name, '#1c1f26', '#f4f1ea', '800 54px Nunito, Arial, sans-serif');
   b.textures.push(t);
   b.keep.push(signMesh(s, t, 2.6, 0.65, CENTER_X, 3.0, z1 + 0.2));
-  // Garage on the side with a sports car out front
+  // Garage on the side with a sports car out front (your own house has a real one).
   const gx = x1 + 3.6;
-  box(s, 6.4, 3, 7, wall, gx, 1.5, z1 - 3.6);
-  box(s, 6.8, 0.3, 7.4, dark, gx, 3.1, z1 - 3.6);
-  box(s, 5, 2.4, 0.08, mat(0xd8d2c6, { rough: 0.5, metal: 0.3 }), gx, 1.2, z1 - 0.06);
-  box(s, 5.6, 0.04, 4.6, mat(0x8a8178, { rough: 0.9 }), gx, 0.02, z1 + 2.2);
-  parkedCar(s, gx, z1 + 2.4, 0, trimColor === 0xffffff ? 0xc8102e : trimColor);
+  if (garage) {
+    box(s, 6.4, 3, 7, wall, gx, 1.5, z1 - 3.6);
+    box(s, 6.8, 0.3, 7.4, dark, gx, 3.1, z1 - 3.6);
+    box(s, 5, 2.4, 0.08, mat(0xd8d2c6, { rough: 0.5, metal: 0.3 }), gx, 1.2, z1 - 0.06);
+    box(s, 5.6, 0.04, 4.6, mat(0x8a8178, { rough: 0.9 }), gx, 0.02, z1 + 2.2);
+    parkedCar(s, gx, z1 + 2.4, 0, trimColor === 0xffffff ? 0xc8102e : trimColor);
+  }
   // Hedges, lamps and a mailbox
   const hedge = mat(0x2f7a3a, { rough: 0.95 });
   box(s, x0 - (CENTER_X - 18) , 1, 0.8, hedge, (x0 + CENTER_X - 18) / 2, 0.5, z1 - 0.2);

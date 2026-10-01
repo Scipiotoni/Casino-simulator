@@ -77,6 +77,7 @@ export interface LifetimeStats {
   maxWanted: number;
   /** Cars taken out of traffic. */
   carsStolen: number;
+  carsParked?: number;
 }
 
 export function emptyStats(): LifetimeStats {

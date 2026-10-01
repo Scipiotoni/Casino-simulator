@@ -6,6 +6,7 @@ import { exportFileName, exportSave, parseImport } from '../game/transfer';
 import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
 import { openDealer } from './cars';
+import { openGarage } from './homeGarage';
 import { h, clear, icon, swatch, stars } from './dom';
 import { formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
@@ -381,6 +382,13 @@ export class Modals {
           },
         }));
       }
+      row.appendChild(h('button', {
+        class: 'btn', text: hs.garage ? `🅿 Garage · ${hs.parked.length} car${hs.parked.length === 1 ? '' : 's'}` : '🅿 Build a garage',
+        onClick: () => {
+          this.close();
+          openGarage(g, this);
+        },
+      }));
       body.appendChild(row);
       body.appendChild(h('div', { class: 'field-label', text: 'Vault tiers' }));
       const tiers = h('div', { class: 'tier-list' });

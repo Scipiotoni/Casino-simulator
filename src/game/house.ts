@@ -19,6 +19,38 @@ export interface HouseState {
   tier: number;
   /** Recent transfers, newest first. */
   log: VaultLog[];
+  /** Garage size: 0 = none yet, 1..GARAGE_TIERS.length. */
+  garage: number;
+  /** Cars parked in the garage. */
+  parked: ParkedCar[];
+}
+
+/** A car in your garage: one you bought (its id) or one you took out of traffic and kept. */
+export interface ParkedCar {
+  id?: string;
+  /** Kept traffic car: its body type and paint. */
+  kind?: number;
+  color?: number;
+}
+
+export interface GarageTier {
+  tier: number;
+  name: string;
+  price: number;
+  /** Cars it holds. */
+  cap: number;
+  /** Depth of the building (metres). */
+  depth: number;
+}
+
+export const GARAGE_TIERS: GarageTier[] = [
+  { tier: 1, name: 'Two-Car Garage', price: 25_000, cap: 2, depth: 7 },
+  { tier: 2, name: 'Four-Car Garage', price: 90_000, cap: 4, depth: 13 },
+  { tier: 3, name: "Collector's Garage", price: 300_000, cap: 6, depth: 19 },
+];
+
+export function garageTier(tier: number): GarageTier | null {
+  return GARAGE_TIERS[tier - 1] ?? null;
 }
 
 export interface VaultLog {
@@ -78,6 +110,8 @@ export function newHouse(owner: string, look: CasinoLook): HouseState {
     code: '',
     tier: 0,
     log: [],
+    garage: 0,
+    parked: [],
   };
 }
 
@@ -137,5 +171,26 @@ export function sanitizeHouse(raw: unknown, fonts: string[], sanitizeLook: (a: u
     code: validCode(code, tier) ? code : '',
     tier,
     log,
+    garage: Math.round(num(r.garage, 0, GARAGE_TIERS.length, 0)),
+    parked: sanitizeParked(r.parked, garageTier(Math.round(num(r.garage, 0, GARAGE_TIERS.length, 0)))?.cap ?? 0),
   };
+}
+
+/** Parked cars from a save: known car ids (once each) or kept traffic cars, at most `cap`. */
+export function sanitizeParked(raw: unknown, cap: number, known: (id: string) => boolean = () => true): ParkedCar[] {
+  const out: ParkedCar[] = [];
+  const seen = new Set<string>();
+  for (const it of Array.isArray(raw) ? raw : []) {
+    if (out.length >= cap) break;
+    if (!it || typeof it !== 'object') continue;
+    const p = it as Record<string, unknown>;
+    if (typeof p.id === 'string') {
+      if (p.id.length > 20 || seen.has(p.id) || !known(p.id)) continue;
+      seen.add(p.id);
+      out.push({ id: p.id });
+    } else if (typeof p.kind === 'number' && typeof p.color === 'number') {
+      out.push({ kind: Math.round(num(p.kind, 0, 4, 0)), color: Math.round(num(p.color, 0, 0xffffff, 0)) });
+    }
+  }
+  return out;
 }

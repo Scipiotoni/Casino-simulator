@@ -30,6 +30,11 @@ export class Minimap {
   private drag: { x: number; y: number; cx: number; cz: number; moved: boolean } | null = null;
   private list: HTMLElement;
   private listKey = '';
+  /** Turn the map so the way the camera faces is up (false = north up). */
+  private headingUp = true;
+  /** Current rotation of the map (radians, canvas clockwise). */
+  private rot = 0;
+  private compassBtn: HTMLElement;
 
   constructor(private game: Game) {
     this.canvas = h('canvas', { class: 'mm-canvas', 'aria-label': 'Street map: click to teleport' }) as HTMLCanvasElement;
@@ -58,9 +63,31 @@ export class Minimap {
         audio.play('click');
       },
     });
+    try {
+      this.headingUp = localStorage.getItem('jackpot-tycoon:mapNorthUp') !== '1';
+    } catch {
+      /* storage blocked: keep the default */
+    }
+    this.compassBtn = h('button', {
+      class: 'mm-toggle mm-compass', text: '🧭', title: 'Map turns with the camera (click for north up)', 'aria-label': 'Toggle map rotation',
+      onClick: (e: Event) => {
+        e.stopPropagation();
+        this.headingUp = !this.headingUp;
+        try {
+          localStorage.setItem('jackpot-tycoon:mapNorthUp', this.headingUp ? '0' : '1');
+        } catch {
+          /* ignore */
+        }
+        this.compassBtn.title = this.headingUp ? 'Map turns with the camera (click for north up)' : 'North up (click to turn the map with the camera)';
+        this.compassBtn.classList.toggle('on', this.headingUp);
+        audio.play('click');
+        this.t = 0;
+      },
+    });
+    this.compassBtn.classList.toggle('on', this.headingUp);
     this.list = h('div', { class: 'mm-players' });
     this.el = h('div', { class: 'minimap' },
-      h('div', { class: 'mm-head' }, h('span', { text: 'CITY MAP' }), h('span', { class: 'mm-btns' }, zoomBtn('−', 1 / 1.5, 'Zoom out'), zoomBtn('+', 1.5, 'Zoom in'), meBtn, toggle)),
+      h('div', { class: 'mm-head' }, h('span', { text: 'CITY MAP' }), h('span', { class: 'mm-btns' }, zoomBtn('−', 1 / 1.5, 'Zoom out'), zoomBtn('+', 1.5, 'Zoom in'), this.compassBtn, meBtn, toggle)),
       this.canvas, this.list);
     this.canvas.addEventListener('click', (e) => this.click(e));
     // Wheel zooms around the cursor; dragging pans the big map.
@@ -68,7 +95,8 @@ export class Minimap {
       e.preventDefault();
       e.stopPropagation();
       const r = this.canvas.getBoundingClientRect();
-      this.zoomAt(Math.exp(-e.deltaY * 0.0015), ((e.clientX - r.left) / r.width) * this.canvas.width, ((e.clientY - r.top) / r.height) * this.canvas.height);
+      const u = this.unrot(((e.clientX - r.left) / r.width) * this.canvas.width, ((e.clientY - r.top) / r.height) * this.canvas.height);
+      this.zoomAt(Math.exp(-e.deltaY * 0.0015), u.x, u.y);
     }, { passive: false });
     this.canvas.addEventListener('pointerdown', (e) => {
       const c = this.viewCenter();
@@ -83,7 +111,12 @@ export class Minimap {
       d.moved = true;
       const r = this.canvas.getBoundingClientRect();
       const k = this.canvas.width / r.width / this.view.s;
-      this.center = { x: d.cx - dx * k, z: d.cz - dy * k };
+      // Turn the drag back into map directions.
+      const cs = Math.cos(-this.rot);
+      const sn = Math.sin(-this.rot);
+      const ux = dx * cs - dy * sn;
+      const uy = dx * sn + dy * cs;
+      this.center = { x: d.cx - ux * k, z: d.cz - uy * k };
       this.follow = '';
       this.t = 0;
     });
@@ -97,6 +130,17 @@ export class Minimap {
   }
 
   private dragged = 0;
+
+  /** A point on the (rotated) canvas → where it is on the map before rotation. */
+  private unrot(px: number, py: number): { x: number; y: number } {
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const cs = Math.cos(-this.rot);
+    const sn = Math.sin(-this.rot);
+    const dx = px - W / 2;
+    const dy = py - H / 2;
+    return { x: W / 2 + dx * cs - dy * sn, y: H / 2 + dx * sn + dy * cs };
+  }
 
   /** The global point in the middle of the map right now. */
   private viewCenter(): { x: number; z: number } {
@@ -155,8 +199,9 @@ export class Minimap {
     if (performance.now() - this.dragged < 250) return;
     const g = this.game;
     const r = this.canvas.getBoundingClientRect();
-    const px = ((e.clientX - r.left) / r.width) * this.canvas.width;
-    const pz = ((e.clientY - r.top) / r.height) * this.canvas.height;
+    const u = this.unrot(((e.clientX - r.left) / r.width) * this.canvas.width, ((e.clientY - r.top) / r.height) * this.canvas.height);
+    const px = u.x;
+    const pz = u.y;
     const gx = this.view.x0 + px / this.view.s;
     const gz = this.view.z0 + pz / this.view.s;
     // A building: land on the sidewalk right outside its door.
@@ -201,7 +246,15 @@ export class Minimap {
     const me = st.worldToGlobal(g.player.x, g.player.z);
     // Scale: the whole city when big, about a block around you when small (then zoomed).
     const bd = st.bounds;
-    const s = this.big ? Math.min(W / (bd.x1 - bd.x0 + 8), H / (bd.z1 - bd.z0 + 8)) * this.zoomBig : Math.max(W / 110, H / 80) * this.zoomSmall;
+    // Heading up: turn the map so the way the camera looks points up.
+    const side = st.placeOf(st.activeId).side;
+    const ca = g.cam.yaw + (side ? Math.PI : 0);
+    const want = this.headingUp ? -Math.PI / 2 - Math.atan2(-Math.cos(ca), -Math.sin(ca)) : 0;
+    this.rot = want;
+    const rot = want;
+    const fitW = this.headingUp ? Math.hypot(bd.x1 - bd.x0, bd.z1 - bd.z0) + 8 : bd.x1 - bd.x0 + 8;
+    const fitH = this.headingUp ? fitW : bd.z1 - bd.z0 + 8;
+    const s = this.big ? Math.min(W / fitW, H / fitH) * this.zoomBig : Math.max(W / 110, H / 80) * this.zoomSmall;
     const viewW = W / s;
     const viewH = H / s;
     // Centre: a followed player, a dragged-to spot, you (small map) or the whole city (big map).
@@ -228,8 +281,22 @@ export class Minimap {
     const Z = (z: number) => (z - z0) * s;
 
     // Mountains, the open desert around town (rounded at the corners), then the city.
+    c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = '#3b2a22';
     c.fillRect(0, 0, W, H);
+    c.translate(W / 2, H / 2);
+    c.rotate(rot);
+    c.translate(-W / 2, -H / 2);
+    // Everything within this radius of the middle can end up on screen once turned.
+    const R = Math.hypot(W, H) / 2;
+    const out = (x: number, y: number, m = 0) => Math.hypot(x - W / 2, y - H / 2) > R + m;
+    const txt = (t: string, x: number, y: number, dy = 0) => {
+      c.save();
+      c.translate(x, y);
+      c.rotate(-rot);
+      c.fillText(t, 0, dy);
+      c.restore();
+    };
     c.fillStyle = '#7a5e3c';
     c.beginPath();
     c.roundRect(X(bd.x0 - WILDS), Z(bd.z0 - WILDS), (bd.x1 - bd.x0 + WILDS * 2) * s, (bd.z1 - bd.z0 + WILDS * 2) * s, WILDS * s);
@@ -295,7 +362,7 @@ export class Minimap {
     c.textBaseline = 'middle';
     for (const lot of st.lots) {
       const b = this.lotRect(lot);
-      if (X(b.x1) < 0 || X(b.x0) > W || Z(b.z1) < 0 || Z(b.z0) > H) continue;
+      if (out((X(b.x0) + X(b.x1)) / 2, (Z(b.z0) + Z(b.z1)) / 2, Math.hypot(X(b.x1) - X(b.x0), Z(b.z1) - Z(b.z0)) / 2)) continue;
       const filler = lot.kind === 'filler';
       const mine = lot.id === 'me' || lot.id === 'house' || lot.hotelOf === 'me';
       c.fillStyle = filler ? (lot.info.filler?.kind === 'park' ? '#2c5a33' : '#3b3747') : lot.kind === 'shop' ? '#7a2a2a' : hex(lot.info.look.wallColor ?? 0x6a2cc2);
@@ -319,7 +386,7 @@ export class Minimap {
       let label = name;
       while (label.length > 3 && c.measureText(label).width > maxW) label = label.slice(0, -2);
       if (label !== name) label += '…';
-      c.fillText(label, X((b.x0 + b.x1) / 2), ty);
+      txt(label, X((b.x0 + b.x1) / 2), ty);
       if ((lot.kind === 'player') && lot.online) {
         c.fillStyle = '#35e08a';
         c.beginPath();
@@ -334,7 +401,7 @@ export class Minimap {
       c.fillStyle = '#ffe9b0';
       c.shadowColor = 'rgba(0,0,0,0.9)';
       c.shadowBlur = 3;
-      for (let r = 0; r < STREET_ROWS; r++) c.fillText(`${STREET_NAMES[r]} · ${STREET_BLURBS[r]}`, X(bd.x0) + 110, Z(streetZ(r)));
+      for (let r = 0; r < STREET_ROWS; r++) txt(`${STREET_NAMES[r]} · ${STREET_BLURBS[r]}`, X(bd.x0) + 110, Z(streetZ(r)));
       c.shadowBlur = 0;
     }
 
@@ -344,7 +411,7 @@ export class Minimap {
     for (const p of g.mapPlayers) {
       const px = X(p.x);
       const pz = Z(p.z);
-      if (px < -40 || px > W + 40 || pz < -40 || pz > H + 40) continue;
+      if (out(px, pz, 40)) continue;
       const rr = Math.max(4.5, Math.min(10, s * 0.7));
       const followedNow = this.follow === p.pid;
       c.lineWidth = 2.5;
@@ -374,11 +441,11 @@ export class Minimap {
         c.shadowColor = 'rgba(0,0,0,0.95)';
         c.shadowBlur = 4;
         c.fillStyle = p.wanted ? '#ffc53d' : '#bff6ff';
-        c.fillText(tag, px, pz - rr - 8);
+        txt(tag, px, pz, -rr - 8);
         if (p.inside && (this.big || s > 5)) {
           c.font = `700 ${Math.max(9, Math.min(12, font - 1))}px system-ui, sans-serif`;
           c.fillStyle = 'rgba(191,246,255,0.75)';
-          c.fillText(p.where, px, pz + rr + 9);
+          txt(p.where, px, pz, rr + 9);
           c.font = `800 ${Math.max(10, Math.min(14, font))}px system-ui, sans-serif`;
         }
         c.shadowBlur = 0;
@@ -412,6 +479,24 @@ export class Minimap {
     c.stroke();
     c.fill();
     c.restore();
+    // A compass needle on the rim pointing north when the map turns.
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    if (Math.abs(rot) > 1e-3) {
+      const nx = Math.sin(rot);
+      const ny = -Math.cos(rot);
+      const k = Math.min(Math.abs((W / 2 - 12) / (nx || 1e-6)), Math.abs((H / 2 - 12) / (ny || 1e-6)));
+      const ax = W / 2 + nx * k;
+      const ay = H / 2 + ny * k;
+      c.fillStyle = 'rgba(11,7,20,0.75)';
+      c.beginPath();
+      c.arc(ax, ay, 9 * Math.min(2, window.devicePixelRatio || 1), 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = '#ff5a5a';
+      c.font = `900 ${11 * Math.min(2, window.devicePixelRatio || 1)}px system-ui, sans-serif`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('N', ax, ay + 0.5);
+    }
   }
 
   /** Big map: everyone online, click a name to find them on the map. */

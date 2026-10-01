@@ -7,6 +7,7 @@ import { CARS, tunedSpecs } from '../world/vehicles';
 import { carThumb } from './preview';
 import { modsOf } from '../game/driving';
 import { modsSummary, openCustomize } from './carGarage';
+import { openGarage } from './homeGarage';
 
 /**
  * Velocity Motors: buy cars (with your casino cash), pick a colour, and have any car you
@@ -71,7 +72,9 @@ export function openDealer(game: Game, modals: Modals, mine = false): void {
     if (mine && !g.garage.owned.length) grid.appendChild(h('p', { class: 'muted', text: 'No cars yet. Visit Velocity Motors on Downtown Boulevard.' }));
     body.appendChild(grid);
     if (mine) {
-      body.appendChild(h('button', { class: 'btn', text: '🏁 Visit the dealership', onClick: () => { modals.close(); openDealer(g, modals, false); } }));
+      body.appendChild(h('div', { class: 'btn-row' },
+        h('button', { class: 'btn', text: '🏁 Visit the dealership', onClick: () => { modals.close(); openDealer(g, modals, false); } }),
+        g.house ? h('button', { class: 'btn', text: '🅿 My garage', onClick: () => { modals.close(); openGarage(g, modals); } }) : null));
     }
   };
   render();

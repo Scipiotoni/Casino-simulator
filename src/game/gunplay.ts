@@ -335,8 +335,14 @@ export class GunPlay {
       this.spinV = Math.max(0, Math.min(30, this.spinV + (held ? 60 : -25) * dt));
       if (this.held?.spin) this.held.spin.rotation.z += this.spinV * dt;
     }
-    if (d && (pressed || (d.auto && held))) {
+    // A click during the cooldown isn't lost: it fires as soon as the gun is ready.
+    if (pressed) this.queued = 0.25;
+    else this.queued = Math.max(0, this.queued - dt);
+    const want = pressed || (this.queued > 0 && this.cool <= 0 && this.reloading <= 0);
+    if (d && (want || (d.auto && held))) {
+      if (this.cool <= 0 && this.reloading <= 0) this.queued = 0;
       if (!this.canShoot) {
+        this.queued = 0;
         if (pressed && this.warnT <= 0) {
           this.warnT = 2;
           g.notify(g.inside ? 'Guns stay holstered indoors: step out onto the street to shoot.' : 'You can only shoot out on the street.', 'bad');
@@ -381,6 +387,8 @@ export class GunPlay {
   }
 
   private lastActive = '';
+  /** A trigger pull waiting for the cooldown to end (seconds left). */
+  private queued = 0;
 
   private fire(d: GunDef): void {
     const g = this.g;

@@ -44,6 +44,7 @@ import {
 import { RIVAL_ID, RIVAL_NAME, generateRival, rivalLook, rivalLotInfo, tickRival } from './rival';
 import {
   type HouseState, HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, addLog, clampTransfer, newHouse, sanitizeHouse, securityRating, validCode, vaultInterest, vaultTier,
+  garageTier,
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
@@ -129,6 +130,8 @@ export interface GameEvents {
   chat: ChatLine;
   /** At the Velocity Motors counter. */
   dealer: void;
+  /** At your garage door (on foot). */
+  garage: void;
   /** You started or stopped doing something (sitting, punching the bag…). */
   activity: void;
 }
@@ -1376,7 +1379,7 @@ export class Game implements World, ItemHost {
     if (hi) {
       lots.push({
         id: 'house', kind: 'house', houseOf: 'me', owner: this.player.name, order: 0, online: true,
-        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '' },
+        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '', ownGarage: true },
       });
     }
     this.street.setLots(lots);
@@ -2829,7 +2832,10 @@ export class Game implements World, ItemHost {
     const car = this.drive.driving;
     if (car) {
       const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
-      this.interactTarget = { kind: `carout${car.uid}`, label: 'Get out · W/S drive · A/D steer · Shift boost · C horn', hold: false, anchor, act: () => this.drive.exit() };
+      // On your driveway: drive into the garage instead of getting out.
+      this.interactTarget = this.house?.garage && this.drive.atGarage(car.x, car.z)
+        ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park() }
+        : { kind: `carout${car.uid}`, label: 'Get out · W/S drive · A/D steer · Shift boost · C horn', hold: false, anchor, act: () => this.drive.exit() };
       this.handleTarget(dt, this.interactTarget);
       return;
     }
@@ -2842,6 +2848,17 @@ export class Game implements World, ItemHost {
         const label = v ? (v.owned ? `🚗 Drive your ${v.name}` : '🚗 Get in') : '🚗 Steal this car';
         bestD = near.d;
         target = { kind: `car${v ? v.uid : 't'}`, label, hold: false, anchor, act: () => (v ? this.drive.enter(v) : tc && this.drive.steal(tc)) };
+      }
+      // Your garage door
+      if (!target && this.house && this.drive.playerAtGarage) {
+        const h = this.house;
+        const cap = garageTier(h.garage)?.cap ?? 0;
+        bestD = 1.5;
+        target = {
+          kind: 'garage', hold: false, anchor: () => new THREE.Vector3(this.player.x, 2.6, this.player.z),
+          label: h.garage ? `🅿 Your garage · ${h.parked.length}/${cap} cars` : '🅿 Build a garage here',
+          act: () => this.events.emit('garage', undefined),
+        };
       }
     }
     const act = this.activity;

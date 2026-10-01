@@ -17,6 +17,7 @@ import { cosmetic } from '../cosmetics/catalog';
 import { GunBar, openGunShop } from './guns';
 import { CombatHud } from './combatHud';
 import { openDealer } from './cars';
+import { openGarage } from './homeGarage';
 import { ChatBox } from './chat';
 import { openVault } from './vault';
 
@@ -226,6 +227,9 @@ export class Hud {
     });
     g.events.on('dealer', () => {
       if (!this.modals.isOpen) openDealer(g, this.modals);
+    });
+    g.events.on('garage', () => {
+      if (!this.modals.isOpen) openGarage(g, this.modals);
     });
     g.events.on('wardrobe', () => {
       if (!this.modals.isOpen) this.modals.openCreator('player');

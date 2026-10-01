@@ -24,6 +24,8 @@ export interface LotLook {
   style?: 'hotel' | 'garden' | 'house' | 'filler' | 'gunshop' | 'dealer';
   /** What a filler building looks like. */
   filler?: FillerSpec;
+  /** Your own house: its garage is a real one (drawn by the game), so leave the decorative one out. */
+  ownGarage?: boolean;
 }
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
@@ -149,7 +151,7 @@ export class Exterior {
     else {
       const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, i.width))].w;
       const d = START_DEPTH + Math.min(MAX_DEPTH_STEPS, Math.max(0, i.depth)) * DEPTH_STEP;
-      this.extra = buildHouse(s, CENTER_X - w / 2, CENTER_X + w / 2, FACADE_Z - d, Math.max(1, i.floors) * STORY_H, i.look.wallColor, i.look.trimColor, i.look.name);
+      this.extra = buildHouse(s, CENTER_X - w / 2, CENTER_X + w / 2, FACADE_Z - d, Math.max(1, i.floors) * STORY_H, i.look.wallColor, i.look.trimColor, i.look.name, !i.ownGarage);
     }
     for (const k of this.extra.keep) dyn.keep(k);
     bake(s, dyn);

@@ -53,7 +53,7 @@ export class Car {
   readonly lights: THREE.Mesh;
   readonly hazard: THREE.Mesh;
 
-  constructor(kind: number, color: number) {
+  constructor(readonly kind: number, readonly color: number) {
     const proto = carProto(kind);
     const paint = mat(color, { rough: 0.25, metal: 0.55 });
     const body = new THREE.Mesh(proto.paint, paint);

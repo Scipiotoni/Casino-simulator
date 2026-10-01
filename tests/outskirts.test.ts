@@ -44,3 +44,22 @@ describe('the sun follows the clock', () => {
     expect(night.y).toBeLessThan(-0.5);
   });
 });
+
+import { GARAGE_TIERS, garageTier, sanitizeParked } from '../src/game/house';
+
+describe('the home garage', () => {
+  it('has three sizes that hold more cars and cost more', () => {
+    expect(GARAGE_TIERS.map((t) => t.cap)).toEqual([2, 4, 6]);
+    for (let i = 1; i < GARAGE_TIERS.length; i++) expect(GARAGE_TIERS[i].price).toBeGreaterThan(GARAGE_TIERS[i - 1].price);
+    expect(garageTier(0)).toBeNull();
+    expect(garageTier(2)?.name).toBe('Four-Car Garage');
+  });
+
+  it('keeps parked cars sane when loading a save', () => {
+    const raw = [{ id: 'super' }, { id: 'super' }, { kind: 2, color: 0xff0000 }, { kind: 99, color: -5 }, 'junk', { id: 'x'.repeat(40) }, { id: 'hatch' }];
+    const out = sanitizeParked(raw, 4, (id) => id === 'super' || id === 'hatch');
+    expect(out).toEqual([{ id: 'super' }, { kind: 2, color: 0xff0000 }, { kind: 4, color: 0 }, { id: 'hatch' }]);
+    expect(sanitizeParked(raw, 1)).toHaveLength(1);
+    expect(sanitizeParked(undefined, 4)).toEqual([]);
+  });
+});

@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import type { Game } from './game';
 import { type CarDef, type CarMods, CARS, STOLEN_SPECS, buildCar, carDef, defaultMods, sanitizeMods, tunedSpecs } from '../world/vehicles';
-import type { Car } from '../world/cityView';
+import { Car } from '../world/cityView';
+import { GARAGE_W, GarageModel } from '../world/garage';
+import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
+import { type ParkedCar, garageTier } from './house';
 import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from '../world/city';
 import { HEAT } from '../world/police';
 import { audio } from '../core/audio';
@@ -33,6 +36,8 @@ export interface Vehicle {
   mods: CarMods | null;
   flames: THREE.Object3D[];
   brakeLights: THREE.Mesh[];
+  /** A traffic car you took (its body and paint), so it can be kept in your garage. */
+  kept?: { kind: number; color: number };
 }
 
 /** Cars you own (saved). */
@@ -105,7 +110,7 @@ export class Driving {
     for (const [a, b] of [[0.5, 0.5], [0.5, -0.5], [-0.5, 0.5], [-0.5, -0.5], [0, 0]]) {
       const px = x + fx * len * a + rx * wid * b;
       const pz = z + fz * len * a + rz * wid * b;
-      if (!openGround(px, pz, this.cols)) return false;
+      if (!openGround(px, pz, this.cols) && !this.inGarage(px, pz)) return false;
     }
     return true;
   }
@@ -167,6 +172,8 @@ export class Driving {
     const old = this.vehicles.find((v) => v.owned && v.def?.id === id);
     if (old) this.remove(old);
     const v = this.addVehicle(def, probe, color, spot.x, spot.z, spot.yaw, true, false, mods);
+    // It leaves the garage if it was parked there.
+    if (g.house) g.house.parked = g.house.parked.filter((p) => p.id !== id);
     audio.play('honk');
     g.notify(`Your ${def.name} is at the curb. Walk up to it and press Space.`, 'good');
     return !!v;
@@ -197,6 +204,7 @@ export class Driving {
     const v: Vehicle = {
       uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
       x: c.x, z: c.z, yaw: c.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: true, mods: null, flames: [], brakeLights: [],
+      kept: { kind: c.kind, color: c.color },
     };
     this.vehicles.push(v);
     g.street.police.crime(HEAT.knockout);
@@ -275,8 +283,11 @@ export class Driving {
     const city = g.street.city;
     city.obstacles = this.vehicles.map((v) => ({ x: v.x, z: v.z }));
     this.crashT = Math.max(0, this.crashT - dt);
+    this.updateGarage(dt);
     const v = this.driving;
+    g.cam.chase = !!v;
     if (!v) return;
+    g.cam.chaseSpeed = v.speed;
     const input = g.input;
     let throttle = 0;
     let steer = 0;
@@ -439,6 +450,240 @@ export class Driving {
     g.garage.mods[id] = defaultMods(def, color);
     audio.play('purchase');
     g.notify(`You bought a ${def.name}! Have it brought to you from the Cars panel.`, 'good');
+    g.requestSave();
+    return true;
+  }
+
+  // ------------------------------------------------------------------ your garage
+
+  private garage = new GarageModel();
+  private garageKey = '';
+
+  /** Centre line of your garage in the house lot's frame (null without a house on the map). */
+  private garageX(): number | null {
+    const g = this.g;
+    const hi = g.houseInfo();
+    if (!hi || !g.street.get('house')) return null;
+    const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, hi.width))].w;
+    return CENTER_X + w / 2 + 3.6;
+  }
+
+  /** Is this global point on the driveway in front of your garage? */
+  atGarage(x: number, z: number): boolean {
+    const gx = this.garageX();
+    if (gx === null) return false;
+    const l = this.g.street.fromGlobal('house', x, z);
+    const depth = garageTier(this.g.house?.garage ?? 0)?.depth ?? 0;
+    return Math.abs(l.x - gx) < GARAGE_W / 2 + 0.6 && l.z > FACADE_Z - depth - 0.5 && l.z < SIDEWALK_Z0 + 7;
+  }
+
+  /** Inside your garage, between its walls (cars can drive in and out through the door). */
+  private inGarage(x: number, z: number): boolean {
+    const h = this.g.house;
+    const t = h ? garageTier(h.garage) : null;
+    if (!t) return false;
+    const gx = this.garageX();
+    if (gx === null) return false;
+    const l = this.g.street.fromGlobal('house', x, z);
+    return Math.abs(l.x - gx) < 2.7 && l.z > FACADE_Z - t.depth + 0.15 && l.z < SIDEWALK_Z0 + 0.5;
+  }
+
+  /** You're standing (or driving) on your driveway. */
+  get playerAtGarage(): boolean {
+    const g = this.g;
+    if (g.inside || g.player.floor > 0) return false;
+    const p = this.playerGlobal();
+    return this.atGarage(p.x, p.z);
+  }
+
+  private parkedModel(p: ParkedCar): THREE.Object3D | null {
+    if (p.id) {
+      const d = carDef(p.id);
+      return d ? buildCar(d, undefined, modsOf(this.g.garage, p.id)).root : null;
+    }
+    if (p.kind !== undefined) return new Car(p.kind, p.color ?? 0xffffff).root;
+    return null;
+  }
+
+  private updateGarage(dt: number): void {
+    const g = this.g;
+    const h = g.house;
+    const gx = this.garageX();
+    const t = h ? garageTier(h.garage) : null;
+    if (!h || gx === null || !t) {
+      if (this.garage.root.parent) {
+        this.garage.clear();
+        this.garage.root.removeFromParent();
+        this.garageKey = '';
+      }
+      return;
+    }
+    const look = g.houseInfo()!.look;
+    const key = JSON.stringify([gx, t.depth, look.wallColor, look.trimColor, h.parked, h.parked.map((p) => (p.id ? g.garage.mods[p.id] ?? null : null))]);
+    if (key !== this.garageKey) {
+      this.garageKey = key;
+      const cars = h.parked.map((p) => this.parkedModel(p)).filter((c): c is THREE.Object3D => !!c);
+      this.garage.build(gx, t.depth, look.wallColor, look.trimColor, cars);
+      if (!this.garage.root.parent) this.group.add(this.garage.root);
+      this.g.renderer.markShadowsDirty();
+    }
+    const o = g.street.toGlobal('house', 0, 0);
+    this.garage.root.position.set(o.x, 0, o.z);
+    this.garage.root.rotation.y = g.street.placeOf('house').side === 1 ? Math.PI : 0;
+    const pg = this.playerGlobal();
+    const door = g.street.toGlobal('house', gx, FACADE_Z + 2);
+    const d = Math.hypot(pg.x - door.x, pg.z - door.z);
+    this.garage.root.visible = d < 260;
+    // Inside the garage the roof lifts off so you can see your car.
+    this.garage.update(dt, !g.inside && d < (this.driving ? 24 : 12), !this.inGarage(pg.x, pg.z) || g.cam.mode === 'first');
+  }
+
+  /** Build your garage, or make it bigger. */
+  buyGarage(): boolean {
+    const g = this.g;
+    const h = g.house;
+    if (!h) {
+      audio.play('error');
+      g.notify('Buy a house first: the garage goes right next to it.', 'bad');
+      return false;
+    }
+    const next = garageTier(h.garage + 1);
+    if (!next) return false;
+    if (g.money < next.price) {
+      audio.play('error');
+      g.notify(`The ${next.name} costs ${formatMoney(next.price)}.`, 'bad');
+      return false;
+    }
+    g.spend(next.price, 'expand');
+    h.garage = next.tier;
+    g.events.emit('house', undefined);
+    audio.play('levelup');
+    g.notify(`${next.name} built next to your house: room for ${next.cap} cars. Drive up to the door and press Space to park.`, 'good');
+    g.saveNow();
+    return true;
+  }
+
+  /** Drive into your garage: the car is parked inside (stolen ones become yours). */
+  park(): boolean {
+    const g = this.g;
+    const v = this.driving;
+    const h = g.house;
+    const t = h ? garageTier(h.garage) : null;
+    if (!v || !h) return false;
+    if (!t) {
+      audio.play('error');
+      g.notify('You have no garage yet: build one from your house (Home → Garage).', 'bad');
+      return false;
+    }
+    if (g.street.police.stars > 0) {
+      audio.play('error');
+      g.notify('The police are on your tail: lose them before you hide a car in your garage.', 'bad');
+      return false;
+    }
+    if (Math.abs(v.speed) > 4) {
+      g.notify('Slow down to drive in.', 'bad');
+      return false;
+    }
+    const entry: ParkedCar | null = v.def ? { id: v.def.id } : v.kept ? { ...v.kept } : null;
+    if (!entry) return false;
+    const already = !!entry.id && h.parked.some((p) => p.id === entry.id);
+    if (!already) {
+      if (h.parked.length >= t.cap) {
+        audio.play('error');
+        g.notify(`Your garage is full (${t.cap} cars). Make it bigger, or take a car out first.`, 'bad');
+        return false;
+      }
+      h.parked.push(entry);
+    }
+    const stolen = !v.def;
+    this.exit();
+    this.remove(v);
+    // Step back out onto the driveway.
+    const gx = this.garageX();
+    if (gx !== null) {
+      const out = g.street.toGlobal('house', gx - 1.5, SIDEWALK_Z0 + 1.2);
+      const w = g.street.globalToWorld(out.x, out.z);
+      g.player.x = w.x;
+      g.player.z = w.z;
+      g.player.yaw = g.street.rotOf('house') + Math.PI;
+      g.player.halt();
+    }
+    this.nitro = 1;
+    audio.play('doorbell', { pitch: 0.7 });
+    g.notify(stolen ? 'You hid the car in your garage. It’s yours now!' : `Your ${v.name} is parked in your garage, washed and the nitro topped up.`, 'good');
+    g.stats.carsParked = (g.stats.carsParked ?? 0) + 1;
+    g.requestSave();
+    return true;
+  }
+
+  /** Drive a parked car out of the garage (you have to be at the garage). */
+  takeOut(i: number): boolean {
+    const g = this.g;
+    const h = g.house;
+    const gx = this.garageX();
+    const p = h?.parked[i];
+    if (!h || gx === null || !p) return false;
+    if (!this.playerAtGarage) {
+      audio.play('error');
+      g.notify('Go to your garage to drive a car out (or have it brought to you from My cars).', 'bad');
+      return false;
+    }
+    const def = p.id ? carDef(p.id) ?? null : null;
+    if (p.id && !def) return false;
+    const mods = def ? modsOf(g.garage, def.id) : null;
+    const built = def ? buildCar(def, undefined, mods!) : null;
+    const len = built ? built.length : new Car(p.kind ?? 0, 0).length;
+    // Nose just inside the door: drive it out.
+    const depth = garageTier(h.garage)?.depth ?? 7;
+    const at = g.street.toGlobal('house', gx, Math.max(FACADE_Z - 0.2 - len / 2, FACADE_Z - depth + 0.25 + len * 0.46));
+    const yaw = g.street.placeOf('house').side === 1 ? Math.PI : 0;
+    if (this.vehicles.some((o) => Math.hypot(o.x - at.x, o.z - at.z) < 4)) {
+      audio.play('error');
+      g.notify('Another car is blocking the garage door.', 'bad');
+      return false;
+    }
+    if (this.driving) this.exit();
+    if (def) {
+      const old = this.vehicles.find((o) => o.owned && o.def?.id === def.id);
+      if (old) this.remove(old);
+    }
+    h.parked.splice(i, 1);
+    let v: Vehicle;
+    if (def && built && mods) v = this.addVehicle(def, built, mods.color, at.x, at.z, yaw, true, false, mods);
+    else {
+      const c = new Car(p.kind ?? 0, p.color ?? 0xffffff);
+      c.root.position.set(at.x, 0, at.z);
+      c.root.rotation.y = yaw;
+      this.group.add(c.root);
+      v = {
+        uid: nextUid++, def: null, name: 'your car', color: p.color ?? 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+        x: at.x, z: at.z, yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: true, stolen: false, mods: null, flames: [], brakeLights: [],
+        kept: { kind: c.kind, color: c.color },
+      };
+      this.vehicles.push(v);
+    }
+    this.enter(v);
+    g.requestSave();
+    return true;
+  }
+
+  /** Have a car you own taken home and parked in your garage (from anywhere). */
+  sendHome(id: string): boolean {
+    const g = this.g;
+    const h = g.house;
+    const t = h ? garageTier(h.garage) : null;
+    if (!h || !t || !g.garage.owned.includes(id) || h.parked.some((p) => p.id === id)) return false;
+    if (h.parked.length >= t.cap) {
+      audio.play('error');
+      g.notify(`Your garage is full (${t.cap} cars).`, 'bad');
+      return false;
+    }
+    const out = this.vehicles.find((o) => o.owned && o.def?.id === id);
+    if (out) this.remove(out);
+    h.parked.push({ id });
+    g.events.emit('house', undefined);
+    audio.play('click');
+    g.notify(`A valet is taking your ${carDef(id)?.name ?? 'car'} home to your garage.`, 'good');
     g.requestSave();
     return true;
   }
