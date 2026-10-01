@@ -134,9 +134,9 @@ export class CameraRig {
       this.yawTarget = this.yaw;
       this.kick = damp(this.kick, 0, 9, dt);
       this.kickYaw = damp(this.kickYaw, 0, 9, dt);
-      if (Math.abs(cam.fov - this.fovTarget) > 0.05 || cam.near !== 0.12) {
+      if (Math.abs(cam.fov - this.fovTarget) > 0.05 || cam.near !== 0.04) {
         cam.fov = damp(cam.fov, this.fovTarget, 14, dt);
-        cam.near = 0.12;
+        cam.near = 0.04;
         cam.updateProjectionMatrix();
       }
       this.bob += dt * this.bobSpeed * 2.2;

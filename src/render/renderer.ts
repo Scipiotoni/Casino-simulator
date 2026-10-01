@@ -15,18 +15,6 @@ export class Renderer {
   readonly overlay = new THREE.Scene();
   private overlayPass: RenderPass | null = null;
   readonly camera: THREE.PerspectiveCamera;
-  /** The same view with a very close near plane, for the gun in your hands (its own depth). */
-  private overlayCam = new THREE.PerspectiveCamera(38, 1, 0.01, 30);
-  /**
-   * Automatic performance: the share of the full resolution actually rendered (it drops when
-   * the frame rate falls under ~30 and climbs back when there's headroom), and "lite" mode
-   * (no bloom, no shadows) as a last resort.
-   */
-  autoPerf = true;
-  private resScale = 1;
-  private lite = false;
-  private perfLow = 0;
-  private perfHigh = 0;
   readonly sun: THREE.DirectionalLight;
   readonly hemi: THREE.HemisphereLight;
   private composer: EffectComposer | null = null;
@@ -37,7 +25,7 @@ export class Renderer {
   private height = 1;
 
   constructor(readonly container: HTMLElement, quality: Quality) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false, logarithmicDepthBuffer: true });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.45;
@@ -92,18 +80,11 @@ export class Renderer {
     return this.overlay.children.some((c) => c.visible && !(c as THREE.Light).isLight);
   }
 
-  /** Pixel ratio for the quality setting, before the automatic scaling. */
-  private baseRatio(): number {
-    const dpr = window.devicePixelRatio || 1;
-    const q = this.quality;
-    return q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.5) : Math.min(dpr, 1);
-  }
-
   setQuality(q: Quality): void {
     this.quality = q;
-    this.resScale = 1;
-    this.lite = false;
-    this.renderer.setPixelRatio(this.baseRatio());
+    const dpr = window.devicePixelRatio || 1;
+    const ratio = q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.5) : Math.min(dpr, 1);
+    this.renderer.setPixelRatio(ratio);
     const shadows = q !== 'low';
     this.renderer.shadowMap.enabled = shadows;
     this.sun.castShadow = shadows;
@@ -122,8 +103,6 @@ export class Renderer {
     this.overlayPass = null;
     this.bloom = null;
     if (q !== 'low') this.buildComposer();
-    this.perfLow = 0;
-    this.perfHigh = 0;
     this.resize();
     this.markShadowsDirty();
   }
@@ -135,7 +114,7 @@ export class Renderer {
     });
     const composer = new EffectComposer(this.renderer, target);
     composer.addPass(new RenderPass(this.scene, this.camera));
-    const over = new RenderPass(this.overlay, this.overlayCam);
+    const over = new RenderPass(this.overlay, this.camera);
     over.clear = false;
     over.clearDepth = true;
     over.enabled = false;
@@ -145,65 +124,6 @@ export class Renderer {
     composer.addPass(this.bloom);
     composer.addPass(new OutputPass());
     this.composer = composer;
-  }
-
-  /**
-   * Called about once a second with the measured frame rate: render fewer pixels when it
-   * drops under ~30 fps, more again when there's plenty of headroom; as a last resort turn
-   * off bloom and shadows ("lite"), and bring them back when things are fast again.
-   */
-  autoTune(fps: number): void {
-    if (!this.autoPerf) return;
-    const min = Math.max(0.4, 0.6 / this.baseRatio());
-    if (fps < 30) {
-      this.perfHigh = 0;
-      if (++this.perfLow < 2) return;
-      this.perfLow = 0;
-      if (this.resScale > min + 0.01) this.setScale(Math.max(min, this.resScale * (fps < 20 ? 0.75 : 0.87)));
-      else if (!this.lite) this.setLite(true);
-    } else if (fps > 52) {
-      this.perfLow = 0;
-      if (++this.perfHigh < 4) return;
-      this.perfHigh = 0;
-      if (this.lite) this.setLite(false);
-      else if (this.resScale < 1) this.setScale(Math.min(1, this.resScale * 1.1));
-    } else {
-      this.perfLow = 0;
-      this.perfHigh = 0;
-    }
-  }
-
-  /** Share of full resolution being rendered right now (1 = full). */
-  get renderScale(): number {
-    return this.resScale;
-  }
-
-  get liteMode(): boolean {
-    return this.lite;
-  }
-
-  private setScale(k: number): void {
-    this.resScale = k;
-    this.renderer.setPixelRatio(this.baseRatio() * k);
-    this.resize();
-  }
-
-  private setLite(on: boolean): void {
-    this.lite = on;
-    const shadows = !on && this.quality !== 'low';
-    this.renderer.shadowMap.enabled = shadows;
-    this.sun.castShadow = shadows;
-    this.composer?.dispose();
-    this.composer = null;
-    this.overlayPass = null;
-    this.bloom = null;
-    if (!on && this.quality !== 'low') this.buildComposer();
-    this.scene.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
-      if (m) (Array.isArray(m) ? m : [m]).forEach((mm) => (mm.needsUpdate = true));
-    });
-    this.resize();
-    this.markShadowsDirty();
   }
 
   setBloom(strength: number): void {
@@ -234,8 +154,7 @@ export class Renderer {
     fog.far = L.fogFar;
     const want = indoor > 0.5 ? c.setRGB(-14, 26, 10) : c.setRGB(L.dir.x, L.dir.y, L.dir.z);
     const d = new THREE.Vector3(want.r, want.g, want.b).normalize();
-    // The sun crawls across the sky: re-render the shadows every few degrees, not every frame.
-    if (d.distanceToSquared(this.sunDir) > 0.003) {
+    if (d.distanceToSquared(this.sunDir) > 0.0004) {
       this.sunDir.copy(d);
       const t = this.sun.target.position;
       this.sun.position.copy(t).addScaledVector(d, 32);
@@ -293,17 +212,6 @@ export class Renderer {
       this.shadowDirty--;
     }
     const over = this.overlayOn;
-    if (over) {
-      const oc = this.overlayCam;
-      oc.position.copy(this.camera.position);
-      oc.quaternion.copy(this.camera.quaternion);
-      if (oc.fov !== this.camera.fov || oc.aspect !== this.camera.aspect) {
-        oc.fov = this.camera.fov;
-        oc.aspect = this.camera.aspect;
-        oc.updateProjectionMatrix();
-      }
-      oc.updateMatrixWorld();
-    }
     if (this.composer) {
       if (this.overlayPass) this.overlayPass.enabled = over;
       this.composer.render();
@@ -313,7 +221,7 @@ export class Renderer {
         const auto = this.renderer.autoClear;
         this.renderer.autoClear = false;
         this.renderer.clearDepth();
-        this.renderer.render(this.overlay, this.overlayCam);
+        this.renderer.render(this.overlay, this.camera);
         this.renderer.autoClear = auto;
       }
     }

@@ -5113,3 +5113,26 @@ p.small {
   text-decoration: none;
   opacity: 0.55;
 }
+
+/* ------------------------------------------------------------------ low frame rate tip */
+.perf-hint {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-top, 0px) + 96px);
+  transform: translateX(-50%);
+  z-index: 30;
+  width: min(420px, calc(100% - 32px));
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(23, 21, 31, 0.95);
+  border: 1px solid rgba(255, 197, 61, 0.6);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  pointer-events: auto;
+}
+
+.perf-hint b {
+  color: var(--gold);
+}

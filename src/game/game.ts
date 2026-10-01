@@ -135,6 +135,8 @@ export interface GameEvents {
   garage: void;
   /** A waypoint was set or cleared. */
   waypoint: void;
+  /** The game has been running slowly for a while: suggest lower graphics. */
+  perfHint: { fps: number };
   /** You started or stopped doing something (sitting, punching the bag…). */
   activity: void;
 }
@@ -149,8 +151,6 @@ export interface Settings {
   camera?: CamMode;
   /** First-person mouse / drag look speed (1 = normal). */
   lookSens?: number;
-  /** Lower the resolution (and then effects) automatically to keep ~30+ fps. */
-  autoPerf?: boolean;
 }
 
 const DAY_SECONDS = 300;
@@ -3536,6 +3536,24 @@ export class Game implements World, ItemHost {
     this.saveNow();
   }
 
+  /** Seconds in a row below 25 fps. */
+  private slowFor = 0;
+  /** Graphics levels we already suggested leaving this session (don't nag twice). */
+  private hinted = new Set<string>();
+
+  /** Running slowly for ~8 seconds in a row: suggest turning the graphics down. */
+  private watchFps(span: number): void {
+    if (this.state !== 'playing' || this.modalOpen || document.hidden || this.settings.quality === 'low') {
+      this.slowFor = 0;
+      return;
+    }
+    this.slowFor = this.fps < 25 ? this.slowFor + span : 0;
+    if (this.slowFor < 8 || this.hinted.has(this.settings.quality)) return;
+    this.slowFor = 0;
+    this.hinted.add(this.settings.quality);
+    this.events.emit('perfHint', { fps: this.fps });
+  }
+
   get clockMinutes(): number {
     return (DAY_START + this.dayMinutes) % 1440;
   }
@@ -3552,11 +3570,9 @@ export class Game implements World, ItemHost {
     this.fpsFrames++;
     if (this.fpsAcc >= 0.5) {
       this.fps = this.fpsFrames / this.fpsAcc;
+      this.watchFps(this.fpsAcc);
       this.fpsAcc = 0;
       this.fpsFrames = 0;
-      // Keep the frame rate up by itself (not while a menu covers the game).
-      this.renderer.autoPerf = this.settings.autoPerf !== false;
-      if (this.state === 'playing' && !this.modalOpen && !document.hidden) this.renderer.autoTune(this.fps);
     }
     this.step(dt, true);
   }

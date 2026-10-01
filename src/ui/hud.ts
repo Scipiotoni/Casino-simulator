@@ -228,6 +228,7 @@ export class Hud {
     g.events.on('dealer', () => {
       if (!this.modals.isOpen) openDealer(g, this.modals);
     });
+    g.events.on('perfHint', ({ fps }) => this.showPerfHint(fps));
     g.events.on('garage', () => {
       if (!this.modals.isOpen) openGarage(g, this.modals);
     });
@@ -261,6 +262,32 @@ export class Hud {
         this.actionBtn.innerHTML = `<span>${escapeHtml(i.label)}</span>`;
       } else this.actionBtn.hidden = true;
     });
+  }
+
+  /** The game is running slowly: offer lower graphics (lower resolution, fewer effects). */
+  private showPerfHint(fps: number): void {
+    const g = this.game;
+    this.root.querySelector('.perf-hint')?.remove();
+    const q = g.settings.quality;
+    const close = () => el.remove();
+    const set = (level: 'medium' | 'low') => {
+      g.setQuality(level);
+      this.modals.onSettingsChanged?.();
+      g.notify(`Graphics set to ${level === 'medium' ? 'Medium' : 'Low'}. You can change it any time in Menu → Settings.`, 'good');
+      close();
+    };
+    const el = h('div', { class: 'perf-hint', role: 'alert' },
+      h('b', { text: `🐢 Running at ${Math.round(fps)} fps` }),
+      h('span', { text: q === 'high'
+        ? 'Lower the graphics for a smoother game: Medium renders at a lower resolution with softer shadows, Low also drops the glow and shadows.'
+        : 'Still slow: Low graphics renders at the lowest resolution and turns off the glow and shadows.' }),
+      h('div', { class: 'btn-row' },
+        q === 'high' ? h('button', { class: 'btn small gold', text: 'Medium', onClick: () => set('medium') }) : null,
+        h('button', { class: `btn small${q === 'high' ? '' : ' gold'}`, text: 'Low', onClick: () => set('low') }),
+        h('button', { class: 'btn small', text: 'Not now', onClick: close })));
+    this.root.appendChild(el);
+    audio.play('click');
+    window.setTimeout(close, 30000);
   }
 
   setSpeed(s: number): void {
@@ -838,7 +865,7 @@ export class Hud {
       }
       if (!this.goalsCollapsed) this.updateGoalBars();
       this.fpsEl.hidden = !g.settings.showFps;
-      if (g.settings.showFps) this.fpsEl.textContent = `${g.fps.toFixed(0)} fps · ${Math.round(g.renderer.renderScale * 100)}% res${g.renderer.liteMode ? ' · lite' : ''} · ${g.customers.length} guests`;
+      if (g.settings.showFps) this.fpsEl.textContent = `${g.fps.toFixed(0)} fps · ${g.customers.length} guests`;
       const pb = this.placeBar.querySelector('.pb-reason') as HTMLElement | null;
       if (pb) {
         pb.textContent = g.build.valid ? 'Looks good!' : g.build.reason;
