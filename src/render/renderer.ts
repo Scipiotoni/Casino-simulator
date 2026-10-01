@@ -11,6 +11,9 @@ export type Quality = 'low' | 'medium' | 'high';
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
+  /** Drawn on top of the world with its own depth (the gun in your hands in first person). */
+  readonly overlay = new THREE.Scene();
+  private overlayPass: RenderPass | null = null;
   readonly camera: THREE.PerspectiveCamera;
   readonly sun: THREE.DirectionalLight;
   readonly hemi: THREE.HemisphereLight;
@@ -58,10 +61,21 @@ export class Renderer {
     this.sun.shadow.normalBias = 0.03;
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
+    this.overlay.add(new THREE.HemisphereLight(0xfff1dd, 0x3a2a4a, 1.1));
+    const key = new THREE.DirectionalLight(0xfff0dc, 1.4);
+    key.position.set(0.6, 1, 0.4);
+    this.overlay.add(key);
+    this.overlay.environment = this.scene.environment;
+    this.overlay.environmentIntensity = 0.5;
 
     this.setQuality(quality);
     window.addEventListener('resize', () => this.resize());
     this.resize();
+  }
+
+  /** Something is in the overlay scene to draw. */
+  private get overlayOn(): boolean {
+    return this.overlay.children.some((c) => c.visible && !(c as THREE.Light).isLight);
   }
 
   setQuality(q: Quality): void {
@@ -84,6 +98,7 @@ export class Renderer {
     });
     this.composer?.dispose();
     this.composer = null;
+    this.overlayPass = null;
     this.bloom = null;
     if (q !== 'low') this.buildComposer();
     this.resize();
@@ -97,6 +112,12 @@ export class Renderer {
     });
     const composer = new EffectComposer(this.renderer, target);
     composer.addPass(new RenderPass(this.scene, this.camera));
+    const over = new RenderPass(this.overlay, this.camera);
+    over.clear = false;
+    over.clearDepth = true;
+    over.enabled = false;
+    this.overlayPass = over;
+    composer.addPass(over);
     this.bloom = new UnrealBloomPass(new THREE.Vector2(this.width / 2, this.height / 2), 0.55, 0.5, 0.9);
     composer.addPass(this.bloom);
     composer.addPass(new OutputPass());
@@ -164,7 +185,19 @@ export class Renderer {
       this.renderer.shadowMap.needsUpdate = true;
       this.shadowDirty--;
     }
-    if (this.composer) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
+    const over = this.overlayOn;
+    if (this.composer) {
+      if (this.overlayPass) this.overlayPass.enabled = over;
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+      if (over) {
+        const auto = this.renderer.autoClear;
+        this.renderer.autoClear = false;
+        this.renderer.clearDepth();
+        this.renderer.render(this.overlay, this.camera);
+        this.renderer.autoClear = auto;
+      }
+    }
   }
 }

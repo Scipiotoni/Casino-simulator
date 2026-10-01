@@ -103,6 +103,8 @@ export class Grid {
   floorOcc = new Int32Array(0);
   /** Carpet style index per tile. */
   floor = new Uint8Array(0);
+  /** Built wall per tile: style index + 1 (0 = no wall). Walls block walking. */
+  wall = new Uint8Array(0);
   /** Bumped whenever walkability changes so cached paths can be invalidated. */
   version = 0;
   rect: Rect = layoutRect({ width: 0, depth: 0 });
@@ -142,13 +144,14 @@ export class Grid {
     const zMax = SIDEWALK_Z1 + 2;
     const d = zMax - zMin;
     if (zMin === this.zMin && d === this.d) return;
-    const old = { zMin: this.zMin, d: this.d, occ: this.occ, floorOcc: this.floorOcc, floor: this.floor };
+    const old = { zMin: this.zMin, d: this.d, occ: this.occ, floorOcc: this.floorOcc, floor: this.floor, wall: this.wall };
     this.zMin = zMin;
     this.d = d;
     this.flags = new Uint8Array(GRID_W * d);
     this.occ = new Int32Array(GRID_W * d);
     this.floorOcc = new Int32Array(GRID_W * d);
     this.floor = new Uint8Array(GRID_W * d);
+    this.wall = new Uint8Array(GRID_W * d);
     for (let r = 0; r < old.d; r++) {
       const z = old.zMin + r;
       if (z < zMin || z >= zMin + d) continue;
@@ -157,6 +160,7 @@ export class Grid {
       this.occ.set(old.occ.subarray(src, src + GRID_W), dst);
       this.floorOcc.set(old.floorOcc.subarray(src, src + GRID_W), dst);
       this.floor.set(old.floor.subarray(src, src + GRID_W), dst);
+      this.wall.set(old.wall.subarray(src, src + GRID_W), dst);
     }
   }
 
@@ -213,7 +217,29 @@ export class Grid {
     const f = this.flags[i];
     if (f & (F_SIDEWALK | F_DOOR)) return this.occ[i] === 0;
     if (!(f & F_OWNED)) return false;
-    return this.occ[i] === 0;
+    return this.occ[i] === 0 && this.wall[i] === 0;
+  }
+
+  /** Wall style on a tile (-1 = none). */
+  wallAt(x: number, z: number): number {
+    return this.inBounds(x, z) ? this.wall[this.idx(x, z)] - 1 : -1;
+  }
+
+  isWall(x: number, z: number): boolean {
+    return this.wallAt(x, z) >= 0;
+  }
+
+  /** Put up (style ≥ 0) or knock down (-1) a wall on an owned tile. */
+  setWall(x: number, z: number, style: number): void {
+    if (!this.isOwned(x, z)) return;
+    this.wall[this.idx(x, z)] = style < 0 ? 0 : Math.min(250, style + 1);
+    this.version++;
+  }
+
+  get wallCount(): number {
+    let n = 0;
+    for (let i = 0; i < this.wall.length; i++) if (this.wall[i]) n++;
+    return n;
   }
 
   /** Walkability test on continuous world coordinates. */
@@ -311,13 +337,36 @@ export class Grid {
 
   /** Floor paint as run-length text ("style:count,…") over the owned rect, row by row. */
   encodeFloor(): string {
+    return this.encodeLayer((x, z) => this.getFloor(x, z));
+  }
+
+  decodeFloor(s: string): void {
+    this.floor.fill(0);
+    this.decodeLayer(s, (x, z, v) => this.setFloor(x, z, v));
+  }
+
+  /** Built walls, the same way ("" when there are none). */
+  encodeWalls(): string {
+    if (!this.wall.some((v) => v)) return '';
+    return this.encodeLayer((x, z) => this.wall[this.idx(x, z)]);
+  }
+
+  decodeWalls(s: string): void {
+    this.wall.fill(0);
+    this.decodeLayer(s, (x, z, v) => {
+      if (this.inBounds(x, z)) this.wall[this.idx(x, z)] = Math.max(0, Math.min(250, v));
+    });
+    this.version++;
+  }
+
+  private encodeLayer(get: (x: number, z: number) => number): string {
     const r = this.rect;
     const out: string[] = [];
     let cur = -1;
     let n = 0;
     for (let z = r.z0; z <= r.z1; z++) {
       for (let x = r.x0; x <= r.x1; x++) {
-        const v = this.getFloor(x, z);
+        const v = get(x, z);
         if (v === cur) n++;
         else {
           if (n) out.push(`${cur}:${n}`);
@@ -330,8 +379,7 @@ export class Grid {
     return out.join(',');
   }
 
-  decodeFloor(s: string): void {
-    this.floor.fill(0);
+  private decodeLayer(s: string, set: (x: number, z: number, v: number) => void): void {
     if (!s) return;
     const r = this.rect;
     const w = r.x1 - r.x0 + 1;
@@ -339,7 +387,7 @@ export class Grid {
     const total = w * (r.z1 - r.z0 + 1);
     for (const part of s.split(',')) {
       const [v, n] = part.split(':').map(Number);
-      for (let k = 0; k < n && i < total; k++, i++) this.setFloor(r.x0 + (i % w), r.z0 + Math.floor(i / w), v || 0);
+      for (let k = 0; k < n && i < total; k++, i++) set(r.x0 + (i % w), r.z0 + Math.floor(i / w), v || 0);
     }
   }
 }

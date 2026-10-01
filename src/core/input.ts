@@ -31,6 +31,11 @@ export class Input {
   /** One-finger drag and two-finger pan deltas (pixels) accumulated this frame. */
   dragDX = 0;
   dragDY = 0;
+  /** Mouse movement while captured (first-person look), pixels this frame. */
+  lookDX = 0;
+  lookDY = 0;
+  /** Right mouse button held (aim down sights). */
+  rightHeld = false;
   panDX = 0;
   panDY = 0;
   private lastMid: { x: number; y: number } | null = null;
@@ -51,6 +56,7 @@ export class Input {
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.primaryDown = false;
+      this.rightHeld = false;
       this.endJoystick();
     });
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
@@ -99,6 +105,8 @@ export class Input {
     this.dragDY = 0;
     this.panDX = 0;
     this.panDY = 0;
+    this.lookDX = 0;
+    this.lookDY = 0;
     this.pointer.moved = false;
   }
 
@@ -118,7 +126,35 @@ export class Input {
 
   private localPos(e: PointerEvent): { x: number; y: number } {
     const r = this.canvas.getBoundingClientRect();
+    // With the mouse captured (first person) everything happens at the crosshair.
+    if (this.locked) return { x: r.width / 2, y: r.height / 2 };
     return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  /** The mouse is captured for first-person look. */
+  get locked(): boolean {
+    return typeof document !== 'undefined' && document.pointerLockElement === this.canvas;
+  }
+
+  /** Capture the mouse (first person on desktop). */
+  requestLock(): void {
+    if (this.locked || this.isTouch) return;
+    try {
+      const r = (this.canvas as HTMLElement & { requestPointerLock(o?: unknown): Promise<void> | void }).requestPointerLock({ unadjustedMovement: true });
+      if (r && typeof (r as Promise<void>).catch === 'function') (r as Promise<void>).catch(() => {
+        try {
+          this.canvas.requestPointerLock();
+        } catch {
+          /* not allowed here */
+        }
+      });
+    } catch {
+      /* not allowed here */
+    }
+  }
+
+  exitLock(): void {
+    if (this.locked) document.exitPointerLock();
   }
 
   private onDown(e: PointerEvent): void {
@@ -154,6 +190,7 @@ export class Input {
       }
       return;
     }
+    if (e.button === 2) this.rightHeld = true;
     this.mouseDown = { x: p.x, y: p.y, t0: performance.now(), button: e.button };
     if (e.button === 0) this.mousePresses++;
     if (e.button === 0) this.primaryDown = true;
@@ -161,6 +198,11 @@ export class Input {
   }
 
   private onMove(e: PointerEvent): void {
+    if (this.locked && e.pointerType === 'mouse') {
+      this.lookDX += e.movementX || 0;
+      this.lookDY += e.movementY || 0;
+      return;
+    }
     if (e.pointerId === this.joyId) {
       const dx = e.clientX - this.joy.originX;
       const dy = e.clientY - this.joy.originY;
@@ -207,6 +249,7 @@ export class Input {
   }
 
   private onUp(e: PointerEvent, cancelled = false): void {
+    if (e.pointerType === 'mouse' && e.button === 2) this.rightHeld = false;
     if (e.pointerId === this.joyId) {
       this.endJoystick();
       return;
@@ -236,6 +279,11 @@ export class Input {
       if (this.mouseDown.button === 0) this.primaryDown = false;
       this.mouseDown = null;
     }
+  }
+
+  /** Fingers on the canvas right now (not counting the joystick). */
+  get touchCount(): number {
+    return this.touches.size;
   }
 
   /** Left mouse button held right now (not touch). */

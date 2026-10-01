@@ -41,6 +41,10 @@ export class Player {
     this.emoteT = seconds;
   }
 
+  get speed(): number {
+    return Math.hypot(this.vx, this.vz);
+  }
+
   get moving(): boolean {
     return Math.hypot(this.vx, this.vz) > 0.3;
   }
@@ -73,7 +77,7 @@ export class Player {
    */
   update(
     dt: number, ix: number, iz: number, sprint: boolean, basis: { fx: number; fz: number; rx: number; rz: number },
-    walk: (tx: number, tz: number) => boolean, tank = false,
+    walk: (tx: number, tz: number) => boolean, tank = false, faceYaw: number | null = null,
   ): void {
     if (this.seat) {
       // Sitting (or standing) at a table: stay put and play.
@@ -132,7 +136,9 @@ export class Player {
       else this.vz *= 0.5;
     }
     const speed = Math.hypot(this.vx, this.vz);
-    if (speed > 0.2 && !tank) this.yaw = dampAngle(this.yaw, Math.atan2(this.vx, this.vz), 14, dt);
+    // First person: you face wherever you look and strafe sideways.
+    if (faceYaw !== null) this.yaw = faceYaw;
+    else if (speed > 0.2 && !tank) this.yaw = dampAngle(this.yaw, Math.atan2(this.vx, this.vz), 14, dt);
     const m = this.model;
     if (this.emoteT > 0) {
       this.emoteT -= dt;

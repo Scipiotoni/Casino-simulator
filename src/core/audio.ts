@@ -10,7 +10,8 @@ export type SfxName =
   | 'error' | 'levelup' | 'bust' | 'repair' | 'fixed' | 'dice' | 'cards' | 'tick' | 'whoosh'
   | 'break' | 'drink' | 'objective' | 'rotate' | 'paint' | 'doorbell' | 'chips' | 'claw' | 'purchase'
   | 'gunshot' | 'gunHeavy' | 'shotgun' | 'smg' | 'laser' | 'paintball' | 'confettiGun' | 'reload' | 'empty' | 'ping' | 'glass'
-  | 'carAlarm' | 'honk' | 'balloon' | 'ricochet' | 'keyBeep' | 'keyError' | 'vaultClunk' | 'vaultHiss' | 'vaultWheel' | 'alarm';
+  | 'carAlarm' | 'honk' | 'balloon' | 'ricochet' | 'keyBeep' | 'keyError' | 'vaultClunk' | 'vaultHiss' | 'vaultWheel' | 'alarm'
+  | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat';
 
 interface ToneOpts {
   type?: OscillatorType;
@@ -384,6 +385,27 @@ class AudioEngine {
         break;
       case 'empty':
         this.noise(t, 0.025, { type: 'highpass', freq: 4000, gain: 0.2, dest });
+        break;
+      case 'hitmarker':
+        this.tone(1900 * p, t, 0.05, { type: 'square', gain: 0.05, filter: 3500, dest });
+        this.noise(t, 0.03, { type: 'highpass', freq: 6000, gain: 0.12, dest });
+        break;
+      case 'headshot':
+        this.bell(2400 * p, t, 0.3, 0.1, dest);
+        this.tone(1200 * p, t, 0.08, { type: 'square', gain: 0.05, filter: 3000, dest });
+        break;
+      case 'hurt':
+        this.tone(120 * p, t, 0.18, { type: 'sine', gain: 0.35, freqEnd: 60, dest });
+        this.noise(t, 0.1, { type: 'lowpass', freq: 600, gain: 0.3, dest });
+        break;
+      case 'knockout':
+        this.tone(90 * p, t, 0.4, { type: 'sine', gain: 0.45, freqEnd: 40, dest });
+        this.noise(t, 0.25, { type: 'lowpass', freq: 400, gain: 0.35, dest });
+        for (let i = 0; i < 3; i++) this.bell((1400 + i * 300) * p, t + 0.15 + i * 0.09, 0.4, 0.05, dest);
+        break;
+      case 'heartbeat':
+        this.tone(55, t, 0.12, { type: 'sine', gain: 0.4, freqEnd: 40, dest });
+        this.tone(50, t + 0.2, 0.12, { type: 'sine', gain: 0.3, freqEnd: 38, dest });
         break;
       case 'ping':
         this.bell(1650 * p, t, 0.35, 0.12, dest);

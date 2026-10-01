@@ -232,12 +232,13 @@ export class Building {
   }
 
   /** Walls between the camera and the floor fold down so the player is never hidden. */
-  update(dt: number, camYaw: number, camPitchLow = false): void {
+  update(dt: number, camYaw: number, camPitchLow = false, full = false): void {
     const cx = Math.sin(camYaw);
     const cz = Math.cos(camYaw);
     for (const s of this.sides) {
       const facing = s.normal[0] * cx + s.normal[1] * cz;
-      const target = facing > (camPitchLow ? 0.1 : 0.35) ? 1 : 0;
+      // Through your own eyes every wall stands full height.
+      const target = !full && facing > (camPitchLow ? 0.1 : 0.35) ? 1 : 0;
       s.cut += (target - s.cut) * (1 - Math.exp(-dt * 8));
       const top = this.garden ? 0.9 : WALL_H;
       const h = top - (top - CUT_H) * s.cut;

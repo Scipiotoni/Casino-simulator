@@ -123,6 +123,10 @@ export class Modals {
         class: 'btn paint-open', html: `${icon('paint', 16)} Paint the floor`,
         onClick: () => { this.close(); this.hud.togglePaint(); },
       }),
+      h('button', {
+        class: 'btn paint-open', html: '🧱 Build walls',
+        onClick: () => { this.close(); this.hud.toggleWalls(); },
+      }),
     ));
 
     // Rating breakdown (a house has a security rating instead)
@@ -738,13 +742,23 @@ export class Modals {
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Graphics' }), q));
     const cam = h('div', { class: 'seg' });
-    for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person']] as const) {
+    for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person'], ['first', 'First person']] as const) {
       cam.appendChild(h('button', {
         class: `seg-btn${g.cam.mode === id ? ' on' : ''}`, text: label,
         onClick: () => { g.setCameraMode(id); cam.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.textContent === label)); },
       }));
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Camera' }), cam));
+    const sens = h('input', { type: 'range', 'aria-label': 'Look speed' }) as HTMLInputElement;
+    sens.min = '0.3';
+    sens.max = '2.5';
+    sens.step = '0.05';
+    sens.value = String(st.lookSens ?? 1);
+    sens.addEventListener('input', () => {
+      st.lookSens = Number(sens.value);
+      this.onSettingsChanged?.();
+    });
+    body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'First-person look speed' }), sens));
     if (this.netStatus) body.appendChild(h('div', { class: 'net-status' }, h('span', { class: 'field-label', text: 'Multiplayer' }), h('p', { class: 'muted small', text: this.netStatus() })));
     body.appendChild(h('div', { class: 'btn-row wrap sep' },
       h('button', { class: 'btn', html: `${icon('home', 16)} Title screen`, onClick: () => { g.saveNow(); this.closeAll(); this.onMainMenu?.(); } }),

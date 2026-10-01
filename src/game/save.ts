@@ -21,6 +21,8 @@ export interface CasinoSnapshot {
   floors: number;
   /** Carpet per floor, run-length encoded over the owned rect. */
   paint: string[];
+  /** Built walls per floor, encoded like the carpet (style + 1, 0 = none). */
+  walls?: string[];
   items: SavedItem[];
   staff: SavedStaff[];
   rating: number;
@@ -222,8 +224,9 @@ export function sanitizeSnapshot(raw: unknown, fonts: string[], sanitizeLook: (a
     staff.push({ role: r.role as WorkerRole, name: str(r.name, 24, 'Staff'), look: sanitizeLook(r.look) });
   }
   const paint = (Array.isArray(s.paint) ? s.paint : []).slice(0, floors).map((p) => (typeof p === 'string' && /^[0-9:,]*$/.test(p) ? p.slice(0, 60000) : ''));
+  const walls = (Array.isArray(s.walls) ? s.walls : []).slice(0, floors).map((p) => (typeof p === 'string' && /^[0-9:,]*$/.test(p) ? p.slice(0, 60000) : ''));
   return {
-    name: look.name, look, layout, floors, paint, items, staff,
+    name: look.name, look, layout, floors, paint, walls: walls.some((w) => w) ? walls : undefined, items, staff,
     rating: Math.max(0.5, Math.min(5, typeof s.rating === 'number' && Number.isFinite(s.rating) ? s.rating : 2)),
     jackpotPot: num(s.jackpotPot, 1000, 10_000_000, 5000),
   };

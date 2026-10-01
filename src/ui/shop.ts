@@ -23,6 +23,7 @@ export class ShopDrawer {
       h('div', { class: 'drawer-head' },
         h('div', { class: 'drawer-title', html: `${icon('shop', 20)} <span>Build</span>` }),
         this.tabRow,
+        h('button', { class: 'btn small walls-btn', html: '🧱 <span>Walls</span>', title: 'Build walls and rooms', onClick: () => this.hud.toggleWalls() }),
         h('button', { class: 'icon-btn', html: icon('close', 18), 'aria-label': 'Close', onClick: () => this.close() }),
       ),
       this.grid,
@@ -31,7 +32,6 @@ export class ShopDrawer {
     this.game.events.on('money', () => {
       if (this.open) this.updateAffordability();
     });
-    void this.hud;
   }
 
   /** Tabs for the casino (machines, tables…) or the hotel (rooms, services, decor). */

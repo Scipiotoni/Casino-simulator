@@ -8,11 +8,16 @@ import { FLOOR_STYLES } from '../render/textures';
 import { audio } from '../core/audio';
 import { formatMoney } from '../core/math';
 import { floorName } from './game';
+import { WALL_STYLES } from '../world/walls';
+import { WALL_H } from '../world/building';
 
 export type Mode =
   | { kind: 'play' }
   | { kind: 'place'; def: ItemDef; rot: number; color: number; moving: PlacedItem | null }
-  | { kind: 'paint'; style: number };
+  | { kind: 'paint'; style: number }
+  | { kind: 'wall'; style: number; erase: boolean };
+
+const MAX_WALL_RUN = 48;
 
 /** Buying, moving and painting: ghost preview, validation and confirmation. */
 export class BuildController {
@@ -30,6 +35,15 @@ export class BuildController {
   private floorDirty = false;
   private lastPaint = '';
   private checkKey = '';
+
+  /** Where a wall drag started (tile), and the line it covers now. */
+  private wallStart: [number, number] | null = null;
+  wallLine: [number, number][] = [];
+  /** Total price of the wall line under the pointer (0 when erasing). */
+  wallCost = 0;
+  private wallPreview: THREE.InstancedMesh | null = null;
+  private wallKey = '';
+  private wallAbort = false;
 
   constructor(private g: Game) {}
 
@@ -76,6 +90,22 @@ export class BuildController {
     this.g.emitMode();
   }
 
+  startWall(style = 0, erase = false): void {
+    this.cancel(false);
+    this.mode = { kind: 'wall', style, erase };
+    this.g.floor.showGrid(true);
+    this.g.emitMode();
+    audio.play('pop');
+  }
+
+  setWallStyle(style: number, erase = false): void {
+    if (this.mode.kind !== 'wall') return;
+    this.mode.style = style;
+    this.mode.erase = erase;
+    this.wallKey = '';
+    this.g.emitMode();
+  }
+
   setPaintStyle(style: number): void {
     if (this.mode.kind === 'paint') {
       this.mode.style = style;
@@ -93,6 +123,9 @@ export class BuildController {
     this.disposeGhost();
     this.mode = { kind: 'play' };
     this.tile = null;
+    this.wallStart = null;
+    this.wallLine = [];
+    if (this.wallPreview) this.wallPreview.visible = false;
     this.g.items.selection.hide();
     this.g.floor.showGrid(false);
     this.g.floor.showTileHighlight(null, null);
@@ -254,6 +287,10 @@ export class BuildController {
       this.evaluate();
       return;
     }
+    if (this.mode.kind === 'wall') {
+      this.updateWall();
+      return;
+    }
     if (this.mode.kind === 'paint') {
       const style = this.mode.style;
       if (input.rightClicks > 0) {
@@ -292,5 +329,153 @@ export class BuildController {
         this.g.floor.rebuild();
       }
     }
+  }
+
+  // ------------------------------------------------------------------ walls
+
+  /** Tiles from a to b in a straight line along whichever axis you dragged further. */
+  private lineTiles(a: [number, number], b: [number, number]): [number, number][] {
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const out: [number, number][] = [];
+    if (Math.abs(dx) >= Math.abs(dz)) {
+      const n = Math.min(MAX_WALL_RUN, Math.abs(dx));
+      for (let k = 0; k <= n; k++) out.push([a[0] + Math.sign(dx) * k, a[1]]);
+    } else {
+      const n = Math.min(MAX_WALL_RUN, Math.abs(dz));
+      for (let k = 0; k <= n; k++) out.push([a[0], a[1] + Math.sign(dz) * k]);
+    }
+    return out;
+  }
+
+  private updateWall(): void {
+    const m = this.mode;
+    if (m.kind !== 'wall') return;
+    const input = this.g.input;
+    if (input.rightClicks > 0) {
+      if (this.wallStart) this.wallStart = null;
+      else {
+        this.cancel();
+        return;
+      }
+    }
+    // A two-finger pan or pinch isn't a wall.
+    if (input.touchCount >= 2) {
+      this.wallStart = null;
+      this.wallAbort = true;
+    }
+    if (this.wallAbort) {
+      if (input.touchCount === 0 && !input.primaryDown) this.wallAbort = false;
+      this.wallLine = [];
+      this.showWallPreview([]);
+      return;
+    }
+    const p = input.pointer.over || input.isTouch ? this.groundAt(input.pointer.x, input.pointer.y) : null;
+    const cur: [number, number] | null = p ? [Math.floor(p.x), Math.floor(p.z)] : null;
+    if (input.primaryDown && cur && !this.wallStart) this.wallStart = cur;
+    const line = this.wallStart && cur ? this.lineTiles(this.wallStart, cur) : cur ? [cur] : [];
+    this.wallLine = line;
+    this.showWallPreview(line);
+    // Let go (or a quick tap/click) and the line is built.
+    const tap = input.clicks.length > 0 && !this.wallStart;
+    if ((this.wallStart && !input.primaryDown) || tap) {
+      const tiles = tap ? (() => {
+        const c = input.clicks[input.clicks.length - 1];
+        const q = this.groundAt(c.x, c.y);
+        return q ? [[Math.floor(q.x), Math.floor(q.z)] as [number, number]] : [];
+      })() : line;
+      this.wallStart = null;
+      this.applyWall(tiles);
+    }
+  }
+
+  private showWallPreview(line: [number, number][]): void {
+    const m = this.mode;
+    if (m.kind !== 'wall') return;
+    const grid = this.g.gridAt(this.g.viewFloor);
+    const key = `${line.map((t) => t.join(',')).join(';')}|${m.style}|${m.erase}|${grid.version}|${this.g.money > 0}`;
+    if (key === this.wallKey) return;
+    this.wallKey = key;
+    if (!this.wallPreview) {
+      const geo = new THREE.BoxGeometry(0.96, 1, 0.96);
+      geo.translate(0, 0.5, 0);
+      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45, depthWrite: false }), MAX_WALL_RUN + 1);
+      mesh.renderOrder = 9;
+      mesh.frustumCulled = false;
+      this.wallPreview = mesh;
+      this.g.renderer.scene.add(mesh);
+    }
+    const mesh = this.wallPreview;
+    const mtx = new THREE.Matrix4();
+    const col = new THREE.Color();
+    let cost = 0;
+    let n = 0;
+    const st = WALL_STYLES[m.style] ?? WALL_STYLES[0];
+    const h = WALL_H * 0.42;
+    for (const [x, z] of line) {
+      let ok: boolean;
+      if (m.erase) ok = grid.isWall(x, z);
+      else {
+        ok = this.g.items.canWall(this.g.viewFloor, x, z).ok;
+        if (ok) cost += st.price;
+        if (ok && cost > this.g.money) ok = false;
+      }
+      mtx.makeScale(1, m.erase ? h + 0.1 : h, 1).setPosition(x + 0.5, 0, z + 0.5);
+      mesh.setMatrixAt(n, mtx);
+      mesh.setColorAt(n, col.setHex(m.erase ? (ok ? 0xff4d5e : 0x777777) : ok ? 0x3ddc84 : 0xff4d5e));
+      n++;
+    }
+    mesh.count = n;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.visible = n > 0;
+    this.wallCost = m.erase ? 0 : cost;
+    this.g.events.emit('wallLine', undefined);
+  }
+
+  /** Build (or knock down) the walls along a line. */
+  private applyWall(tiles: [number, number][]): void {
+    const m = this.mode;
+    if (m.kind !== 'wall' || !tiles.length) return;
+    const f = this.g.viewFloor;
+    const grid = this.g.gridAt(f);
+    const st = WALL_STYLES[m.style] ?? WALL_STYLES[0];
+    let built = 0;
+    let reason = '';
+    if (m.erase) {
+      for (const [x, z] of tiles) {
+        if (!grid.isWall(x, z)) continue;
+        const old = WALL_STYLES[grid.wallAt(x, z)] ?? WALL_STYLES[0];
+        grid.setWall(x, z, -1);
+        this.g.addMoney(Math.round(old.price / 2), 'sell');
+        built++;
+      }
+    } else {
+      for (const [x, z] of tiles) {
+        const c = this.g.items.canWall(f, x, z);
+        if (!c.ok) {
+          // Running into an existing wall is fine; anything else is worth saying.
+          if (!grid.isWall(x, z)) reason ||= c.reason ?? '';
+          continue;
+        }
+        if (this.g.money < st.price) {
+          reason = `Need ${formatMoney(st.price)} for more wall`;
+          break;
+        }
+        grid.setWall(x, z, m.style);
+        this.g.spend(st.price, 'build');
+        built++;
+      }
+    }
+    if (built) {
+      this.g.onWallsChanged(built, m.erase);
+      audio.play(m.erase ? 'break' : 'place', { pitch: 0.9 + Math.random() * 0.2 });
+      for (const [x, z] of tiles.slice(0, 6)) this.g.effects.dust(x + 0.5, z + 0.5, 0.6);
+    }
+    if (reason) {
+      if (!built) audio.play('error');
+      this.g.notify(reason, 'bad');
+    }
+    this.wallKey = '';
   }
 }

@@ -17,7 +17,7 @@ export type Expression = 'neutral' | 'happy' | 'excited' | 'sad' | 'angry' | 'su
 export type Pose =
   | 'idle' | 'walk' | 'run' | 'sneak' | 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'cheer' | 'celebrate' | 'dance'
   | 'angry' | 'sad' | 'repair' | 'sweep' | 'deal' | 'bartend' | 'drink' | 'wave' | 'clap' | 'point' | 'handsUp'
-  | 'sing' | 'think' | 'phone' | 'crouch' | 'sleep';
+  | 'sing' | 'think' | 'phone' | 'crouch' | 'sleep' | 'ko';
 
 const MATTE = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.72, metalness: 0 });
 const SHINY = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.6 });
@@ -815,6 +815,8 @@ export class CharacterModel {
   aim = 0;
   /** Kick from the last shot (decays by itself). */
   recoil = 0;
+  /** Flinch from being hit (decays by itself). */
+  flinch = 0;
   /** Right hand, for holding props (a gun's +z points where the arm points). */
   readonly hand = new THREE.Group();
 
@@ -899,7 +901,7 @@ export class CharacterModel {
   }
 
   private refreshFace(): void {
-    const e = this.pose === 'sleep' ? 'blink' : this.blinking > 0 && (this.expression === 'neutral' || this.expression === 'sad' || this.expression === 'angry') ? 'blink' : this.expression;
+    const e = this.pose === 'sleep' || this.pose === 'ko' ? 'blink' : this.blinking > 0 && (this.expression === 'neutral' || this.expression === 'sad' || this.expression === 'angry') ? 'blink' : this.expression;
     this.face.geometry = faceGeometry(this.appearance.eyes, e);
   }
 
@@ -1012,6 +1014,16 @@ export class CharacterModel {
         T.armRz = 0.18;
         T.headRx = -0.1 + Math.sin(t * 0.8) * 0.03;
         break;
+      case 'ko':
+        // Knocked out flat on the pavement, arms out, seeing stars.
+        T.bodyRx = -Math.PI / 2;
+        T.bodyY = 0.16;
+        T.armLz = -1.3;
+        T.armRz = 1.3;
+        T.legL = 0.15;
+        T.legR = -0.12;
+        T.headRz = Math.sin(t * 2) * 0.15;
+        break;
       case 'repair':
       case 'crouch':
         T.legL = -1.2;
@@ -1089,6 +1101,12 @@ export class CharacterModel {
       }
     }
     this.recoil = Math.max(0, this.recoil - dt * 6);
+    if (this.flinch > 0) {
+      const T = this.target;
+      T.bodyRx -= this.flinch * 0.35;
+      T.headRx -= this.flinch * 0.4;
+      this.flinch = Math.max(0, this.flinch - dt * 4);
+    }
     const k = moving || this.pose === 'dance' || this.pose === 'cheer' || this.pose === 'celebrate' ? 22 : 11;
     const j = this.j;
     const T = this.target;

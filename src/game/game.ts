@@ -45,6 +45,7 @@ import {
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
+import { Combat } from './combat';
 
 export type { SaveData } from './save';
 
@@ -105,6 +106,10 @@ export interface GameEvents {
   guns: void;
   /** Your house or its vault changed. */
   house: void;
+  /** The wall line being drawn changed (cost preview). */
+  wallLine: void;
+  /** Your health, a knockout or a hit you landed on someone. */
+  combat: void;
 }
 
 export interface Settings {
@@ -115,6 +120,8 @@ export interface Settings {
   quality: Quality;
   showFps: boolean;
   camera?: CamMode;
+  /** First-person mouse / drag look speed (1 = normal). */
+  lookSens?: number;
 }
 
 const DAY_SECONDS = 300;
@@ -270,6 +277,8 @@ export class Game implements World, ItemHost {
   /** Guns you own and the one in your hand. */
   guns: GunState = emptyGuns();
   readonly gunplay: GunPlay;
+  /** Health, knockouts and hit markers out on the street. */
+  readonly combat: Combat;
 
   constructor(container: HTMLElement, settings: Settings) {
     this.settings = settings;
@@ -287,6 +296,7 @@ export class Game implements World, ItemHost {
     this.cam.setMode(settings.camera ?? 'top');
     this.build = new BuildController(this);
     this.gunplay = new GunPlay(this);
+    this.combat = new Combat(this);
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : 14;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
@@ -398,6 +408,7 @@ export class Game implements World, ItemHost {
     this.house = null;
     this.guns = emptyGuns();
     this.gunplay.reset();
+    this.combat.reset();
     this.cosmetics = emptyCosmetics();
     this.applyCosmetics();
     this.setFloorCount(1);
@@ -655,7 +666,7 @@ export class Game implements World, ItemHost {
   private worldSnapshot(): CasinoSnapshot {
     return {
       name: this.building.look.name, look: { ...this.building.look }, layout: { ...this.layout }, floors: this.floors,
-      paint: this.levels.map((l) => l.grid.encodeFloor()), items: this.items.serialize(),
+      paint: this.levels.map((l) => l.grid.encodeFloor()), walls: this.wallsSave(), items: this.items.serialize(),
       staff: this.workers.map((w) => ({ role: w.role, name: w.name, look: w.look })), rating: this.rating,
     };
   }
@@ -1449,8 +1460,10 @@ export class Game implements World, ItemHost {
     this.setFloorCount(s.floors || 1);
     for (const l of this.levels) l.grid.setLayout(this.layout);
     for (const l of this.levels) l.grid.floor.fill(0);
+    for (const l of this.levels) l.grid.wall.fill(0);
     this.resetWorld();
     s.paint?.forEach((p, f) => this.levels[f]?.grid.decodeFloor(p));
+    s.walls?.forEach((p, f) => this.levels[f]?.grid.decodeWalls(p));
     for (const l of this.levels) l.floor.rebuild();
     this.building.setLook(s.look);
     this.items.load(s.items);
@@ -2518,6 +2531,32 @@ export class Game implements World, ItemHost {
     this.events.emit('select', sel);
   }
 
+  /** You knocked out a passer-by: their cash flies into your pockets. */
+  onStreetKnockout(cash: number, at: THREE.Vector3): void {
+    this.stats.knockouts++;
+    audio.play('knockout', { volume: 0.7 });
+    if (cash <= 0) return;
+    this.effects.coinFlight(at.clone(), () => this.playerPos.clone().setY(1.1), Math.min(12, 3 + Math.round(cash / 60)), () => audio.play('coin', { volume: 0.4 }));
+    this.addMoney(cash, 'loot', at.clone().setY(1.8));
+    this.stats.looted += cash;
+  }
+
+  /** Walls went up or came down on the floor you're looking at. */
+  onWallsChanged(n: number, erased: boolean): void {
+    this.levels[this.viewFloor]?.floor.walls.rebuild();
+    this.items.recompute();
+    this.afterLayoutChange();
+    if (!erased) this.stats.wallsBuilt = (this.stats.wallsBuilt ?? 0) + n;
+    this.renderer.markShadowsDirty(10);
+    this.requestSave();
+  }
+
+  /** Built walls per floor for saving (undefined when there are none). */
+  private wallsSave(): string[] | undefined {
+    const w = this.levels.map((l) => l.grid.encodeWalls());
+    return w.some((x) => x) ? w : undefined;
+  }
+
   emitMode(): void {
     if (this.build.active) this.select(null);
     this.events.emit('mode', undefined);
@@ -3117,16 +3156,54 @@ export class Game implements World, ItemHost {
     const input = this.input;
     const playing = this.state === 'playing';
     const third = this.cam.mode === 'third' && playing;
+    const first = this.cam.mode === 'first' && playing;
+
+    // First person: the mouse is captured while you look around; menus and other views free it.
+    if (input.locked && (!first || this.modalOpen || this.photoMode || this.tableFocus)) input.exitLock();
+    if (input.locked) {
+      input.pointer.x = this.renderer.size.w / 2;
+      input.pointer.y = this.renderer.size.h / 2;
+      input.pointer.over = true;
+    }
+    if (first && sim > 0) {
+      const ads = this.cam.fovTarget < 60 ? this.cam.fovTarget / 72 : 1;
+      const sens = 0.0024 * (this.settings.lookSens ?? 1) * ads;
+      let dx = 0;
+      let dy = 0;
+      if (input.locked) {
+        dx = input.lookDX;
+        dy = input.lookDY;
+      } else if (input.isTouch && !this.build.active) {
+        // Drag anywhere off the joystick to look around.
+        dx = input.dragDX * 1.6;
+        dy = input.dragDY * 1.6;
+      } else if (!input.isTouch && !this.build.active && input.mousePresses > 0 && !this.modalOpen) {
+        input.requestLock();
+        input.mousePresses = 0;
+        input.clicks.length = 0;
+      }
+      if (this.combat.ko <= 0) {
+        this.cam.lookYaw -= dx * sens;
+        this.cam.pitch = clamp(this.cam.pitch - dy * sens, -1.35, 1.35);
+        if (!input.locked && !input.isTouch) {
+          // Arrow keys still turn when the mouse is free.
+          if (input.down('ArrowLeft')) this.cam.lookYaw += dt * 2.4;
+          if (input.down('ArrowRight')) this.cam.lookYaw -= dt * 2.4;
+        }
+      }
+      // Walk where you look this very frame.
+      this.cam.yaw = this.cam.lookYaw + Math.PI;
+    }
 
     // Camera controls
-    if (input.wheel) this.cam.zoomBy(Math.exp(input.wheel * 0.0012));
-    if (input.pinch !== 1) this.cam.zoomBy(input.pinch);
+    if (input.wheel && !first) this.cam.zoomBy(Math.exp(input.wheel * 0.0012));
+    if (input.pinch !== 1 && !first) this.cam.zoomBy(input.pinch);
     if (playing && sim > 0) {
-      if (!third) {
+      if (!third && !first) {
         if (input.hit('KeyQ')) this.cam.rotate(-1);
         if (input.hit('KeyE')) this.cam.rotate(1);
       }
-      if (input.hit('KeyV')) this.setCameraMode(third ? 'top' : 'third');
+      if (input.hit('KeyV')) this.setCameraMode(this.cam.mode === 'top' ? 'third' : this.cam.mode === 'third' ? 'first' : 'top');
       if (input.hit('Minus') || input.hit('NumpadSubtract')) this.cam.zoomBy(1.15);
       if (input.hit('Equal') || input.hit('NumpadAdd')) this.cam.zoomBy(1 / 1.15);
       if (input.hit('Escape')) {
@@ -3142,15 +3219,15 @@ export class Game implements World, ItemHost {
     }
 
     // Player movement
-    const canMove = playing && sim > 0 && this.transitionT <= 0;
+    const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0;
     this.transitionT = Math.max(0, this.transitionT - dt);
     if (canMove) {
       let ix = 0;
       let iz = 0;
       if (input.down('KeyW') || input.down('ArrowUp')) iz += 1;
       if (input.down('KeyS') || input.down('ArrowDown')) iz -= 1;
-      if (input.down('KeyA') || input.down('ArrowLeft')) ix -= 1;
-      if (input.down('KeyD') || input.down('ArrowRight')) ix += 1;
+      if (input.down('KeyA') || (!first && input.down('ArrowLeft'))) ix -= 1;
+      if (input.down('KeyD') || (!first && input.down('ArrowRight'))) ix += 1;
       if (input.joy.active) {
         ix += input.joy.x;
         iz -= input.joy.y;
@@ -3158,14 +3235,30 @@ export class Game implements World, ItemHost {
       const sprint = input.down('ShiftLeft') || input.down('ShiftRight') || Math.hypot(input.joy.x, input.joy.y) > 0.92;
       // The city is big: you stride out faster on the sidewalks.
       this.player.speedMult = this.inside ? 1 : 1.5;
-      this.player.update(dt, ix, iz, sprint, this.cam.basis(), this.playerWalk, third);
+      // Aiming down the sights slows you to a careful walk.
+      if (first && this.gunplay.aiming) {
+        ix *= 0.55;
+        iz *= 0.55;
+      }
+      this.player.update(dt, ix, iz, sprint && !this.gunplay.aiming, this.cam.basis(), this.playerWalk, third, first ? this.cam.lookYaw : null);
     } else {
-      this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third);
+      this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third, first && !this.player.seat && this.combat.ko <= 0 ? this.cam.lookYaw : null);
     }
+    if (playing) this.combat.update(dt);
     if (playing) this.gunplay.update(dt);
+    if (this.cam.mode !== 'first') this.cam.lookYaw = this.player.yaw;
     this.cam.followYaw = this.player.yaw;
-    this.player.model.root.visible = playing;
-    this.playerFx?.update(dt, playing && !this.player.seat);
+    // In first person you don't see your own head (you'd be looking out through it).
+    const ownBody = playing && (!first || !!this.player.seat);
+    this.player.model.root.visible = ownBody || (first && this.combat.ko > 0);
+    if (first) {
+      const ko = this.combat.ko > 0;
+      const eyeY = ko ? 0.35 : this.player.model.height + 0.04;
+      this.cam.eye.set(this.player.x, eyeY, this.player.z);
+      this.cam.bobSpeed = this.player.seat || ko ? 0 : this.player.speed;
+      if (ko) this.player.model.root.visible = false;
+    }
+    this.playerFx?.update(dt, playing && !this.player.seat && ownBody);
     this.playerPos.set(this.player.x, 0, this.player.z);
     const wasInside = this.inside;
     this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > this.grid.rect.z0 - 1 && Math.abs(this.player.x - CENTER_X) < 16);
@@ -3246,7 +3339,13 @@ export class Game implements World, ItemHost {
     const fx = this.tableFocus ? this.tableFocus.item.cx : this.camFocus?.x ?? this.player.x;
     const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
     this.cam.update(dt, fx, fz);
-    this.building.update(dt, this.cam.yaw, this.cam.low);
+    this.building.update(dt, this.cam.yaw, this.cam.low, this.cam.mode === 'first' && !this.tableFocus);
+    // Built walls stand full height up close, and are cut down in the top-down view.
+    const wallH = this.cam.mode === 'top' || this.build.active ? 0.42 : 1;
+    for (const l of this.levels) {
+      l.floor.walls.heightTarget = wallH;
+      l.floor.walls.update(dt);
+    }
     const pg = this.street.worldToGlobal(this.player.x, this.player.z);
     this.street.city.player.x = this.inside ? -9999 : pg.x;
     this.street.city.player.z = pg.z;
@@ -3318,7 +3417,7 @@ export class Game implements World, ItemHost {
   /** Your casino as a snapshot others can walk into. */
   snapshot(): CasinoSnapshot {
     const s = this.serialize();
-    return { name: s.name, look: s.look, layout: s.layout, floors: s.floors, paint: s.paint, items: s.items, staff: s.staff, rating: s.rating, jackpotPot: s.jackpotPot };
+    return { name: s.name, look: s.look, layout: s.layout, floors: s.floors, paint: s.paint, walls: s.walls, items: s.items, staff: s.staff, rating: s.rating, jackpotPot: s.jackpotPot };
   }
 
   /** A plain copy of the hotel for saving. */
@@ -3382,6 +3481,7 @@ export class Game implements World, ItemHost {
       layout: { ...this.layout },
       floors: this.floors,
       paint: this.levels.map((l) => l.grid.encodeFloor()),
+      walls: this.wallsSave(),
       items: this.items.serialize(),
       staff: this.workers.map((w) => ({ role: w.role, name: w.name, look: w.look })),
       rating: this.rating,
@@ -3441,6 +3541,7 @@ export class Game implements World, ItemHost {
     this.house = sanitizeHouse(s.house, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
     this.guns = sanitizeGuns(s.guns);
     this.gunplay.reset();
+    this.combat.reset();
     this.vaultOpen = false;
     this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
     this.applyCosmetics();

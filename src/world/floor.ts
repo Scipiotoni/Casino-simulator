@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { FLOOR_STYLES, floorTexture } from '../render/textures';
 import { mat } from '../render/materials';
 import type { Grid } from './grid';
+import { WallRenderer } from './walls';
 
 /**
  * Carpet renderer: one merged mesh per carpet style so painting stays cheap and each
@@ -12,9 +13,13 @@ export class FloorRenderer {
   private meshes = new Map<number, THREE.Mesh>();
   private gridLines: THREE.LineSegments | null = null;
   private highlight: THREE.Mesh;
+  /** The walls built on this floor. */
+  readonly walls: WallRenderer;
 
   constructor(private grid: Grid) {
     this.group.name = 'floor';
+    this.walls = new WallRenderer(grid);
+    this.group.add(this.walls.group);
     const hlGeo = new THREE.PlaneGeometry(1, 1);
     hlGeo.rotateX(-Math.PI / 2);
     this.highlight = new THREE.Mesh(
@@ -101,6 +106,7 @@ export class FloorRenderer {
       }
     }
     this.rebuildGridLines();
+    this.walls.rebuild();
   }
 
   private rebuildGridLines(): void {

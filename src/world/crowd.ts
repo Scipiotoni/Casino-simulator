@@ -17,7 +17,7 @@ export interface DoorSpot {
   weight: number;
 }
 
-interface Ped {
+export interface Ped {
   model: CharacterModel;
   x: number;
   z: number;
@@ -28,6 +28,11 @@ interface Ped {
   enters: boolean;
   panic: number;
   fade: number;
+  /** Health (out of 60), and seconds left lying knocked out. */
+  hp: number;
+  ko: number;
+  /** Cash in their pockets. */
+  cash: number;
 }
 
 /** Middle of the sidewalk on one side of a street. */
@@ -126,7 +131,9 @@ export class Crowd {
     route = route.map((p, i) => (i === route.length - 1 && enters ? p : { x: p.x, z: p.z + off }));
     model.root.position.set(x, 0, z);
     this.group.add(model.root);
-    this.peds.push({ model, x, z, route, i: 0, speed: 1.2 + Math.random() * 0.5, enters, panic: 0, fade: 0 });
+    const rich = look.top === 'tux' || look.top === 'suit' || look.top === 'sequin';
+    const cash = Math.round((20 + Math.random() * 180) * (rich ? 3 : 1) * (Math.random() < 0.05 ? 8 : 1));
+    this.peds.push({ model, x, z, route, i: 0, speed: 1.2 + Math.random() * 0.5, enters, panic: 0, fade: 0, hp: 60, ko: 0, cash });
   }
 
   /** Gunfire at (gx, gz): everybody close by runs for it. */
@@ -142,6 +149,42 @@ export class Crowd {
     }
   }
 
+  /** People standing in the way of a bullet (global frame, unit direction), nearest first. */
+  raycast(ox: number, oz: number, dx: number, dz: number, maxS: number): { ped: Ped; s: number }[] {
+    const out: { ped: Ped; s: number }[] = [];
+    for (const p of this.peds) {
+      if (p.ko > 0 || p.fade > 0) continue;
+      const px = p.x - ox;
+      const pz = p.z - oz;
+      const s = px * dx + pz * dz;
+      if (s < 0.2 || s > maxS) continue;
+      if (Math.hypot(px - dx * s, pz - dz * s) < 0.34) out.push({ ped: p, s });
+    }
+    return out.sort((a, b) => a.s - b.s);
+  }
+
+  /** A bullet landed: they stagger (and run), or go down and drop their cash. */
+  damage(p: Ped, dmg: number, dx: number, dz: number): { ko: boolean; cash: number } {
+    if (p.ko > 0) return { ko: false, cash: 0 };
+    p.hp -= dmg;
+    p.model.flinch = 1;
+    p.model.setExpression('surprised', 2);
+    if (p.hp > 0) {
+      // Hurt: run away from the shot.
+      p.panic = 10;
+      p.route = [{ x: p.x + Math.sign(dx || 1) * 60, z: p.z }];
+      p.i = 0;
+      p.enters = false;
+      return { ko: false, cash: 0 };
+    }
+    p.ko = 9;
+    p.model.root.rotation.y = Math.atan2(-dx, -dz);
+    p.model.setPose('ko');
+    const cash = p.cash;
+    p.cash = 0;
+    return { ko: true, cash };
+  }
+
   update(dt: number, fx: number, fz: number, doors: DoorSpot[], visible: boolean): void {
     this.group.visible = visible;
     this.spawnT -= dt;
@@ -151,6 +194,19 @@ export class Crowd {
     }
     for (let k = this.peds.length - 1; k >= 0; k--) {
       const p = this.peds[k];
+      if (p.ko > 0) {
+        // Out cold on the pavement, then they come to and slink away (fade out).
+        p.ko -= dt;
+        if (p.ko < 1.2) p.model.root.scale.setScalar(Math.max(0.01, p.ko / 1.2));
+        if (p.ko <= 0) {
+          p.model.dispose();
+          this.peds.splice(k, 1);
+          continue;
+        }
+        p.model.setPose('ko');
+        if (visible) p.model.update(dt);
+        continue;
+      }
       p.panic = Math.max(0, p.panic - dt);
       const speed = p.panic > 0 ? 4.6 : p.speed;
       const t = p.route[p.i];

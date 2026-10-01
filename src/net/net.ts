@@ -18,6 +18,7 @@ import { dampAngle } from '../core/math';
 import { Relay } from './relay';
 import { gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
+import { KO_MAX_LOSS, type RemoteTarget } from '../game/combat';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -132,6 +133,15 @@ interface Remote {
   since: number;
   fx: PlayerFx;
   rb: number;
+  /** Street fights: their health, knocked out, just woke up (can't be hit). */
+  hp: number;
+  ko: boolean;
+  prot: boolean;
+  /** Their running totals of damage dealt to you and cash owed to you (undefined = not seen yet). */
+  seenHits?: number;
+  seenLoot?: number;
+  hpEl: HTMLElement;
+  nameEl: HTMLElement;
 }
 
 const tmp = new THREE.Vector3();
@@ -161,6 +171,11 @@ export class Net {
   private lastLedger = '';
   private checkT = 1;
   private streetKey = '';
+  /** Damage you've dealt to each player and cash they owe you from knockouts (running totals this session). */
+  private hits: Record<string, number> = {};
+  private loot: Record<string, number> = {};
+  /** When you last hit each player (to credit you with the knockout). */
+  private lastHitAt: Record<string, number> = {};
   status = 'Offline: just you and the rival down the street.';
 
   constructor(private game: Game, private hud: Hud) {
@@ -171,6 +186,16 @@ export class Net {
     game.bannedBy = (pid) => this.bannedBy(pid);
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.openPlayers = () => this.openPlayers();
+    game.combat.remoteTargets = () => this.targets();
+    game.combat.onHitRemote = (pid, dmg) => {
+      this.hits[pid] = (this.hits[pid] ?? 0) + dmg;
+      this.lastHitAt[pid] = Date.now();
+      this.presenceT = 0;
+    };
+    game.combat.onLoot = (pid, amount) => {
+      this.loot[pid] = (this.loot[pid] ?? 0) + amount;
+      this.presenceT = 0;
+    };
     hud.modals.netStatus = () => `${this.status}${this.online ? ` ${this.remotes.size} other ${this.remotes.size === 1 ? 'player is' : 'players are'} online.` : ''}`;
   }
 
@@ -265,11 +290,13 @@ export class Net {
       if (!r) {
         const model = new CharacterModel(look);
         this.game.renderer.scene.add(model.root);
-        const label = h('div', { class: 'net-label' });
+        const nameEl = h('span', { class: 'nl-name' });
+        const hpEl = h('i', { class: 'nl-hp', hidden: true });
+        const label = h('div', { class: 'net-label' }, nameEl, hpEl);
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, shots: 0, held: null, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0,
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl,
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -280,7 +307,8 @@ export class Net {
       r.name = typeof pr.nm === 'string' && pr.nm.trim() ? pr.nm.slice(0, 20) : 'Player';
       r.rb = rebirthsOf(pr.rb);
       const lux = cleanCosmetics(pr.cos).map((id) => cosmetic(id)?.icon ?? '').join('');
-      r.label.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}`;
+      r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}`;
+      this.readCombat(r, pr);
       r.tx = num(pr.x);
       r.tz = num(pr.z);
       r.yaw = num(pr.yaw);
@@ -327,6 +355,51 @@ export class Net {
       this.remotes.delete(k);
     }
     this.syncStreet();
+  }
+
+  /**
+   * Street fights over presence: everyone publishes running totals of the damage they've
+   * dealt to each player and the cash each knockout cost them. You read your own line in
+   * everyone else's totals: new damage hurts you, new cash is yours.
+   */
+  private readCombat(r: Remote, pr: Record<string, unknown>): void {
+    const g = this.game;
+    const wasKo = r.ko;
+    const hp = Math.max(0, Math.min(100, Math.round(num(pr.hp ?? 100))));
+    if (hp < r.hp && r.visible) r.model.flinch = 1;
+    r.hp = hp;
+    r.ko = pr.ko === 1;
+    r.prot = pr.pr === 1;
+    if (r.ko && !wasKo && Date.now() - (this.lastHitAt[r.pid] ?? 0) < 4000) {
+      g.stats.knockouts++;
+      g.combat.landed(false, true);
+      g.notify(`You knocked out ${r.name}!`, 'good');
+    }
+    const hits = cleanNumbers(pr.hits)[this.pid] ?? 0;
+    if (r.seenHits === undefined || hits < r.seenHits) r.seenHits = hits;
+    else if (hits > r.seenHits) {
+      const dmg = Math.min(400, hits - r.seenHits);
+      r.seenHits = hits;
+      // Only shots fired out on the street, from close enough to reach you, count.
+      if (r.out && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 150) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
+    }
+    const loot = cleanNumbers(pr.loot)[this.pid] ?? 0;
+    if (r.seenLoot === undefined || loot < r.seenLoot) r.seenLoot = loot;
+    else if (loot > r.seenLoot) {
+      const amount = Math.min(KO_MAX_LOSS, loot - r.seenLoot);
+      r.seenLoot = loot;
+      g.combat.loot(Math.round(amount), r.name);
+    }
+  }
+
+  /** Other players you could shoot right now: out on the street, awake, not just woken up. */
+  private targets(): RemoteTarget[] {
+    const out: RemoteTarget[] = [];
+    for (const r of this.remotes.values()) {
+      if (!r.visible || !r.out || r.floor !== 0 || r.ko || r.prot) continue;
+      out.push({ pid: r.pid, name: r.name, x: r.x, z: r.z, y: r.model.root.position.y, height: r.model.height });
+    }
+    return out;
   }
 
   // ------------------------------------------------------------------ cloud save
@@ -612,6 +685,11 @@ export class Net {
       out: g.inside ? 0 : 1,
       gun: g.gunplay.drawn ? g.guns.equipped : null,
       sh: g.gunplay.shots,
+      hp: Math.round(g.combat.hp),
+      ko: g.combat.ko > 0 ? 1 : 0,
+      pr: g.combat.protect > 0 ? 1 : 0,
+      hits: this.hits,
+      loot: this.loot,
       look: p.appearance,
       bans,
       owes: g.net.owes,
@@ -633,6 +711,7 @@ export class Net {
     if (JSON.stringify(data).length > 3800) casino.hotel = (casino.hotel as unknown[]).slice(0, 2);
     if (JSON.stringify(data).length > 3800) delete casino.house;
     if (JSON.stringify(data).length > 3800) delete data.cos;
+    if (JSON.stringify(data).length > 3800) data.hits = trimTop(this.hits, 8);
     return data;
   }
 
@@ -761,10 +840,15 @@ export class Net {
       m.root.position.set(r.x, outside ? g.streetDrop : 0, r.z);
       r.fx.update(dt, true);
       m.root.rotation.y = dampAngle(m.root.rotation.y, r.yaw + (known ? g.street.rotOf(lotId) : 0), 12, dt);
-      if (r.moving) {
+      if (r.ko) m.setPose('ko');
+      else if (r.moving) {
         m.moveSpeed = 2.6;
         m.setPose('walk');
       } else m.setPose('idle');
+      r.hpEl.hidden = !r.out || (r.hp >= 100 && !r.ko);
+      if (!r.hpEl.hidden) r.hpEl.style.setProperty('--hp', `${r.ko ? 0 : r.hp}%`);
+      r.label.classList.toggle('ko', r.ko);
+      r.label.classList.toggle('prot', r.prot);
       m.update(dt);
       tmp.set(r.x, m.root.position.y + m.height + 0.45, r.z).project(cam);
       if (tmp.z > 1) r.label.hidden = true;
@@ -805,6 +889,11 @@ export class Net {
     el.appendChild(this.banControls(pid, name, () => g.select({ kind: 'remote', pid })));
     el.appendChild(h('p', { class: 'muted small', text: 'No reason needed. They’re walked out of your casino, hotel and house and can’t come back until it runs out.' }));
   }
+}
+
+/** The biggest few entries of a running-totals map. */
+function trimTop(m: Record<string, number>, n: number): Record<string, number> {
+  return Object.fromEntries(Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, n));
 }
 
 function num(v: unknown): number {

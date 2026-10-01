@@ -65,6 +65,12 @@ export interface LifetimeStats {
   /** Money moved in and out of the vault. */
   deposited: number;
   vaultOpened: number;
+  /** Wall tiles built inside. */
+  wallsBuilt: number;
+  /** Street fights: people you knocked out, cash taken, and times you went down. */
+  knockouts: number;
+  looted: number;
+  knockedDown: number;
 }
 
 export function emptyStats(): LifetimeStats {
@@ -72,7 +78,7 @@ export function emptyStats(): LifetimeStats {
     collected: 0, earnedTotal: 0, visitors: 0, jackpots: 0, bigWins: 0, biggestWin: 0, cheatersCaught: 0, repairs: 0,
     trashCleaned: 0, vipsGreeted: 0, drinksServed: 0, rounds: 0, comps: 0, purchases: 0, managerSpins: 0,
     awayNet: 0, awayHands: 0, turnedAway: 0, roomsDecorated: 0, floorSetups: 0,
-    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0,
+    shotsFired: 0, targetsHit: 0, carsHit: 0, deposited: 0, vaultOpened: 0, wallsBuilt: 0, knockouts: 0, looted: 0, knockedDown: 0,
   };
 }
 
@@ -98,6 +104,7 @@ export const OBJECTIVES: Objective[] = [
   { id: 'repair', text: 'Fix a broken machine', hint: 'Stand next to it and hold Space (or the action button).', target: 1, reward: 300, xp: 100, progress: (v) => v.stats.repairs },
   { id: 'bar', text: 'Build a cocktail bar', hint: 'Unlocks at level 2. Thirsty guests stay longer.', target: 1, reward: 600, xp: 150, progress: (v) => v.countItem('bar') },
   { id: 'paint', text: 'Paint 20 floor tiles', hint: 'Casino → Paint floor, then drag across the carpet.', target: 20, reward: 250, xp: 80, progress: (v) => v.floorPainted },
+  { id: 'walls', text: 'Build 12 tiles of wall', hint: 'Build → Walls, then drag across the floor to make a room.', target: 12, reward: 400, xp: 100, progress: (v) => v.stats.wallsBuilt },
   { id: 'staff', text: 'Hire your first staff member', hint: 'Open Staff. Janitors keep the floor clean.', target: 1, reward: 500, xp: 150, progress: (v) => v.staffTotal },
   { id: 'table', text: 'Buy a table game', hint: 'Blackjack unlocks at level 3.', target: 1, reward: 1000, xp: 250, progress: (v) => v.countCategory('tables') },
   { id: 'rating_3', text: 'Reach a 3-star rating', hint: 'Happy guests, decor, variety and clean floors.', target: 3, reward: 1000, xp: 300, progress: (v) => v.rating },

@@ -14,6 +14,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - 36 shop items across four categories: machines (Lucky 7s, Fruit Frenzy, Diamond Deluxe, the linked **Mega Jackpot**, video poker, keno, claw crane, pachinko), tables (blackjack, baccarat, roulette, Big Six wheel, craps, sic bo, hold'em and Three Card Poker), services (cocktail bar, snack bar, ATM, lounge bench, show stage) and decor (plants, palms, velvet ropes, neon signs, giant dice, gold pillars, a fountain, an aquarium, a money tree, a giant diamond, and a solid-gold statue of *you*).
 - Place anything anywhere with a live ghost preview. It turns red if the spot is taken, would block the entrance, or would wall guests off from a seat.
 - Click any placed item to **upgrade** it (5 levels: higher bets, bigger cash box, fewer breakdowns), **move** it, **rotate** it, **recolor** it or **sell** it. Slot machines, the bars and the claw crane take your own **sign text**. Changed your mind? Selling within 15 seconds of buying is a full refund.
+- **Build walls** (Build → Walls, or the Casino panel): drag a straight line across the floor to put up walls and make rooms, hallways and private corners in your casino, hotel or house. 15 wall styles (plaster, red brick, walnut panels, stone, casino velvet, subway tile, marble, glass partitions, black and ice neon, solid gold, garden hedge). Walls join up at corners, guests and staff walk around them, and a wall is refused if it would shut guests out of a seat or the elevator. Knock them down for half the price back. From the top-down camera they're drawn cut down so you can still see in; from behind or in first person they stand full height.
 - Paint the floor tile by tile, or the whole casino in one click, with 12 carpet styles from Royal Crimson and Vegas Retro to marble, gold tiles and a glowing neon grid.
 - Rename your casino and restyle its sign (4 lettering styles and 8 colors), the walls and the neon trim. Paint the floor from the Casino panel.
 - **Grow wide, deep and tall.** Every lot on the street shares the same width limit (22 tiles), but you can keep building deeper and stack as many floors as you can afford. A glass elevator links the floors, and guests and staff ride it. You choose where the elevator goes (the shaft moves on every floor at once), and any machine can be carried to another floor from its card. Upstairs you really are upstairs: the street drops away below the building, the doorway becomes a window and a banner shows which floor you're on.
@@ -32,7 +33,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - Hire janitors, technicians, security and **door guards**, who stand at the entrance and turn most cheaters away before they get in. Wages are paid at the end of each day.
 - Random events: happy hour, tour buses, VIP parties, power surges and jackpot buzz.
 - A star rating built from guest happiness, decor, game variety, cleanliness and working machines. More stars bring more guests and more VIPs.
-- 40 goals, casino levels that unlock new items, a daily report and a stats panel.
+- 41 goals, casino levels that unlock new items, a daily report and a stats panel.
 
 **The city**
 - A whole city grid: three streets (the **Casino Strip**, **Palm Avenue** for houses and **Downtown Boulevard**) crossed by avenues every four lots, with crosswalks, working traffic lights, street-name signs, lamps, trees, hydrants and **cars** that drive the roads, stop at red lights and honk if you stand in their lane. Lots are further apart and you walk faster outdoors.
@@ -72,6 +73,8 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - **Bullseye Guns** on the Strip sells 11 guns: a pocket pistol, a six-shooter, a pump shotgun, an SMG, an assault rifle, a sniper rifle, a golden hand cannon, a laser blaster, a minigun, a paintball marker and a confetti cannon.
 - Guns only fire out on the streets and sidewalks; inside any building they stay holstered. Click (or hold, for automatics) to aim at the cursor and shoot; on touch, hold FIRE (with a little auto-aim). `R` reloads, `G` switches guns.
 - Shoot tin cans, bottles and balloons along the sidewalks (they come back later), set off car alarms, splat paint or burst confetti. People nearby run for cover. Other players see the gun in your hand and your muzzle flashes.
+- **First person** (`V` until you're looking out of your own eyes, or Menu → Camera): click to capture the mouse and look around, the gun is in your hands on screen, a crosshair opens up as you move and fire, right-click aims down the sights (the sniper gets a real scope), shots kick the view up, and hits show a hit marker (gold for headshots, red for a knockout) and a damage number. Bullets fly in 3D: aim high, low or over a car. On touch, drag to look, tap AIM and hold FIRE.
+- **Street fights:** guns hurt people out on the street. Every gun has its own damage (headshots double it; the confetti cannon hurts nobody). Knock out a passer-by and the cash in their pockets flies to you. Knock out **another player** and you take 10% of the cash they carry (up to $250,000). They lie on the pavement for a few seconds and wake up with full health and a few seconds of safety. You can get knocked out too: your health shows at the bottom left, the screen flashes red and an arrow points to the shooter. Health comes back by itself, and inside any building you're always safe. **Money in your vault can never be taken**, so bank your winnings before you go out.
 
 **Decorations galore**
 - Over 100 new decorations: statues, a grand piano, a T-Rex skeleton, a classic car, a jade dragon, neon flamingos, a disco ball, a koi pond and much more for every business; lobby touches for the hotel; garden pieces (flower beds, tiki torches, a gazebo, a fire pit); and house furniture and toys (sofas, beds, a pool table, a home cinema, a gaming setup, a hot tub).
@@ -82,7 +85,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 **Juice**
 - Bloom-lit neon, chasing marquee bulbs, confetti, coin showers, floating money, emoji thought bubbles, camera shake on jackpots, and brighter neon after dark.
 - Synthesized sound effects and an optional lounge-jazz music loop.
-- **Third-person camera** (`V`): the camera sits behind your manager and turns with them.
+- **Third-person camera** (`V`): the camera sits behind your manager and turns with them. Press `V` again for **first person**.
 - **Photo mode** (`H` or the camera button) hides the HUD so you can admire your casino.
 - Autosaves everything (your casino, character, money, level, goals and every purchase, cosmetics included) to your browser, with Continue on the title screen. In the Claude artifact the save is also kept in your own private slot of the page's database, so a reload or another device picks up where you left off; the newer copy wins.
 - **Export and import** your casino from the menu: download it as a file or copy it as text, and load a file or pasted text back (yours or a friend's). Imported files are checked and clamped like any other player's casino.
@@ -103,6 +106,8 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 | Street map | Click the map to teleport to the sidewalk or road; `M` enlarges it | Tap the map |
 | Select | Click a machine, guest or staff member | Tap |
 | Guns (street only) | Click or hold to shoot at the cursor, `R` reload, `G` switch / holster | Hold FIRE, ⟳ reload, ⇄ switch |
+| First person | `V` (top-down → third person → first person); click to capture the mouse, move it to look, click to shoot, right-click to aim down the sights, `Esc` frees the mouse | Camera button; drag to look, AIM and FIRE buttons |
+| Walls | Build → Walls, then click and drag a line (right-click cancels a line) | Build → Walls, then drag a line |
 | Vault | Walk up to it, `Space`, then type the code (number keys, `Enter`) | Action button, then the keypad |
 | Emotes | `1`–`4` (wave, dance, cheer, clap) | |
 | Pause | `P` or the pause / play buttons | Pause / play buttons |

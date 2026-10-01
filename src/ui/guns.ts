@@ -49,6 +49,7 @@ export class GunBar {
   private ammo = h('div', { class: 'gb-ammo' });
   private fire: HTMLButtonElement;
   private swap: HTMLButtonElement;
+  private ads: HTMLButtonElement;
   private hint = h('div', { class: 'gb-hint' });
   private key = '';
 
@@ -73,10 +74,15 @@ export class GunBar {
         g.equipGun(i + 1 >= owned.length ? null : owned[i + 1]);
       },
     }) as HTMLButtonElement;
+    this.ads = h('button', {
+      class: 'gb-ads', text: 'AIM', 'aria-label': 'Aim down the sights',
+      onClick: () => { g.gunplay.adsTouch = !g.gunplay.adsTouch; this.key = ''; },
+    }) as HTMLButtonElement;
     this.el = h('div', { class: 'gunbar', hidden: true },
       h('div', { class: 'gb-info' }, this.name, this.ammo, this.hint),
       h('button', { class: 'gb-btn', text: '⟳', title: 'Reload (R)', 'aria-label': 'Reload', onClick: () => g.gunplay.reload() }),
       this.swap,
+      this.ads,
       this.fire,
     );
     window.addEventListener('keydown', (e) => {
@@ -91,7 +97,8 @@ export class GunBar {
     const d = gunDef(g.guns.equipped);
     const gp = g.gunplay;
     const out = gp.canShoot;
-    const key = `${has}|${d?.id}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${out}|${g.input.isTouch}`;
+    const fp = g.cam.mode === 'first';
+    const key = `${has}|${d?.id}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${out}|${g.input.isTouch}|${fp}|${gp.adsTouch}`;
     if (key === this.key) return;
     this.key = key;
     this.el.hidden = !has;
@@ -99,7 +106,11 @@ export class GunBar {
     this.el.classList.toggle('armed', !!d && out);
     this.name.textContent = d ? `🔫 ${d.name}` : '🔫 Holstered';
     this.ammo.textContent = d ? (gp.reloading > 0 ? 'Reloading…' : `${gp.ammoOf(d.id)} / ${d.mag}`) : 'G to draw';
-    this.hint.textContent = !d ? '' : out ? (g.input.isTouch ? 'Hold FIRE' : 'Click to shoot · R reload · G switch') : 'Street only';
+    this.hint.textContent = !d ? '' : out
+      ? (g.input.isTouch ? (fp ? 'Drag to look · Hold FIRE' : 'Hold FIRE') : fp ? 'Click shoot · Right-click aim · R reload' : 'Click to shoot · R reload · G switch · V first person')
+      : 'Street only';
     this.fire.hidden = !g.input.isTouch || !d || !out;
+    this.ads.hidden = !g.input.isTouch || !d || !out || !fp;
+    this.ads.classList.toggle('on', gp.adsTouch);
   }
 }

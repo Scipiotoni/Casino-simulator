@@ -7,6 +7,7 @@ import { MAX_LEVEL, type PlacedItem } from '../items/placedItem';
 import type { Customer } from '../entities/customer';
 import type { Worker } from '../entities/staff';
 import { FLOOR_STYLES } from '../render/textures';
+import { WALL_STYLES } from '../world/walls';
 import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
@@ -14,6 +15,7 @@ import { openTableGame } from './games';
 import { Minimap } from './minimap';
 import { cosmetic } from '../cosmetics/catalog';
 import { GunBar, openGunShop } from './guns';
+import { CombatHud } from './combatHud';
 import { openVault } from './vault';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
@@ -35,6 +37,8 @@ export class Hud {
   private cardEl!: HTMLElement;
   private placeBar!: HTMLElement;
   private paintBar!: HTMLElement;
+  private wallBar!: HTMLElement;
+  private wallInfo = h('span', { class: 'muted' });
   private actionBtn!: HTMLButtonElement;
   private joyEl!: HTMLElement;
   private knobEl!: HTMLElement;
@@ -54,6 +58,7 @@ export class Hud {
   private camBtn!: HTMLButtonElement;
   private floorTag = h('div', { class: 'floor-tag', hidden: true });
   readonly gunBar: GunBar;
+  readonly combatHud: CombatHud;
   /** Extra card for another player you clicked (filled in by the multiplayer layer). */
   remoteCard: ((pid: string, el: HTMLElement) => void) | null = null;
 
@@ -64,6 +69,7 @@ export class Hud {
     this.shop = new ShopDrawer(this.root, game, this);
     this.minimap = new Minimap(game);
     this.gunBar = new GunBar(game);
+    this.combatHud = new CombatHud(game);
     this.build();
     this.bind();
     this.goalsCollapsed = window.innerWidth < 700;
@@ -129,6 +135,7 @@ export class Hud {
     // Placement bar
     this.placeBar = h('div', { class: 'placebar', hidden: true });
     this.paintBar = h('div', { class: 'paintbar', hidden: true });
+    this.wallBar = h('div', { class: 'paintbar wallbar', hidden: true });
     this.cardEl = h('section', { class: 'card selcard', hidden: true });
 
     // Touch controls
@@ -145,13 +152,13 @@ export class Hud {
     this.knobEl = h('div', { class: 'knob' });
     this.joyEl = h('div', { class: 'joystick', hidden: true }, this.knobEl);
     const camBtns = h('div', { class: 'cam-btns' },
-      (this.camBtn = h('button', { class: 'cam-btn cam-mode', html: icon('you', 18), 'aria-label': 'Third-person camera (V)', title: 'Third-person camera (V)', onClick: () => { g.setCameraMode(g.cam.mode === 'third' ? 'top' : 'third'); audio.play('click'); } }) as HTMLButtonElement),
+      (this.camBtn = h('button', { class: 'cam-btn cam-mode', html: icon('you', 18), 'aria-label': 'Switch camera (V)', title: 'Switch camera: top-down, third person, first person (V)', onClick: () => { g.setCameraMode(g.cam.mode === 'top' ? 'third' : g.cam.mode === 'third' ? 'first' : 'top'); audio.play('click'); } }) as HTMLButtonElement),
       h('button', { class: 'cam-btn', html: icon('camera', 18), 'aria-label': 'Photo mode (H)', title: 'Photo mode (H)', onClick: () => this.togglePhoto(true) }),
       h('button', { class: 'cam-btn', html: icon('rotate', 18), 'aria-label': 'Rotate camera', onClick: () => g.cam.rotate(1) }),
       h('button', { class: 'cam-btn', html: icon('zoomIn', 18), 'aria-label': 'Zoom in', onClick: () => g.cam.zoomBy(0.8) }),
       h('button', { class: 'cam-btn', html: icon('zoomOut', 18), 'aria-label': 'Zoom out', onClick: () => g.cam.zoomBy(1.25) }),
     );
-    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes · <b>V</b> camera · <b>H</b> photo' });
+    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-4</b> emotes · <b>V</b> camera (1st person) · <b>H</b> photo' });
     this.fpsEl = h('div', { class: 'fps', hidden: true });
 
     // Visiting another casino
@@ -161,7 +168,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(this.combatHud.el, top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -185,6 +192,7 @@ export class Hud {
     g.events.on('objectives', () => this.renderGoals());
     g.events.on('select', (s) => this.renderCard(s));
     g.events.on('mode', () => this.renderMode());
+    g.events.on('wallLine', () => this.updateWallInfo());
     g.events.on('look', () => (this.nameEl.textContent = g.building.look.name));
     g.events.on('day', (r) => this.dayReport(r));
     g.events.on('siteLeaving', () => {
@@ -314,6 +322,7 @@ export class Hud {
     const m = g.build.mode;
     this.placeBar.hidden = m.kind !== 'place';
     this.paintBar.hidden = m.kind !== 'paint';
+    this.wallBar.hidden = m.kind !== 'wall';
     this.toolbar.classList.toggle('dim', m.kind !== 'play');
     if (m.kind === 'place') {
       clear(this.placeBar);
@@ -331,6 +340,7 @@ export class Hud {
         h('button', { class: 'round-btn no', html: icon('close'), 'aria-label': 'Cancel', onClick: () => { g.build.cancel(); audio.play('click'); } }),
       );
     }
+    if (m.kind === 'wall') this.renderWallBar();
     if (m.kind === 'paint') {
       clear(this.paintBar);
       const row = h('div', { class: 'swatches' });
@@ -358,6 +368,51 @@ export class Hud {
           h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } })),
         row,
       );
+    }
+  }
+
+  private renderWallBar(): void {
+    const g = this.game;
+    const m = g.build.mode;
+    if (m.kind !== 'wall') return;
+    clear(this.wallBar);
+    const row = h('div', { class: 'swatches' });
+    row.appendChild(h('button', {
+      class: `floor-sw erase-sw${m.erase ? ' on' : ''}`, title: 'Knock walls down (half the price back)', 'aria-label': 'Knock down walls',
+      onClick: () => { g.build.setWallStyle(m.style, true); audio.play('click'); },
+    }, h('span', { class: 'sw-chip', html: icon('close', 26) }), h('span', { class: 'sw-name', text: 'Knock down' }), h('span', { class: 'sw-price', text: '½ back' })));
+    WALL_STYLES.forEach((s, i) => {
+      row.appendChild(h('button', {
+        class: `floor-sw${!m.erase && i === m.style ? ' on' : ''}`, title: `${s.name} · $${s.price}/tile`, 'aria-label': s.name,
+        onClick: () => { g.build.setWallStyle(i, false); audio.play('click'); },
+      }, h('span', { class: `sw-chip wall-chip${s.glass ? ' glass' : ''}`, style: `background:${s.swatch};${s.neon ? `box-shadow:inset 0 5px 0 #${s.neon.toString(16).padStart(6, '0')}` : ''}` }),
+      h('span', { class: 'sw-name', text: s.name }), h('span', { class: 'sw-price', text: `$${s.price}` })));
+    });
+    this.wallBar.append(
+      h('div', { class: 'paint-head' }, h('span', { text: '🧱' }), h('b', { text: m.erase ? 'Knock down walls' : 'Build walls' }), this.wallInfo,
+        h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } })),
+      row,
+    );
+    this.updateWallInfo();
+  }
+
+  private updateWallInfo(): void {
+    const g = this.game;
+    const m = g.build.mode;
+    if (m.kind !== 'wall') return;
+    const n = g.build.wallLine.length;
+    const help = g.input.isTouch ? 'Drag a line across the floor' : 'Click and drag a line · right-click cancels';
+    this.wallInfo.textContent = n > 1 ? `${n} tiles${m.erase ? '' : ` · ${formatMoney(g.build.wallCost)}`}` : help;
+  }
+
+  /** Walls: Build → Walls (your own casino, hotel or house). */
+  toggleWalls(): void {
+    const g = this.game;
+    if (g.build.mode.kind === 'wall') g.build.cancel();
+    else if (g.visiting || !g.inside || !g.canBuildHere) g.notify('Step inside your own building to put up walls.', 'bad');
+    else {
+      this.shop.close();
+      g.build.startWall(0);
     }
   }
 
@@ -684,9 +739,10 @@ export class Hud {
   }
 
   private renderCamBtn(): void {
-    const third = this.game.cam.mode === 'third';
-    this.camBtn.classList.toggle('on', third);
-    this.camBtn.title = third ? 'Top-down camera (V)' : 'Third-person camera (V)';
+    const mode = this.game.cam.mode;
+    this.camBtn.classList.toggle('on', mode !== 'top');
+    this.camBtn.classList.toggle('first', mode === 'first');
+    this.camBtn.title = mode === 'top' ? 'Third-person camera (V)' : mode === 'third' ? 'First-person camera (V)' : 'Top-down camera (V)';
   }
 
   update(dt: number): void {
@@ -694,6 +750,8 @@ export class Hud {
     this.floorBar.hidden = g.floors < 2 || !g.inside;
     this.minimap.update(dt);
     this.gunBar.update();
+    this.combatHud.update(dt);
+    this.root.classList.toggle('fp', g.cam.mode === 'first' && g.state === 'playing');
     const up = g.inside && g.player.floor > 0;
     this.floorTag.hidden = !up;
     if (up) {

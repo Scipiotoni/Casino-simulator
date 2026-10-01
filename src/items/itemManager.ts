@@ -142,6 +142,7 @@ export class ItemManager {
       const i = g.idx(x, z);
       const occ = floorLayer ? g.floorOcc[i] : g.occ[i];
       if (occ && occ !== ignore?.uid) return { ok: false, reason: 'That spot is taken' };
+      if (!floorLayer && g.wall[i]) return { ok: false, reason: 'There’s a wall there' };
       if (!floorLayer && this.isReserved(floor, x, z)) {
         return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
       }
@@ -152,7 +153,7 @@ export class ItemManager {
     const walk = (x: number, z: number): boolean => {
       if (!g.inBounds(x, z)) return false;
       const i = g.idx(x, z);
-      if (newSet.has(i)) return false;
+      if (newSet.has(i) || g.wall[i]) return false;
       if (!g.isSidewalk(x, z) && !g.isDoor(x, z) && !g.isOwned(x, z)) return false;
       const o = g.occ[i];
       return o === 0 || o === ignoreUid;
@@ -190,6 +191,42 @@ export class ItemManager {
       }
     }
     return { ok: true, seatOk };
+  }
+
+  /** Can a wall go up on this tile without shutting guests out of anything? */
+  canWall(floor: number, x: number, z: number): PlaceCheck {
+    const g = this.grid(floor);
+    if (!g.isOwned(x, z)) return { ok: false, reason: 'Walls go inside your building' };
+    const i = g.idx(x, z);
+    if (g.wall[i]) return { ok: false, reason: 'There’s already a wall there' };
+    if (g.occ[i]) return { ok: false, reason: 'Something is standing there' };
+    if (this.isReserved(floor, x, z)) return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
+    const walk = (tx: number, tz: number): boolean => {
+      if (!g.inBounds(tx, tz)) return false;
+      const k = g.idx(tx, tz);
+      if (k === i || g.wall[k]) return false;
+      if (!g.isSidewalk(tx, tz) && !g.isDoor(tx, tz) && !g.isOwned(tx, tz)) return false;
+      return g.occ[k] === 0;
+    };
+    const reach = g.flood(walk);
+    if (this.floors > 1 && floor === 0 && !reach[g.idx(g.portal[0], g.portal[1])]) return { ok: false, reason: 'That would wall off the elevator' };
+    for (const it of this.items) {
+      if (it.floor !== floor || !it.seats.length || it.def.layer === 'floor') continue;
+      if (!it.seats.some((s) => s.reachable)) continue;
+      const own = new Set(it.tiles.map(([tx, tz]) => g.idx(tx, tz)));
+      const ok = it.seats.some((s) => {
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = s.tileX + dx;
+          const nz = s.tileZ + dz;
+          if (!g.inBounds(nx, nz)) continue;
+          const ni = g.idx(nx, nz);
+          if (!own.has(ni) && reach[ni] && walk(nx, nz)) return true;
+        }
+        return false;
+      });
+      if (!ok) return { ok: false, reason: `That would wall off the ${it.def.name}` };
+    }
+    return { ok: true };
   }
 
   private occupy(item: PlacedItem, on: boolean): void {
@@ -262,6 +299,7 @@ export class ItemManager {
       for (const [x, z] of [...tiles, portal]) {
         if (!g.isOwned(x, z)) return { ok: false, reason: 'The elevator must stay inside your walls on every floor' };
         const o = g.occ[g.idx(x, z)];
+        if (g.wall[g.idx(x, z)]) return { ok: false, reason: `A wall is in the way on ${f === 0 ? 'the ground floor' : `floor ${f + 1}`}` };
         if (o && o !== own?.uid) return { ok: false, reason: `Something is in the way on ${f === 0 ? 'the ground floor' : `floor ${f + 1}`}` };
         if (f === 0 && ENTRY_TILES.some(([ex, ez]) => ex === x && ez === z)) return { ok: false, reason: 'Keep the entrance clear' };
       }
@@ -273,7 +311,7 @@ export class ItemManager {
     const reach = g0.flood((x, z) => {
       if (!g0.inBounds(x, z)) return false;
       const i = g0.idx(x, z);
-      if (block.has(i)) return false;
+      if (block.has(i) || g0.wall[i]) return false;
       if (!g0.isSidewalk(x, z) && !g0.isDoor(x, z) && !g0.isOwned(x, z)) return false;
       const o = g0.occ[i];
       return o === 0 || o === own0;
