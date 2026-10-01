@@ -18,8 +18,8 @@ export interface LotLook {
   tagline?: string;
   /** Casino cosmetics switched on (searchlights, fireworks, gold facade, rainbow neon). */
   cos?: string[];
-  /** A hotel tower: balconies on every storey and a tall HOTEL sign. */
-  style?: 'hotel';
+  /** A hotel tower (balconies, tall HOTEL sign) or an open-air Pool Garden. */
+  style?: 'hotel' | 'garden';
 }
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
@@ -69,7 +69,71 @@ export class Exterior {
     this.build();
   }
 
+  /** An open-air Pool Garden from the street: hedges, a gate with a sign, a lagoon and palms. */
+  private buildGarden(): void {
+    const { look } = this.info;
+    const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, this.info.width))].w;
+    const d = START_DEPTH + Math.max(0, this.info.depth) * DEPTH_STEP;
+    const x0 = CENTER_X - w / 2;
+    const x1 = CENTER_X + w / 2;
+    const z0 = FACADE_Z - d;
+    const z1 = FACADE_Z;
+    const s = this.shell;
+    const dyn = new Dyn();
+    const hedge = mat(0x2f7a3a, { rough: 0.95 });
+    const g = gold();
+    box(s, w, 0.04, d, mat(0x3f8a37, { rough: 1 }), CENTER_X, 0.02, (z0 + z1) / 2);
+    box(s, w + 0.3, 1.0, 0.3, hedge, CENTER_X, 0.5, z0);
+    box(s, 0.3, 1.0, d, hedge, x0, 0.5, (z0 + z1) / 2);
+    box(s, 0.3, 1.0, d, hedge, x1, 0.5, (z0 + z1) / 2);
+    box(s, CENTER_X - 1.2 - x0, 1.0, 0.3, hedge, (x0 + CENTER_X - 1.2) / 2, 0.5, z1);
+    box(s, x1 - CENTER_X - 1.2, 1.0, 0.3, hedge, (x1 + CENTER_X + 1.2) / 2, 0.5, z1);
+    // Gate arch with the name on it
+    for (const px of [CENTER_X - 1.3, CENTER_X + 1.3]) cyl(s, 0.16, 0.18, 3, g, px, 1.5, z1 + 0.1, 12);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(4, 1.25), new THREE.MeshStandardMaterial({ map: this.signTex, emissive: 0xffffff, emissiveMap: this.signTex, emissiveIntensity: 1, roughness: 0.5 }));
+    sign.position.set(CENTER_X, 3.3, z1 + 0.15);
+    s.add(sign);
+    dyn.keep(sign);
+    // A lagoon, a deck around it, palms and umbrellas
+    const pw = Math.min(w - 5, 9);
+    const pd = Math.min(d - 6, 6);
+    const pz = z0 + 2.5 + pd / 2;
+    box(s, pw + 1.6, 0.06, pd + 1.6, mat(0xe8dcc2, { rough: 0.6 }), CENTER_X, 0.05, pz);
+    const waterMat = new THREE.MeshStandardMaterial({ color: 0x2fb8e0, emissive: 0x0a5a80, emissiveIntensity: 0.7, roughness: 0.05, transparent: true, opacity: 0.85 });
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(pw, pd), waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(CENTER_X, 0.1, pz);
+    s.add(water);
+    dyn.keep(water);
+    this.garden = waterMat;
+    for (const [px, pzz] of [[x0 + 1.5, z0 + 1.5], [x1 - 1.5, z0 + 1.5], [x0 + 1.5, z1 - 2], [x1 - 1.5, z1 - 2]] as [number, number][]) {
+      cyl(s, 0.12, 0.18, 3.2, mat(0x8a5a2a, { rough: 0.9 }), px, 1.6, pzz, 8);
+      for (let i = 0; i < 6; i++) {
+        const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 6), mat(0x2f8f45, { rough: 0.7 }));
+        leaf.scale.set(0.5, 0.25, 3.4);
+        const a = (i / 6) * Math.PI * 2;
+        leaf.position.set(px + Math.sin(a) * 0.7, 3.25, pzz + Math.cos(a) * 0.7);
+        leaf.rotation.y = a;
+        s.add(leaf);
+      }
+    }
+    for (let i = 0; i < 4; i++) {
+      const ux = CENTER_X - pw / 2 + 1 + i * ((pw - 2) / 3);
+      const uz = pz + pd / 2 + 1.6;
+      cyl(s, 0.03, 0.03, 2, mat(0xe9e1d3), ux, 1, uz, 6);
+      const top = new THREE.Mesh(new THREE.ConeGeometry(0.9, 0.35, 10), mat([0xff6fb5, 0x2fb8c9, 0xff8a1f, 0xffffff][i], { rough: 0.9 }));
+      top.position.set(ux, 2, uz);
+      s.add(top);
+    }
+    void look;
+    bake(s, dyn);
+  }
+
+  /** Lagoon water on a Pool Garden's exterior (shimmers). */
+  private garden: THREE.MeshStandardMaterial | null = null;
+
   private build(): void {
+    if (this.info.style === 'garden') return this.buildGarden();
     const { look, floors } = this.info;
     const w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, this.info.width))].w;
     const d = START_DEPTH + Math.max(0, this.info.depth) * DEPTH_STEP;
@@ -400,6 +464,7 @@ export class Exterior {
 
   update(dt: number): void {
     this.t += dt;
+    if (this.garden) this.garden.emissiveIntensity = 0.6 + Math.sin(this.t * 2) * 0.12;
     this.updateEffects(dt);
     const phase = Math.floor(this.t * 8);
     this.bulbGroups.forEach((m, i) => (m.material = (i + phase) % 3 === 0 ? this.bulbOff : this.bulbOn));
@@ -409,6 +474,7 @@ export class Exterior {
     this.group.removeFromParent();
     disposeTree(this.group);
     this.rainbow?.dispose();
+    this.garden?.dispose();
     this.bladeTex?.dispose();
     this.signTex.dispose();
   }

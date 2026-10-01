@@ -171,8 +171,9 @@ export class BuildController {
       ? this.g.items.canPlaceLift(this.tile[0], this.tile[1])
       : this.g.items.canPlace(m.def, this.g.viewFloor, this.tile[0], this.tile[1], m.rot, m.moving && m.moving.floor === this.g.viewFloor ? m.moving : undefined);
     const affordable = m.moving || this.g.money >= m.def.price;
-    this.valid = check.ok && !!affordable;
-    this.reason = !check.ok ? check.reason ?? 'Can’t place here' : !affordable ? `Need ${formatMoney(m.def.price)}` : '';
+    const zone = this.g.placeBlock(m.def);
+    this.valid = check.ok && !!affordable && !zone;
+    this.reason = zone ?? (!check.ok ? check.reason ?? 'Can’t place here' : !affordable ? `Need ${formatMoney(m.def.price)}` : '');
     const [w, d] = rotatedSize(m.def, m.rot);
     const color = this.valid ? 0x3ddc84 : 0xff4d5e;
     const seats = m.def.seats.map((s, i) => {

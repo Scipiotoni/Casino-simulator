@@ -86,9 +86,9 @@ interface LotDoc {
   since: number;
   snap: CasinoSnapshot | null;
   bans: Record<string, number>;
-  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: HotelInfo | null; rb?: number };
-  /** The owner's hotel floor plan, for walking around in it. */
-  hotelSnap?: CasinoSnapshot | null;
+  info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: HotelInfo[]; rb?: number };
+  /** The owner's hotel floor plans by building, for walking around in them. */
+  hotelSnap?: Record<string, CasinoSnapshot>;
 }
 
 interface Remote {
@@ -148,7 +148,7 @@ export class Net {
     this.labelRoot = h('div', { class: 'net-labels' });
     game.floaters.root.appendChild(this.labelRoot);
     game.playerLot = (pid) => this.lotSnapshot(pid);
-    game.playerHotel = (pid) => this.lots.get(pid)?.hotelSnap ?? null;
+    game.playerHotel = (pid, bid) => this.lots.get(pid)?.hotelSnap?.[bid] ?? null;
     game.bannedBy = (pid) => this.bannedBy(pid);
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.netStatus = () => `${this.status}${this.online ? ` ${this.remotes.size} other ${this.remotes.size === 1 ? 'player is' : 'players are'} online.` : ''}`;
@@ -216,7 +216,7 @@ export class Net {
         snap: snapData,
         bans: cleanNumbers(raw.bans),
         info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos), hotel: hotelInfo(raw.hotel), rb: rebirthsOf(raw.rb) },
-        hotelSnap: raw.hotelSnap ? sanitizeSnapshot(raw.hotelSnap, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null,
+        hotelSnap: hotelSnaps(raw.hotelSnap),
       });
     }
     this.syncStreet();
@@ -349,11 +349,15 @@ export class Net {
     const lots: StreetLot[] = [];
     const hotels: StreetLot[] = [];
     const tag = (owner: string, rb: number | undefined) => `${rb ? `REBIRTH ${roman(rb)} · ` : ''}${owner.toUpperCase()}'S PLACE`;
-    const addHotel = (pid: string, owner: string, h: HotelInfo | null | undefined, on: boolean) => {
-      if (!h) return;
-      hotels.push({
-        id: `${pid}~hotel`, kind: 'hotel', hotelOf: pid, owner, order: 0, online: on,
-        info: { look: h.look, width: h.width, depth: h.depth, floors: h.floors, tagline: `${'★'.repeat(h.stars)} HOTEL`, style: 'hotel' },
+    const addHotel = (pid: string, owner: string, hs: HotelInfo[] | undefined, on: boolean) => {
+      (hs ?? []).forEach((h, i) => {
+        hotels.push({
+          id: `${pid}~hotel:${h.bid}`, kind: 'hotel', hotelOf: pid, owner, order: i, online: on,
+          info: {
+            look: h.look, width: h.width, depth: h.depth, floors: h.floors, style: h.kind === 'garden' ? 'garden' : 'hotel',
+            tagline: h.kind === 'garden' ? 'POOL · CABANAS · TIKI BAR' : `${'★'.repeat(h.stars)} HOTEL`,
+          },
+        });
       });
     };
     for (const [pid, l] of this.lots) {
@@ -385,7 +389,7 @@ export class Net {
     this.game.refreshStreet();
     // If the casino you're in vanished from the street, head home.
     const v = this.game.visit?.lot;
-    if (v && (v.kind === 'player' || (v.kind === 'hotel' && v.id !== 'hotel')) && !this.game.street.get(v.id)) this.game.returnHome(true);
+    if (v && (v.kind === 'player' || (v.kind === 'hotel' && v.hotelOf !== 'me')) && !this.game.street.get(v.id)) this.game.returnHome(true);
   }
 
   // ------------------------------------------------------------------ queries used by the game
@@ -469,7 +473,7 @@ export class Net {
   private presenceData(): Record<string, unknown> {
     const g = this.game;
     const p = g.player;
-    const lot = g.street.activeId === 'me' ? this.pid : g.street.activeId === 'hotel' ? `${this.pid}~hotel` : g.street.activeId;
+    const lot = g.street.activeId === 'me' ? this.pid : g.street.activeId.startsWith('hotel:') ? `${this.pid}~${g.street.activeId}` : g.street.activeId;
     const bans: Record<string, number> = {};
     for (const [k, v] of Object.entries(g.net.bans)) if (v > Date.now()) bans[k] = v;
     const data: Record<string, unknown> = {
@@ -597,7 +601,7 @@ export class Net {
     const cam = g.renderer.camera;
     const { w, h: hh } = g.renderer.size;
     for (const r of this.remotes.values()) {
-      const lotId = r.lot === this.pid ? 'me' : r.lot === `${this.pid}~hotel` ? 'hotel' : r.lot;
+      const lotId = this.localLot(r.lot);
       const known = !!g.street.get(lotId);
       const outside = r.tz >= FACADE_Z + 0.2 && r.floor === 0;
       const wp = known ? g.street.toActive(lotId, CENTER_X + r.tx, r.tz) : { x: 0, z: 0 };
@@ -638,12 +642,19 @@ export class Net {
 
   // ------------------------------------------------------------------ UI
 
+  /** Another player's lot id, as this street names it (your own lots are 'me' and 'hotel:…'). */
+  private localLot(lot: string): string {
+    if (lot === this.pid) return 'me';
+    if (lot.startsWith(`${this.pid}~`)) return lot.slice(this.pid.length + 1);
+    return lot;
+  }
+
   private renderCard(pid: string, el: HTMLElement): void {
     const g = this.game;
     const r = [...this.remotes.values()].find((x) => x.pid === pid);
     const name = r?.name ?? 'Player';
-    const lotId = r ? (r.lot === this.pid ? 'me' : r.lot === `${this.pid}~hotel` ? 'hotel' : r.lot) : '';
-    const where = !r ? 'Gone' : r.tz >= FACADE_Z ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId === 'hotel' ? 'In your hotel' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
+    const lotId = r ? this.localLot(r.lot) : '';
+    const where = !r ? 'Gone' : r.tz >= FACADE_Z ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId.startsWith('hotel:') ? 'In your hotel' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
     const owed = g.net.credited[pid] ?? 0;
     el.appendChild(h('div', { class: 'card-head' },
       h('div', { class: 'card-emoji', html: icon('you', 30) }),
@@ -701,14 +712,31 @@ function localPid(): string {
   }
 }
 
-/** Another player's hotel as seen from the street (checked: presence and lots are untrusted). */
-function hotelInfo(raw: unknown): HotelInfo | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const snap = sanitizeSnapshot({ look: r.look, layout: { width: r.width, depth: r.depth }, floors: r.floors, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
-  if (!snap) return null;
-  const stars = typeof r.stars === 'number' && Number.isFinite(r.stars) ? Math.max(1, Math.min(5, Math.round(r.stars))) : 1;
-  return { look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors, stars };
+/** Another player's hotel buildings as seen from the street (checked: presence and lots are untrusted). */
+function hotelInfo(raw: unknown): HotelInfo[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HotelInfo[] = [];
+  for (const it of raw.slice(0, 6)) {
+    if (!it || typeof it !== 'object') continue;
+    const r = it as Record<string, unknown>;
+    if (typeof r.bid !== 'string' || !/^h\d{1,3}$/.test(r.bid)) continue;
+    const snap = sanitizeSnapshot({ look: r.look, layout: { width: r.width, depth: r.depth }, floors: r.floors, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+    if (!snap) continue;
+    const stars = typeof r.stars === 'number' && Number.isFinite(r.stars) ? Math.max(1, Math.min(5, Math.round(r.stars))) : 1;
+    out.push({ bid: r.bid, kind: r.kind === 'garden' ? 'garden' : 'tower', look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors, stars });
+  }
+  return out;
+}
+
+function hotelSnaps(raw: unknown): Record<string, CasinoSnapshot> {
+  const out: Record<string, CasinoSnapshot> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [bid, v] of Object.entries(raw as Record<string, unknown>).slice(0, 6)) {
+    if (!/^h\d{1,3}$/.test(bid)) continue;
+    const snap = sanitizeSnapshot(v, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
+    if (snap) out[bid] = snap;
+  }
+  return out;
 }
 
 function rebirthsOf(v: unknown): number {

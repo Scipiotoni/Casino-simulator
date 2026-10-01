@@ -98,9 +98,11 @@ export class ShopDrawer {
   private render(): void {
     clear(this.grid);
     const g = this.game;
-    const list = ITEMS.filter((d) => d.category === this.cat && soldAt(d, g.site));
+    // A Pool Garden only lists what fits outdoors; a tower shows garden things as "Pool Garden only".
+    const list = ITEMS.filter((d) => d.category === this.cat && soldAt(d, g.site) && !(g.gardenSite && g.placeBlock(d)));
     for (const def of list) {
-      const locked = def.unlock > g.level;
+      const outdoorOnly = !!g.placeBlock(def);
+      const locked = def.unlock > g.level || outdoorOnly;
       const card = h('button', {
         class: `shop-card${locked ? ' locked' : ''}`,
         dataset: { id: def.id },
@@ -110,7 +112,7 @@ export class ShopDrawer {
         h('div', { class: 'sc-thumb' }, h('img', { src: itemThumb(def, undefined, g.player.appearance), alt: '', loading: 'lazy' })),
         h('div', { class: 'sc-name', text: def.name }),
         h('div', { class: 'sc-tag', text: def.kind === 'room' ? 'Decorate after placing' : describeItem(def) }),
-        h('div', { class: 'sc-price', text: locked ? `Level ${def.unlock}` : formatMoney(def.price) }),
+        h('div', { class: 'sc-price', text: outdoorOnly ? 'Pool Garden only' : locked ? `Level ${def.unlock}` : formatMoney(def.price) }),
       );
       card.title = def.description;
       this.grid.appendChild(card);
@@ -129,6 +131,12 @@ export class ShopDrawer {
 
   private buy(def: ItemDef): void {
     const g = this.game;
+    const zone = g.placeBlock(def);
+    if (zone) {
+      audio.play('error');
+      g.notify(zone, 'bad');
+      return;
+    }
     if (def.unlock > g.level) {
       audio.play('error');
       g.notify(`${def.name} unlocks at ${g.inHotel ? 'hotel' : 'casino'} level ${def.unlock}`, 'bad');

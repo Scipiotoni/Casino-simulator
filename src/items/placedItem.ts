@@ -9,7 +9,7 @@ import { type Appearance, randomStaffAppearance } from '../entities/appearance';
 import { badgeTexture } from '../render/textures';
 import { easeOutBack } from '../core/math';
 import { FACADE_Z as DOOR_Z } from '../world/grid';
-import { type RoomSetup, defaultSetup, roomRate, roomStars, sanitizeSetup, setupValue } from '../hotel/rooms';
+import { type RoomClass, type RoomSetup, defaultSetup, roomRate, roomStars, sanitizeSetup, setupValue } from '../hotel/rooms';
 
 
 /** Seconds after buying during which selling refunds the full price. */
@@ -173,19 +173,20 @@ export class PlacedItem {
     return Math.round(this.def.price * 0.6 * this.level);
   }
 
-  get isSuite(): boolean {
-    return this.def.kind === 'room' && Number(this.def.params?.suite) === 1;
+  /** 0 room, 1 suite, 2 penthouse. */
+  get roomClass(): RoomClass {
+    return this.def.kind === 'room' ? (Math.max(0, Math.min(2, Number(this.def.params?.cls) || 0)) as RoomClass) : 0;
   }
 
   /** Nightly rate of a hotel room (0 for anything else). */
   get roomRate(): number {
     const s = this.paidSetup;
-    return s ? roomRate(s, this.isSuite) : 0;
+    return s ? roomRate(s, this.roomClass) : 0;
   }
 
   get roomStars(): number {
     const s = this.paidSetup;
-    return s ? roomStars(s, this.isSuite) : 0;
+    return s ? roomStars(s, this.roomClass) : 0;
   }
 
   get invested(): number {
@@ -388,6 +389,18 @@ export class PlacedItem {
         return { bet, payout: 0, label: pickOf(['Cheeseburger', 'Hot dog', 'Fries', 'Nachos', 'Club sandwich']), tier: 'push', visual: { kind: 'service' } };
       case 'atm':
         return { bet, payout: 0, label: 'Cash withdrawal', tier: 'push', visual: { kind: 'service' } };
+      case 'buffet':
+        return { bet, payout: 0, label: pickOf(['Pancakes', 'Eggs Benedict', 'Croissants', 'Full breakfast', 'Waffles']), tier: 'push', visual: { kind: 'service' } };
+      case 'restaurant':
+        return { bet, payout: 0, label: pickOf(['Filet mignon', 'Lobster', 'Truffle pasta', 'Chef’s tasting menu']), tier: 'push', visual: { kind: 'service' } };
+      case 'giftshop':
+        return { bet, payout: 0, label: pickOf(['Snow globe', 'Plush dice', 'I ♥ Vegas shirt', 'Shot glasses']), tier: 'push', visual: { kind: 'service' } };
+      case 'spa':
+        return { bet, payout: 0, label: pickOf(['Hot stone massage', 'Facial', 'Deep tissue massage']), tier: 'push', visual: { kind: 'service' } };
+      case 'vending':
+        return { bet, payout: 0, label: pickOf(['Soda', 'Candy bar', 'Chips']), tier: 'push', visual: { kind: 'service' } };
+      case 'lounger':
+        return { bet, payout: 0, label: bet ? 'Cabana & champagne' : 'Sunbathing', tier: 'push', visual: { kind: 'service' } };
       default:
         return { bet, payout: 0, label: 'Resting', tier: 'push', visual: { kind: 'none' } };
     }
@@ -691,5 +704,5 @@ function pickOf<T>(arr: T[]): T {
 /** Apply a saved decoration to a room (checked, since saves and other players' casinos are untrusted). */
 export function loadSetup(item: PlacedItem, raw: unknown): void {
   if (item.def.kind !== 'room' || !raw) return;
-  item.setup = sanitizeSetup(raw, item.isSuite);
+  item.setup = sanitizeSetup(raw, item.roomClass);
 }

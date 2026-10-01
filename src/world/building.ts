@@ -57,6 +57,23 @@ export class Building {
   private sides: WallSide[] = [];
   private wallMat: THREE.MeshStandardMaterial;
   private trimMat: THREE.MeshStandardMaterial;
+  private hedgeMat = new THREE.MeshStandardMaterial({ color: 0x2f7a3a, roughness: 0.95 });
+  /** An open-air Pool Garden: low hedges instead of walls, no door frame. */
+  private garden = false;
+
+  setGarden(on: boolean): void {
+    if (on === this.garden) return;
+    this.garden = on;
+    this.applyGarden();
+  }
+
+  private applyGarden(): void {
+    for (const s of this.sides) {
+      for (const w of s.walls) w.material = this.garden ? this.hedgeMat : this.wallMat;
+      for (const t of s.trims) t.visible = !this.garden;
+      for (const e of s.extras) e.visible = !this.garden && (this.doorParts.includes(e) ? this.storey === 0 : this.storey > 0);
+    }
+  }
   look: CasinoLook;
 
   constructor(private grid: Grid, look: CasinoLook) {
@@ -237,6 +254,7 @@ export class Building {
       this.drop.add(band);
     }
     this.setStorey(this.storey);
+    this.applyGarden();
   }
 
   /** You're on floor `f`: drop the street away below and turn the door into a window. */
@@ -289,7 +307,8 @@ export class Building {
       const facing = s.normal[0] * cx + s.normal[1] * cz;
       const target = facing > (camPitchLow ? 0.1 : 0.35) ? 1 : 0;
       s.cut += (target - s.cut) * (1 - Math.exp(-dt * 8));
-      const h = WALL_H - (WALL_H - CUT_H) * s.cut;
+      const top = this.garden ? 0.9 : WALL_H;
+      const h = top - (top - CUT_H) * s.cut;
       const sy = h / WALL_H;
       for (const w of s.walls) w.scale.y = sy;
       for (const t of s.trims) t.position.y = h + 0.035;

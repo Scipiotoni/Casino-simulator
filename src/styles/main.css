@@ -3757,3 +3757,88 @@ p.small {
 .room-opt:disabled {
   opacity: 0.4;
 }
+
+.hotel-check {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 77, 94, 0.1);
+  border: 1px solid rgba(255, 77, 94, 0.4);
+}
+
+.hotel-check.open {
+  background: rgba(53, 224, 138, 0.1);
+  border-color: rgba(53, 224, 138, 0.45);
+}
+
+.hotel-check .chk {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.hotel-check .chk.done {
+  color: var(--green);
+  opacity: 1;
+}
+
+.hotel-buildings {
+  display: grid;
+  gap: 6px;
+}
+
+.hb-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.hb-card.here {
+  border-color: var(--gold);
+}
+
+.hb-ic {
+  font-size: 24px;
+}
+
+.reviews {
+  display: grid;
+  gap: 6px;
+}
+
+.review {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.hotel-stars.small {
+  font-size: 13px;
+  letter-spacing: 1px;
+}
+
+.room-themes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.room-themes .chip-btn small {
+  opacity: 0.7;
+  margin-left: 4px;
+}
+
+.room-themes .chip-btn.on {
+  border-color: var(--gold);
+  background: rgba(255, 197, 61, 0.16);
+}
+
+.goal.checklist {
+  border: 1px solid rgba(255, 77, 94, 0.45);
+  background: rgba(255, 77, 94, 0.08);
+}

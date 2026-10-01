@@ -6,7 +6,7 @@ export type GameKind =
   | 'slot' | 'claw' | 'pachinko' | 'roulette' | 'blackjack' | 'poker' | 'craps' | 'wheel'
   | 'baccarat' | 'threecard' | 'sicbo' | 'videopoker' | 'keno'
   | 'bar' | 'snack' | 'atm' | 'bench' | 'stage' | 'decor' | 'elevator'
-  | 'room' | 'desk' | 'pool';
+  | 'room' | 'desk' | 'pool' | 'buffet' | 'restaurant' | 'gym' | 'spa' | 'giftshop' | 'vending' | 'laundry' | 'hottub' | 'lounger';
 
 export interface SeatDef {
   /** Tile inside the footprint the occupant paths to (rotation 0). */
@@ -52,6 +52,10 @@ export interface ItemDef {
   hidden?: boolean;
   /** Where it's sold (see itemSites). */
   sites?: Site[];
+  /** Hotel things that only go outdoors, in a Pool Garden. */
+  zone?: 'garden';
+  /** Only VIP guests use it (penthouses). */
+  vipOnly?: boolean;
   /** Extra per-item look parameters handed to the model builder. */
   params?: Record<string, string | number>;
 }
@@ -375,17 +379,75 @@ export const ITEMS: ItemDef[] = [
     seats: [{ tile: [2, 3], pos: [-0.6, 0.05], face: 0, pose: 'sit', seatY: 0.5 }],
     roundTime: 32, upkeep: 15, appeal: 0.2, appealRadius: 2, fun: 1,
     description: 'Four walls and a single bed. Click it to decorate: the more you spend, the more a night costs.',
-    colors: [0xd8cbb4], model: 'room', params: { suite: 0 },
+    colors: [0xd8cbb4], model: 'room', params: { cls: 0 },
   },
   {
     ...base, id: 'suite', name: 'Luxury Suite', category: 'rooms', kind: 'room', price: 9000, unlock: 4, size: [6, 5], sites: ['hotel'],
     seats: [{ tile: [3, 4], pos: [-1.5, -0.45], face: 0, pose: 'sit', seatY: 0.5 }],
     roundTime: 40, upkeep: 45, appeal: 0.5, appealRadius: 2.5, fun: 1.3,
     description: 'A big room with space for a jacuzzi and a grand piano. High rollers love it.',
-    colors: [0xd8cbb4], model: 'room', params: { suite: 1 },
+    colors: [0xd8cbb4], model: 'room', params: { cls: 1 },
   },
   {
-    ...base, id: 'pool', name: 'Swimming Pool', category: 'services', kind: 'pool', price: 12000, unlock: 3, size: [5, 4], sites: ['hotel'],
+    ...base, id: 'penthouse', name: 'Penthouse', category: 'rooms', kind: 'room', price: 40000, unlock: 7, size: [8, 6], sites: ['hotel'], vipOnly: true,
+    seats: [{ tile: [4, 5], pos: [-2.2, -0.95], face: 0, pose: 'sit', seatY: 0.5 }],
+    roundTime: 50, upkeep: 160, appeal: 1.5, appealRadius: 3.5, fun: 1.6,
+    description: 'The ultimate suite: room for a private bar, a home cinema and a gold statue. Only VIPs book it, and they pay a fortune.',
+    colors: [0xd8cbb4], model: 'room', params: { cls: 2 },
+  },
+  {
+    ...base, id: 'buffet', name: 'Breakfast Buffet', category: 'services', kind: 'buffet', price: 3000, unlock: 1, size: [5, 3], sites: ['hotel'],
+    seats: [-1.5, -0.5, 0.5, 1.5].map((x, i) => ({ tile: [i, 2] as [number, number], pos: [x, 0.62] as [number, number], face: Math.PI, pose: 'sit' as const, seatY: 0.62 })),
+    staff: { pos: [0, -0.95], face: 0, role: 'chef' },
+    minBet: 12, maxBet: 25, roundTime: 9, upkeep: 80, appeal: 0.9, appealRadius: 3, fun: 0.9,
+    description: 'Every guest wants breakfast before checking out. A hotel can’t open without one.',
+    colors: [0xe9e1d3, 0x2a1a12, 0x8a1030], model: 'buffet',
+  },
+  {
+    ...base, id: 'vending', name: 'Vending Machine', category: 'services', kind: 'vending', price: 400, unlock: 1, size: [1, 2], sites: ['hotel'],
+    seats: standSeat, minBet: 3, maxBet: 6, roundTime: 3, upkeep: 5, appeal: 0.1, fun: 0.5,
+    description: 'Late-night snacks and sodas for thirsty guests.',
+    colors: [0xc8102e, 0x1f4fbf, 0x1e7a46], model: 'vending',
+  },
+  {
+    ...base, id: 'giftshop', name: 'Gift Shop', category: 'services', kind: 'giftshop', price: 2500, unlock: 2, size: [3, 2], sites: ['hotel'],
+    seats: [-1, 1].map((x, i) => ({ tile: [i * 2, 1] as [number, number], pos: [x, 0.6] as [number, number], face: Math.PI, pose: 'stand' as const })),
+    minBet: 15, maxBet: 70, roundTime: 6, upkeep: 40, appeal: 0.7, appealRadius: 2.5, fun: 0.8,
+    description: 'Snow globes, plush dice and “I ♥ Vegas” shirts. Guests love a souvenir.',
+    colors: [0xff6fb5, 0x2fb8c9, 0xf2b632], model: 'giftshop',
+  },
+  {
+    ...base, id: 'laundry', name: 'Laundry Room', category: 'services', kind: 'laundry', price: 3500, unlock: 2, size: [3, 2], sites: ['hotel'],
+    upkeep: 50, appeal: 0, fun: 0,
+    description: 'Fresh sheets on tap: housekeepers make up rooms twice as fast.',
+    colors: [0xe9e1d3], model: 'laundry',
+  },
+  {
+    ...base, id: 'gym', name: 'Fitness Room', category: 'services', kind: 'gym', price: 4500, unlock: 3, size: [4, 3], sites: ['hotel'],
+    seats: [-1.2, 0, 1.2].map((x, i) => ({ tile: [[0, 2, 3][i], 2] as [number, number], pos: [x, 0.1] as [number, number], face: Math.PI, pose: 'stand' as const })),
+    roundTime: 10, upkeep: 60, appeal: 0.5, appealRadius: 2.5, fun: 0.9,
+    description: 'Treadmills for the early risers. Fit guests are happy guests.',
+    colors: [0x2b2b35, 0xc8102e, 0x1f4fbf], model: 'gym',
+  },
+  {
+    ...base, id: 'restaurant', name: 'Fine Dining', category: 'services', kind: 'restaurant', price: 7000, unlock: 4, size: [4, 4], sites: ['hotel'],
+    seats: [[0, 1, -1.5, -0.5, Math.PI / 2], [3, 1, 1.5, -0.5, -Math.PI / 2], [0, 2, -1.5, 0.5, Math.PI / 2], [3, 2, 1.5, 0.5, -Math.PI / 2]].map(([tx, tz, px, pz, f]) => ({
+      tile: [tx, tz] as [number, number], pos: [px, pz] as [number, number], face: f, pose: 'sit' as const, seatY: 0.5,
+    })),
+    minBet: 45, maxBet: 140, roundTime: 14, upkeep: 150, appeal: 1.3, appealRadius: 3.5, fun: 1.2,
+    description: 'Candlelit dinners at steakhouse prices. Rich guests can’t resist.',
+    colors: [0x8a1030, 0x1f2748, 0x145a3e], model: 'restaurant',
+  },
+  {
+    ...base, id: 'spa', name: 'Spa & Massage', category: 'services', kind: 'spa', price: 9000, unlock: 5, size: [4, 3], sites: ['hotel'],
+    seats: [-1, 1].map((x, i) => ({ tile: [i * 3, 2] as [number, number], pos: [x, 0.05] as [number, number], face: Math.PI, pose: 'sit' as const, seatY: 0.62 })),
+    minBet: 80, maxBet: 220, roundTime: 16, upkeep: 120, appeal: 1.4, appealRadius: 3, fun: 1.4,
+    description: 'Hot stones and cucumber water. Guests leave walking on air.',
+    colors: [0x9fd3b5, 0xe8a8b8, 0xd8cbb4], model: 'spa',
+  },
+  // Pool Garden only
+  {
+    ...base, id: 'pool', name: 'Swimming Pool', category: 'services', kind: 'pool', price: 12000, unlock: 1, size: [5, 4], sites: ['hotel'], zone: 'garden',
     seats: [
       { tile: [1, 3], pos: [-1.2, 0.7], face: Math.PI, pose: 'sit', seatY: 0.08 },
       { tile: [3, 3], pos: [0.9, 0.6], face: Math.PI * 0.8, pose: 'sit', seatY: 0.08 },
@@ -393,8 +455,48 @@ export const ITEMS: ItemDef[] = [
       { tile: [4, 2], pos: [1.4, -0.3], face: -Math.PI * 0.5, pose: 'sit', seatY: 0.08 },
     ],
     roundTime: 14, upkeep: 120, appeal: 2.2, appealRadius: 5, fun: 1.3,
-    description: 'Guests swim between nights. A big boost to your hotel’s rating.',
+    description: 'Pool Garden only. Hotel guests come over for a swim, and it lifts the whole hotel’s rating.',
     colors: [0x2fb8e0, 0x39c9a8, 0x3a6ee0], model: 'pool',
+  },
+  {
+    ...base, id: 'lounger', name: 'Sun Lounger', category: 'services', kind: 'lounger', price: 300, unlock: 1, size: [1, 2], sites: ['hotel'], zone: 'garden',
+    seats: [{ tile: [0, 1], pos: [0, 0.75], face: Math.PI, pose: 'sit', seatY: 0.32 }],
+    roundTime: 18, upkeep: 5, appeal: 0.3, appealRadius: 2, fun: 1,
+    description: 'Pool Garden only. Somewhere to soak up the sun.',
+    colors: [0xffffff, 0x2fb8c9, 0xff8a1f, 0xff6fb5], model: 'lounger',
+  },
+  {
+    ...base, id: 'hottub', name: 'Hot Tub', category: 'services', kind: 'hottub', price: 6000, unlock: 2, size: [3, 3], sites: ['hotel'], zone: 'garden',
+    seats: [[1, 2, 0, 0.55, Math.PI], [1, 0, 0, -0.55, 0], [0, 1, -0.55, 0, Math.PI / 2], [2, 1, 0.55, 0, -Math.PI / 2]].map(([tx, tz, px, pz, f]) => ({
+      tile: [tx, tz] as [number, number], pos: [px, pz] as [number, number], face: f, pose: 'sit' as const, seatY: 0.12,
+    })),
+    roundTime: 12, upkeep: 60, appeal: 1.5, appealRadius: 3.5, fun: 1.3,
+    description: 'Pool Garden only. Bubbles, steam and four very relaxed guests.',
+    colors: [0x2fb8e0, 0x39c9a8], model: 'hottub',
+  },
+  {
+    ...base, id: 'tikibar', name: 'Tiki Bar', category: 'services', kind: 'bar', price: 4000, unlock: 2, size: [4, 3], sites: ['hotel'], zone: 'garden',
+    seats: [-1.5, -0.5, 0.5, 1.5].map((x, i) => ({ tile: [i, 2] as [number, number], pos: [x, 0.62] as [number, number], face: Math.PI, pose: 'sit' as const, seatY: 0.74 })),
+    staff: { pos: [0, -0.85], face: 0, role: 'bartender' },
+    minBet: 12, maxBet: 28, roundTime: 8, upkeep: 90, appeal: 1.4, appealRadius: 3.5, fun: 1,
+    description: 'Pool Garden only. Coconut cocktails under a thatched roof.',
+    colors: [0x9a6a3c], model: 'tikibar',
+  },
+  {
+    ...base, id: 'cabana', name: 'VIP Cabana', category: 'services', kind: 'lounger', price: 5000, unlock: 4, size: [3, 3], sites: ['hotel'], zone: 'garden',
+    seats: [-0.6, 0.6].map((x, i) => ({ tile: [i * 2, 2] as [number, number], pos: [x, 0.2] as [number, number], face: Math.PI, pose: 'sit' as const, seatY: 0.34 })),
+    minBet: 40, maxBet: 90, roundTime: 20, upkeep: 70, appeal: 1.8, appealRadius: 3.5, fun: 1.4,
+    description: 'Pool Garden only. A private shaded daybed with bottle service.',
+    colors: [0xf4f1ea, 0xc89b3c, 0x8a1030], model: 'cabana',
+  },
+  {
+    ...base, id: 'waterslide', name: 'Water Slide Pool', category: 'services', kind: 'pool', price: 30000, unlock: 6, size: [6, 6], sites: ['hotel'], zone: 'garden',
+    seats: [[1, 5, -1.5, 1.6, Math.PI], [4, 5, 1.2, 1.6, Math.PI], [0, 3, -2.2, 0.2, Math.PI / 2], [5, 3, 2.2, 0.4, -Math.PI / 2], [2, 5, -0.3, 1.9, Math.PI], [0, 2, -2.2, -0.8, Math.PI / 2]].map(([tx, tz, px, pz, f]) => ({
+      tile: [tx, tz] as [number, number], pos: [px, pz] as [number, number], face: f, pose: 'sit' as const, seatY: 0.08,
+    })),
+    roundTime: 14, upkeep: 260, appeal: 4, appealRadius: 7, fun: 1.8,
+    description: 'Pool Garden only. A twisting slide into a lagoon. The main attraction.',
+    colors: [0x2fb8e0, 0x39c9a8], model: 'waterslide',
   },
 ];
 
@@ -480,7 +582,20 @@ export function describeItem(def: ItemDef): string {
     case 'desk':
       return `Check-in · ${seats} guests at a time`;
     case 'pool':
-      return `${seats} swimmers · big appeal`;
+      return `Garden only · ${seats} swimmers`;
+    case 'hottub':
+    case 'lounger':
+      return def.minBet ? `Garden only · $${def.minBet}–$${def.maxBet}` : `Garden only · ${seats} ${seats === 1 ? 'seat' : 'seats'}`;
+    case 'buffet':
+    case 'restaurant':
+    case 'giftshop':
+    case 'spa':
+    case 'vending':
+      return `Sells $${def.minBet}–$${def.maxBet} · ${seats} ${seats === 1 ? 'guest' : 'guests'}`;
+    case 'gym':
+      return `${seats} treadmills · happier guests`;
+    case 'laundry':
+      return 'Housekeeping ×2 speed';
     case 'elevator':
       return 'Links the floors';
     default:
@@ -498,6 +613,16 @@ export function itemSites(d: ItemDef): Site[] {
 
 export function soldAt(d: ItemDef, site: Site): boolean {
   return !d.fixed && !d.hidden && itemSites(d).includes(site);
+}
+
+/** Things that can go in an open-air Pool Garden (besides its own garden-only items). */
+const GARDEN_OK = new Set<GameKind>(['decor', 'bench', 'snack', 'vending']);
+
+/** Why this item can't go in this hotel building (null = fine). */
+export function zoneBlock(d: ItemDef, garden: boolean): string | null {
+  if (d.zone === 'garden' && !garden) return `${d.name} goes outdoors: build it in a Pool Garden (Hotel → Buildings).`;
+  if (garden && d.zone !== 'garden' && !GARDEN_OK.has(d.kind)) return `${d.name} needs a roof: build it in a hotel tower.`;
+  return null;
 }
 
 export function categoriesFor(site: Site): { id: Category; label: string }[] {

@@ -256,6 +256,8 @@ export class Hud {
     }, b.kind === 'jackpot' ? 3600 : 2800);
   }
 
+  private checkKey = '';
+
   renderGoals(): void {
     const g = this.game;
     const active = g.activeObjectives();
@@ -265,6 +267,14 @@ export class Hud {
     this.goalsEl.classList.toggle('collapsed', this.goalsCollapsed);
     clear(this.goalsList);
     const v = g.objectiveView();
+    const check = g.hotelChecklist();
+    this.checkKey = check.map((c) => +c.done).join('');
+    if (check.length && !check.every((c) => c.done)) {
+      this.goalsList.appendChild(h('div', { class: 'goal checklist' },
+        h('div', { class: 'goal-text', text: '🚧 To open this tower:' }),
+        ...check.map((c) => h('div', { class: 'goal-hint', text: `${c.done ? '✅' : '⬜'} ${c.label}` })),
+      ));
+    }
     for (const o of active) {
       const p = Math.min(1, o.progress(v) / o.target);
       this.goalsList.appendChild(
@@ -595,8 +605,8 @@ export class Hud {
       clear(this.visitBar);
       this.visitBar.append(
         h('div', { class: 'vb-text' },
-          h('b', { text: `🏨 ${g.building.look.name}` }),
-          h('span', { class: 'vb-net', text: 'A separate business: its own bank, level and goals' }),
+          h('b', { text: `${g.gardenSite ? '🏝️' : '🏨'} ${g.building.look.name}` }),
+          h('span', { class: 'vb-net', text: g.gardenSite ? 'Open-air: pools, loungers, hot tubs and the tiki bar go here' : g.hotelOpen ? 'Open for guests · its own bank, level and goals' : 'Not open yet: see the checklist in Goals' }),
         ),
         h('button', {
           class: 'btn small gold', html: `${icon('casino', 14)} Back to the casino`,
@@ -612,7 +622,7 @@ export class Hud {
       const home = g.street.get('me');
       this.visitBar.append(
         h('div', { class: 'vb-text' },
-          h('b', { text: v.lot.id === 'hotel' ? `Your hotel · ${v.lot.info.look.name}` : v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
+          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
           h('span', { class: 'vb-net', dataset: { live: 'vnet' } }),
         ),
         h('button', {
@@ -680,11 +690,20 @@ export class Hud {
       this.eventChip.hidden = !ev;
       if (ev) this.eventChip.textContent = `${ev.title} ${Math.ceil(ev.left)}s`;
       this.refreshCard();
+      if (g.inHotel && g.hotelChecklist().map((c) => +c.done).join('') !== this.checkKey) {
+        this.renderGoals();
+        const vn = this.visitBar.querySelector('.vb-net');
+        if (vn && !g.gardenSite) vn.textContent = g.hotelOpen ? 'Open for guests · its own bank, level and goals' : 'Not open yet: see the checklist in Goals';
+        if (g.hotelOpen && !g.gardenSite) {
+          audio.play('levelup');
+          this.banner('Open for business!', 'Your tower passed its checklist. Guests are on their way.', 'level');
+        }
+      }
       if (g.visit) {
         const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;
         if (vn) {
           const n = g.visit.net;
-          vn.textContent = g.visit.lot.kind === 'hotel' ? (g.visit.lot.id === 'hotel' ? 'Walk up to the front desk and press Space' : 'Just looking around') : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
+          vn.textContent = g.visit.lot.kind === 'hotel' ? 'Just looking around' : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
           vn.className = `vb-net ${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}`;
         }
       }

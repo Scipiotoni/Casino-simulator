@@ -15,6 +15,9 @@ export type CustomerType = 'regular' | 'vip' | 'cheater' | 'tourist';
 
 type CState = 'decide' | 'toSeat' | 'seated' | 'wander' | 'idle' | 'toWatch' | 'watch' | 'leave' | 'busted' | 'react';
 
+/** Things guests pay a price for each visit (food, drinks, treatments, souvenirs, cabanas). */
+const PAID_SERVICES = new Set<GameKind>(['bar', 'snack', 'buffet', 'restaurant', 'giftshop', 'vending', 'spa', 'lounger']);
+
 const GAMBLE_KINDS: GameKind[] = ['slot', 'claw', 'pachinko', 'roulette', 'blackjack', 'poker', 'craps', 'wheel', 'baccarat', 'threecard', 'sicbo', 'videopoker', 'keno'];
 const easeOut = (t: number) => 1 - Math.pow(1 - t, 3);
 const MOOD_EMOJI = (m: number) => (m > 82 ? '😍' : m > 66 ? '😀' : m > 48 ? '🙂' : m > 32 ? '😐' : m > 18 ? '😒' : '😡');
@@ -61,6 +64,8 @@ export class Customer extends Walker implements SeatUser {
   outings = randInt(0, 2);
   /** Most a guest will pay for a night. */
   roomBudget = 0;
+  ateBreakfast = false;
+  private triedBreakfast = false;
   exited = false;
   gone = false;
   netResult = 0;
@@ -72,7 +77,7 @@ export class Customer extends Walker implements SeatUser {
   private sparkleT = 0;
   private reactT = 0;
   private reactPose: 'cheer' | 'celebrate' | 'clap' | 'angry' | 'sad' | 'handsUp' | 'wave' | 'think' = 'cheer';
-  private seatPose: 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'drink' | 'idle' | 'sleep' = 'idle';
+  private seatPose: 'sit' | 'sitPlay' | 'lever' | 'standPlay' | 'drink' | 'idle' | 'sleep' | 'run' = 'idle';
   private playPoseT = 0;
   private watchTarget: PlacedItem | null = null;
   private exitPoint: [number, number];
@@ -188,14 +193,15 @@ export class Customer extends Walker implements SeatUser {
       this.wallet -= rate;
       return rate;
     }
-    if (kind === 'bench' || kind === 'pool') {
+    // Free amenities: a rest, a swim, a workout.
+    if (kind === 'bench' || ((kind === 'pool' || kind === 'hottub' || kind === 'gym' || kind === 'lounger') && !item.minBet)) {
       if (this.roundsLeft-- <= 0) {
         this.standUp();
         return null;
       }
       return 0;
     }
-    if (kind === 'bar' || kind === 'snack') {
+    if (PAID_SERVICES.has(kind)) {
       const price = Math.round(rand(item.minBet, item.maxBet));
       if (this.roundsLeft-- <= 0 || this.wallet < price) {
         this.standUp();
@@ -238,7 +244,11 @@ export class Customer extends Walker implements SeatUser {
     const k = item.def.kind;
     if (k === 'room') this.seatPose = 'sleep';
     else if (k === 'desk') this.seatPose = 'idle';
-    else if (k === 'bar' || k === 'snack') this.seatPose = 'drink';
+    else if (k === 'spa' || k === 'lounger') this.seatPose = 'sleep';
+    else if (k === 'gym') this.seatPose = 'run';
+    else if (k === 'pool' || k === 'hottub') this.seatPose = 'sit';
+    else if (k === 'giftshop' || k === 'vending') this.seatPose = 'idle';
+    else if (k === 'bar' || k === 'snack' || k === 'buffet' || k === 'restaurant') this.seatPose = 'drink';
     else if (k === 'bench') this.seatPose = 'sit';
     else if (k === 'slot') this.seatPose = Math.random() < 0.3 ? 'lever' : 'sitPlay';
     else if (this.seat?.pose === 'sit') this.seatPose = 'sitPlay';
@@ -260,6 +270,7 @@ export class Customer extends Walker implements SeatUser {
     if (k === 'room') {
       // Waking up: how was the night, for the money?
       const stars = item.roomStars;
+      this.lastRoomStars = stars;
       const value = stars * 4 - 6 - Math.max(0, (item.roomRate - this.roomBudget * 0.6) / Math.max(40, this.roomBudget)) * 6;
       this.mood = clamp(this.mood + value + w.items.appealAt(item.cx, item.cz, item.floor) * 0.6, 0, 100);
       this.energy = 100;
@@ -276,12 +287,32 @@ export class Customer extends Walker implements SeatUser {
       }
       return;
     }
-    if (k === 'pool') {
-      this.energy = 100;
-      this.mood = clamp(this.mood + 7, 0, 100);
-      this.bubble(w, pick(['🏊', '💦', '😎']));
-      this.thought = 'The water is perfect!';
-      return;
+    const treat = (mood: number, emoji: string[], thought: string, extra?: () => void) => {
+      this.mood = clamp(this.mood + mood, 0, 100);
+      extra?.();
+      if (chance(0.7)) this.bubble(w, pick(emoji));
+      this.thought = thought;
+    };
+    switch (k) {
+      case 'pool':
+        return treat(7, ['🏊', '💦', '😎'], 'The water is perfect!', () => (this.energy = 100));
+      case 'hottub':
+        return treat(9, ['♨️', '😌', '🫧'], 'Ahh, the bubbles...', () => (this.energy = 100));
+      case 'lounger':
+        return treat(item.minBet ? 12 : 5, item.minBet ? ['🍾', '😎', '👑'] : ['😎', '☀️', '🕶️'], item.minBet ? 'A private cabana. Living the dream.' : 'Getting a tan.', () => (this.energy = 100));
+      case 'buffet':
+        this.ateBreakfast = true;
+        return treat(6, ['🥞', '🥐', '🍳', '🥓'], 'Best part of the stay: the breakfast buffet!', () => (this.hunger = 0));
+      case 'restaurant':
+        return treat(11, ['🍝', '🍷', '🥩', '🦞'], 'Five-star dinner. Chef’s kiss.', () => (this.hunger = 0));
+      case 'gym':
+        return treat(4, ['💪', '🏃', '😤'], 'Got my steps in.');
+      case 'spa':
+        return treat(15, ['💆', '🧖', '🌸'], 'I feel ten years younger.', () => (this.energy = 100));
+      case 'giftshop':
+        return treat(4, ['🎁', '🛍️', '🧸'], 'Souvenirs for everyone back home!');
+      case 'vending':
+        return treat(2, ['🥤', '🍫'], 'A soda hits the spot.', () => (this.thirst = 0));
     }
     if (k === 'bar') {
       this.thirst = 0;
@@ -437,6 +468,7 @@ export class Customer extends Walker implements SeatUser {
     const w = this.world;
     this.leaveSeatSilently();
     this.dropBooking();
+    if (w && w.site === 'hotel') this.writeReview(w);
     this.thought = reason;
     this.state = 'leave';
     if (!w) return;
@@ -611,13 +643,40 @@ export class Customer extends Walker implements SeatUser {
 
   /** The best room this guest can afford right now (clean, free, reachable). */
   private pickRoom(w: World): PlacedItem | null {
-    const rooms = w.items.items.filter((i) => i.def.kind === 'room' && !i.dirty && !i.broken && i.freeSeat() && i.roomRate <= this.roomBudget * 1.15);
+    const rooms = w.items.items.filter((i) => i.def.kind === 'room' && !i.dirty && !i.broken && i.freeSeat() && i.roomRate <= this.roomBudget * 1.15 && (!i.def.vipOnly || this.type === 'vip'));
+    if (this.type === 'vip') {
+      // High rollers only take the most luxurious room on offer: penthouses, then suites, then the most stars.
+      const lux = rooms.filter((r) => r.roomClass >= 1 || r.roomStars >= 4);
+      if (!lux.length) return null;
+      return lux.reduce((a, b) => (luxury(b) > luxury(a) ? b : a));
+    }
     return pickWeighted(rooms, (r) => {
       const stars = r.roomStars;
       const d = dist(r.cx, r.cz, this.x, this.z) + Math.abs(r.floor - this.floor) * 10;
       return Math.pow(stars, this.type === 'vip' ? 2.5 : 1.5) * (0.6 + r.roomRate / Math.max(1, this.roomBudget)) / (1 + d * 0.02) * rand(0.7, 1.3);
     });
   }
+
+  /** Leaving the hotel: a review of the stay, from the heart. */
+  private writeReview(w: World): void {
+    if (this.reviewed || !this.checkedIn || !w.review) return;
+    this.reviewed = true;
+    const stars = Math.max(1, Math.min(5, Math.round(this.mood / 20 + 0.4)));
+    const room = this.lastRoomStars;
+    const lines: string[] = [];
+    if (stars >= 5) lines.push(pick(['Absolutely magical stay!', 'Best hotel on the Strip, hands down.', 'I never want to leave.']));
+    else if (stars === 4) lines.push(pick(['Lovely place, would come back.', 'Great stay, friendly staff.', 'Really comfortable.']));
+    else if (stars === 3) lines.push(pick(['It was fine.', 'Decent for the price.', 'OK, nothing special.']));
+    else lines.push(pick(['Never again.', 'Disappointing.', 'Not worth the money.']));
+    if (this.ateBreakfast) lines.push(pick(['The breakfast buffet was a highlight.', 'Loved the pancakes!']));
+    if (room >= 4) lines.push(pick(['Our room was stunning.', 'The suite took my breath away.']));
+    else if (room <= 1 && stars <= 3) lines.push(pick(['The room was very bare.', 'Could use some decorating.']));
+    if (this.type === 'vip' && stars >= 4) lines.push('Fit for a high roller.');
+    w.review(stars, lines.join(' '), this.name, this.type);
+  }
+
+  private reviewed = false;
+  private lastRoomStars = 0;
 
   private pickHotelService(w: World, kinds: GameKind[]): PlacedItem | null {
     const opts = w.items.items.filter((i) => kinds.includes(i.def.kind) && !i.broken && i.freeSeat());
@@ -641,8 +700,25 @@ export class Customer extends Walker implements SeatUser {
     return true;
   }
 
+  /** A day at the Pool Garden: a few swims, a lounger, a cocktail, then back to the room. */
+  private decideGarden(w: World): void {
+    if (this.mood < 12) return this.leave('Too crowded out here.');
+    if (this.outings <= 0 || this.visitLeft <= 0) return this.leave(this.mood > 60 ? 'What a day by the pool!' : 'Had enough sun.');
+    this.outings--;
+    const rich = this.type === 'vip';
+    const kinds: GameKind[] = this.thirst > 55 ? ['bar', 'vending', 'snack'] : this.hunger > 60 ? ['snack', 'vending'] : rich ? ['pool', 'hottub', 'lounger', 'bar'] : ['pool', 'lounger', 'hottub', 'bar', 'snack', 'bench'];
+    const opts = w.items.items.filter((i) => kinds.includes(i.def.kind) && !i.broken && i.freeSeat() && i.minBet <= this.wallet && (rich || !i.minBet || i.def.kind !== 'lounger'));
+    const pickIt = pickWeighted(opts, (i) => (i.fun + w.items.appealAt(i.cx, i.cz, i.floor) * 0.1) * (rich && i.minBet ? 3 : 1) * rand(0.6, 1.4));
+    if (pickIt && this.goSit(w, pickIt, pickIt.def.kind === 'pool' ? randInt(2, 4) : 1)) return;
+    this.noOptions++;
+    if (this.noOptions >= 3) return this.leave(w.items.items.some((i) => i.def.kind === 'pool') ? 'Every lounger is taken!' : 'A pool garden without a pool?');
+    this.thought = 'Waiting for a spot by the pool...';
+    this.wander(w);
+  }
+
   /** A hotel guest's evening: reception, their room, a swim or a drink, home. */
   private decideHotel(w: World): void {
+    if (w.gardenSite) return this.decideGarden(w);
     const items = w.items.items;
     const hasRooms = items.some((i) => i.def.kind === 'room');
     if (this.mood < 12) return this.leave('Worst hotel on the Strip. I’m out.');
@@ -653,6 +729,10 @@ export class Customer extends Walker implements SeatUser {
           this.noOptions++;
           this.mood -= 4;
           if (!hasRooms) return this.leave('A hotel with no rooms?!');
+          if (this.type === 'vip' && !items.some((i) => i.def.kind === 'room' && (i.roomClass >= 1 || i.roomStars >= 4) && !i.dirty && i.freeSeat())) {
+            this.bubble(w, '💎');
+            return this.leave('No luxury suite free? I’ll take my money elsewhere.');
+          }
           const anyFree = items.some((i) => i.def.kind === 'room' && !i.dirty && i.freeSeat());
           if (this.noOptions >= 3) {
             return this.leave(anyFree ? 'Every room I can afford is taken.' : 'No clean rooms? Unbelievable.');
@@ -698,13 +778,28 @@ export class Customer extends Walker implements SeatUser {
       this.timer = 1;
       return;
     }
-    // After checking out: maybe a swim, a drink or a meal on the way out.
+    // Morning after: breakfast first, every time.
+    if (!this.ateBreakfast && !this.triedBreakfast) {
+      this.triedBreakfast = true;
+      const buffet = this.pickHotelService(w, ['buffet']);
+      if (buffet && this.goSit(w, buffet, 1)) {
+        this.thought = 'Breakfast time!';
+        return;
+      }
+      this.mood -= 12;
+      this.thought = items.some((i) => i.def.kind === 'buffet') ? 'The buffet was packed. No breakfast for me.' : 'No breakfast?! What kind of hotel is this?';
+      this.bubble(w, '😤');
+    }
+    // Then maybe a treat on the way out.
     if (this.outings > 0) {
       this.outings--;
-      const want: GameKind[] = this.hunger > 50 ? ['snack', 'bar', 'pool'] : this.thirst > 50 ? ['bar', 'pool', 'snack'] : ['pool', 'bar', 'snack', 'bench'];
+      const rich = this.type === 'vip' || this.roomBudget > 400;
+      const want: GameKind[] = this.hunger > 50
+        ? ['restaurant', 'snack', 'vending']
+        : this.thirst > 50 ? ['bar', 'vending'] : rich ? ['spa', 'restaurant', 'giftshop', 'gym', 'bar'] : ['giftshop', 'gym', 'bar', 'snack', 'vending', 'bench'];
       for (const k of want) {
         const it = this.pickHotelService(w, [k]);
-        if (it && this.goSit(w, it, k === 'pool' ? randInt(1, 3) : 1)) return;
+        if (it && it.minBet <= this.wallet && this.goSit(w, it, 1)) return;
       }
     }
     return this.leave(this.mood > 60 ? 'What a lovely stay!' : 'Checked out. Meh.');
@@ -994,6 +1089,7 @@ export class Customer extends Walker implements SeatUser {
       const sit = this.seat?.pose === 'sit';
       let pose: Parameters<typeof m.setPose>[0] = this.seatPose === 'idle' ? (sit ? 'sit' : 'idle') : this.seatPose;
       if (!sit && (pose === 'sit' || pose === 'sitPlay')) pose = 'standPlay';
+      if (pose === 'run') m.moveSpeed = 2.4;
       if (sit && pose === 'standPlay') pose = 'sitPlay';
       m.setPose(pose);
     } else if (this.seat?.pose === 'sit') {
@@ -1014,4 +1110,9 @@ export class Customer extends Walker implements SeatUser {
 export function spawnPoint(): [number, number] {
   const side = Math.random() < 0.5 ? -1 : 1;
   return [clamp(CENTER_X + side * rand(4, 14), 1, GRID_W - 1), rand(SIDEWALK_Z0 + 1.6, SIDEWALK_Z1 + 0.45)];
+}
+
+/** How grand a room is, for a VIP choosing one: class first, then stars, then price. */
+function luxury(r: PlacedItem): number {
+  return r.roomClass * 1e7 + r.roomStars * 1e5 + r.roomRate;
 }

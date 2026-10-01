@@ -8,7 +8,10 @@ import {
   pillarModel, plantModel, ropeModel, rugModel, statueModel,
 } from './decor';
 
-import { poolModel, roomModel } from './hotel';
+import {
+  buffetModel, cabanaModel, giftshopModel, gymModel, hottubModel, laundryModel, loungerModel, poolModel, restaurantModel, roomModel, spaModel,
+  tikibarModel, vendingModel, waterslideModel,
+} from './hotel';
 
 export type { BuildOpts } from './common';
 
@@ -31,6 +34,18 @@ const BUILDERS: Record<string, (o: BuildOpts) => ItemModel> = {
   frontdesk: frontDeskModel,
   room: roomModel,
   pool: poolModel,
+  buffet: buffetModel,
+  vending: vendingModel,
+  giftshop: giftshopModel,
+  laundry: laundryModel,
+  gym: gymModel,
+  restaurant: restaurantModel,
+  spa: spaModel,
+  lounger: loungerModel,
+  hottub: hottubModel,
+  tikibar: tikibarModel,
+  cabana: cabanaModel,
+  waterslide: waterslideModel,
   plant: plantModel,
   palm: palmModel,
   rope: ropeModel,

@@ -256,7 +256,7 @@ export class Worker extends Walker {
         this.release();
       } else if (r === 'arrived') {
         this.working = true;
-        this.workT = t.kind === 'repair' ? 3 : t.kind === 'room' ? 3.5 : 1.1;
+        this.workT = t.kind === 'repair' ? 3 : t.kind === 'room' ? (w.items.items.some((i) => i.def.kind === 'laundry') ? 1.6 : 3.5) : 1.1;
         if (t.kind !== 'trash') this.faceTowards(t.item.cx, t.item.cz);
       } else if (r === 'blocked' || r === 'idle') {
         this.release();

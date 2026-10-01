@@ -56,7 +56,14 @@ export class Street {
    */
   setLots(lots: StreetLot[]): void {
     const casinos = lots.filter((l) => l.kind !== 'hotel').sort((a, b) => (a.kind === 'rival' ? -1 : b.kind === 'rival' ? 1 : a.order - b.order));
-    const hotels = new Map(lots.filter((l) => l.kind === 'hotel' && l.hotelOf).map((l) => [l.hotelOf!, l]));
+    const hotels = new Map<string, StreetLot[]>();
+    for (const l of lots) {
+      if (l.kind !== 'hotel' || !l.hotelOf) continue;
+      const list = hotels.get(l.hotelOf) ?? [];
+      list.push(l);
+      hotels.set(l.hotelOf, list);
+    }
+    for (const list of hotels.values()) list.sort((a, b) => a.order - b.order);
     this.slots.clear();
     this.bySlot = [];
     let next = 0;
@@ -67,14 +74,15 @@ export class Street {
     for (const c of casinos) {
       while (this.bySlot[next]) next++;
       take(c, next);
-      const h = hotels.get(c.id);
-      if (h) {
-        let i = next + 2;
+      // A casino's hotel buildings line up beside it, on the same side of the road.
+      let i = next;
+      for (const h of hotels.get(c.id) ?? []) {
+        i += 2;
         while (this.bySlot[i]) i += 2;
         take(h, i);
       }
     }
-    this.lots = [...casinos, ...[...hotels.values()].filter((h) => this.slots.has(h.id))];
+    this.lots = [...casinos, ...[...hotels.values()].flat().filter((h) => this.slots.has(h.id))];
   }
 
   get(id: string): StreetLot | undefined {

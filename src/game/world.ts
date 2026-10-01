@@ -16,6 +16,10 @@ export type MoneyReason =
 export interface World {
   /** Which business is loaded: guests gamble in the casino and sleep in the hotel. */
   readonly site: Site;
+  /** In the hotel: is this an open-air Pool Garden (guests swim) or a tower (guests sleep)? */
+  readonly gardenSite: boolean;
+  /** A hotel guest's review on the way out. */
+  review?(stars: number, text: string, name: string, type: string): void;
   /** Number of floors in the casino (1 = ground floor only). */
   readonly floors: number;
   gridAt(floor: number): Grid;

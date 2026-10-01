@@ -475,7 +475,45 @@ export const FLOOR_STYLES: FloorStyle[] = [
       }
     },
   },
+  {
+    id: 'lawn', name: 'Garden Lawn', price: 4, swatch: '#3f8f3a', rough: 1,
+    draw(ctx, S) {
+      const rnd = seeded(131);
+      ctx.fillStyle = '#3f8a37';
+      ctx.fillRect(0, 0, S, S);
+      for (let i = 0; i < 900; i++) {
+        ctx.fillStyle = rnd() < 0.5 ? 'rgba(90, 170, 70, 0.55)' : 'rgba(30, 90, 30, 0.45)';
+        ctx.fillRect(rnd() * S, rnd() * S, 1.5, 4 + rnd() * 4);
+      }
+      // Mowing stripes
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.fillRect(0, 0, S / 2, S);
+    },
+  },
+  {
+    id: 'deck', name: 'Pool Deck', price: 9, swatch: '#e9dcc0', rough: 0.6,
+    draw(ctx, S) {
+      const rnd = seeded(141);
+      ctx.fillStyle = '#e8dcc2';
+      ctx.fillRect(0, 0, S, S);
+      speckle(ctx, S, 0.06, rnd);
+      ctx.strokeStyle = 'rgba(120, 100, 70, 0.35)';
+      ctx.lineWidth = 2;
+      for (let i = 0; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.moveTo(0, (i * S) / 2);
+        ctx.lineTo(S, (i * S) / 2);
+        ctx.moveTo((i * S) / 2, 0);
+        ctx.lineTo((i * S) / 2, S);
+        ctx.stroke();
+      }
+    },
+  },
 ];
+
+/** Floor styles a fresh Pool Garden is laid out with. */
+export const LAWN_STYLE = FLOOR_STYLES.findIndex((f) => f.id === 'lawn');
+export const DECK_STYLE = FLOOR_STYLES.findIndex((f) => f.id === 'deck');
 
 const floorTexCache = new Map<string, THREE.CanvasTexture>();
 

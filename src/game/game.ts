@@ -15,13 +15,15 @@ import { Street, type StreetLot } from '../world/street';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
 import {
-  type HotelState, HOTEL_LEVEL, HOTEL_PRICE, estimateHotelRate, hotelDailyCosts, hotelGuestBoost, newHotel, sanitizeHotel,
+  type ChecklistItem, type HotelBuilding, type HotelBuildingKind, type HotelState, HOTEL_LEVEL, HOTEL_MAX_BUILDINGS, HOTEL_PRICE, MAX_REVIEWS,
+  buildingCost, buildingName, emptyBuilding, estimateBuildingRate, hotelDailyCosts, hotelGuestBoost, hotelName, newHotel, sanitizeHotel, snapChecklist,
+  towerChecklist,
 } from './hotel';
 import { CameraRig, type CamMode } from '../world/camera';
 import { TrashManager } from '../world/trash';
-import { FLOOR_STYLES } from '../render/textures';
+import { DECK_STYLE, FLOOR_STYLES, LAWN_STYLE } from '../render/textures';
 import { ItemManager } from '../items/itemManager';
-import { ITEMS, type ItemDef, type Site, itemDef, soldAt } from '../items/catalog';
+import { ITEMS, type ItemDef, type Site, itemDef, soldAt, zoneBlock } from '../items/catalog';
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
 import type { Outcome } from '../items/types';
 import { Customer, type CustomerType, spawnPoint } from '../entities/customer';
@@ -139,8 +141,15 @@ interface Visit {
   hands: number;
 }
 
-/** Your hotel as other players see it from the street. */
+/** Lot id of one of your hotel buildings. */
+export function hotelLotId(bid: string): string {
+  return `hotel:${bid}`;
+}
+
+/** Your hotel buildings as other players see them from the street. */
 export interface HotelInfo {
+  bid: string;
+  kind: HotelBuildingKind;
   look: CasinoLook;
   width: number;
   depth: number;
@@ -204,7 +213,7 @@ export class Game implements World, ItemHost {
   /** Supplies another player's casino when you walk into it (set by the net layer). */
   playerLot: ((pid: string) => CasinoSnapshot | null) | null = null;
   /** Another player's hotel floor plan (set by the net layer). */
-  playerHotel: ((pid: string) => CasinoSnapshot | null) | null = null;
+  playerHotel: ((pid: string, bid: string) => CasinoSnapshot | null) | null = null;
   /** Is this player keeping you out right now? (set by the net layer) */
   bannedBy: ((pid: string) => number) | null = null;
   /** Other players standing in the loaded casino / on the street (set by the net layer). */
@@ -357,6 +366,8 @@ export class Game implements World, ItemHost {
     this.createdAt = Date.now();
     this.hotel = null;
     this.site = 'casino';
+    this.hotelBid = null;
+    this.building.setGarden(false);
     this.parked = null;
     this.hotelAcc = 0;
     this.rebirths = 0;
@@ -503,13 +514,39 @@ export class Game implements World, ItemHost {
 
   /** Which business is loaded into the world. */
   site: Site = 'casino';
+  /** Which hotel building is loaded (while site is 'hotel'). */
+  hotelBid: string | null = null;
   /** Your casino, parked while you run the hotel (it catches up when you come back). */
   private parked: { home: SaveData; away: number; rate: number; netLog: [number, number][] } | null = null;
-  /** What the hotel earned while you were at the casino today (for the day report). */
+  /** What the hotel earned while you were elsewhere today (for the day report). */
   private hotelAcc = 0;
 
   get inHotel(): boolean {
     return this.site === 'hotel';
+  }
+
+  /** The hotel building you're standing in. */
+  get currentBuilding(): HotelBuilding | null {
+    return this.site === 'hotel' && this.hotel ? this.hotel.buildings.find((b) => b.id === this.hotelBid) ?? null : null;
+  }
+
+  /** In an open-air Pool Garden. */
+  get gardenSite(): boolean {
+    return this.currentBuilding?.kind === 'garden';
+  }
+
+  /** The hotel's bank and level, wherever you are. */
+  get hotelMoney(): number {
+    return this.site === 'hotel' ? this.money : this.hotel?.bank ?? 0;
+  }
+
+  private spendHotel(amount: number): void {
+    if (this.site === 'hotel') this.spend(amount, 'expand');
+    else if (this.hotel) this.hotel.bank -= amount;
+  }
+
+  get hotelLevel(): number {
+    return this.site === 'hotel' ? this.level : this.hotel?.level ?? 1;
   }
 
   /** Why the hotel can't be bought yet (null = go ahead). */
@@ -532,7 +569,45 @@ export class Game implements World, ItemHost {
     this.spend(HOTEL_PRICE, 'expand');
     this.hotel = newHotel(this.building.look);
     audio.play('levelup');
-    this.notify(`${this.hotel.snap.name} is yours! It's empty for now: walk next door and start building.`, 'good');
+    this.notify(`${this.hotel.buildings[0].snap.name} is yours! It's empty for now: walk next door and start building.`, 'good');
+    this.refreshStreet();
+    this.events.emit('hotel', undefined);
+    this.saveNow();
+    return true;
+  }
+
+  /** Why another hotel building of this kind can't be bought yet (null = go ahead). */
+  buildingBlock(kind: HotelBuildingKind): string | null {
+    const h = this.hotel;
+    if (!h) return 'Build the hotel first.';
+    if (this.visit) return 'Head home first.';
+    if (h.buildings.length >= HOTEL_MAX_BUILDINGS) return `The street only has room for ${HOTEL_MAX_BUILDINGS} hotel buildings.`;
+    const c = buildingCost(kind, h.buildings.filter((b) => b.kind === kind).length);
+    if (this.hotelLevel < c.level) return `Unlocks at hotel level ${c.level}.`;
+    if (this.hotelMoney < c.price) return `Costs ${formatMoney(c.price)} from the hotel bank.`;
+    return null;
+  }
+
+  /** Another tower or a Pool Garden on the next lot down the street (paid from the hotel bank). */
+  buyBuilding(kind: HotelBuildingKind): boolean {
+    const block = this.buildingBlock(kind);
+    const h = this.hotel;
+    if (block || !h) {
+      audio.play('error');
+      this.notify(block ?? 'No hotel', 'bad');
+      return false;
+    }
+    const c = buildingCost(kind, h.buildings.filter((b) => b.kind === kind).length);
+    this.spendHotel(c.price);
+    let n = h.buildings.length;
+    while (h.buildings.some((b) => b.id === `h${n}`)) n++;
+    const look = this.site === 'hotel' && this.currentBuilding ? { ...this.building.look } : h.buildings[0].snap.look;
+    const b = emptyBuilding(`h${n}`, kind, look);
+    h.buildings.push(b);
+    b.snap.name = buildingName(hotelName(this.homeLook.name), b, h.buildings.length - 1, h.buildings);
+    b.snap.look = { ...b.snap.look, name: b.snap.name };
+    audio.play('levelup');
+    this.notify(kind === 'garden' ? `${b.snap.name} opened next door: put pools, loungers and a tiki bar in it.` : `${b.snap.name} is up: another tower to fill with rooms.`, 'good');
     this.refreshStreet();
     this.events.emit('hotel', undefined);
     this.saveNow();
@@ -548,11 +623,12 @@ export class Game implements World, ItemHost {
     };
   }
 
-  /** Write the running hotel back into its saved state. */
+  /** Write the loaded hotel building, and the hotel's own books, back into its saved state. */
   private captureHotel(): void {
     const h = this.hotel;
-    if (!h || this.site !== 'hotel') return;
-    h.snap = this.worldSnapshot();
+    const b = this.currentBuilding;
+    if (!h || !b) return;
+    b.snap = this.worldSnapshot();
     h.bank = Math.round(this.money);
     h.xp = Math.round(this.xp);
     h.level = this.level;
@@ -560,39 +636,58 @@ export class Game implements World, ItemHost {
     h.stats = { ...this.stats };
     h.history = [...this.history];
     const measured = Math.max(0, this.incomePerMin / 60);
-    const est = estimateHotelRate(h.snap);
-    h.rate = measured > 0 ? (measured + est) / 2 : est;
-    h.staying = this.customers.filter((c) => c.state === 'seated' && c.seatItem?.def.kind === 'room').length;
+    const est = estimateBuildingRate(b, h);
+    b.rate = measured > 0 && est > 0 ? (measured + est) / 2 : est;
+    if (b.kind === 'tower') h.staying = this.customers.filter((c) => c.state === 'seated' && c.seatItem?.def.kind === 'room').length;
   }
 
-  /** Walk into your hotel: its own floor plan, bank, level and goals take over. */
-  private enterHotel(): void {
+  /** Walk into one of your hotel buildings: the hotel's own bank, level and goals take over. */
+  private enterHotel(bid: string): void {
     const h = this.hotel!;
+    const b = h.buildings.find((x) => x.id === bid);
+    if (!b) return;
     const from = this.street.activeId;
-    const at = this.street.map(from, 'hotel', this.player.x, this.player.z);
+    const at = this.street.map(from, hotelLotId(bid), this.player.x, this.player.z);
     this.standUp();
-    const parked = this.visit
-      ? { home: this.serialize(), away: this.visit.away, rate: this.visit.rate, netLog: this.netLog }
-      : { home: this.serialize(), away: 0, rate: Math.max(0, this.incomePerMin / 60), netLog: this.netLog };
-    this.visit = null;
-    this.parked = parked;
-    this.site = 'hotel';
-    this.netLog = [];
-    this.money = h.bank;
-    this.xp = h.xp;
-    this.level = h.level;
-    this.doneObjectives = new Set(h.objectives);
-    this.stats = { ...emptyStats(), ...h.stats };
-    this.history = [...h.history];
     this.events.emit('siteLeaving', undefined);
+    if (this.site === 'hotel') {
+      // From one hotel building to another: just swap the floor plan.
+      this.captureHotel();
+    } else {
+      const parked = this.visit
+        ? { home: this.serialize(), away: this.visit.away, rate: this.visit.rate, netLog: this.netLog }
+        : { home: this.serialize(), away: 0, rate: Math.max(0, this.incomePerMin / 60), netLog: this.netLog };
+      this.visit = null;
+      this.parked = parked;
+      this.site = 'hotel';
+      this.netLog = [];
+      this.money = h.bank;
+      this.xp = h.xp;
+      this.level = h.level;
+      this.doneObjectives = new Set(h.objectives);
+      this.stats = { ...emptyStats(), ...h.stats };
+      this.history = [...h.history];
+    }
+    this.hotelBid = bid;
     this.build.cancel(false);
     this.select(null);
-    this.loadCasino(h.snap, false);
-    this.street.activeId = 'hotel';
+    this.loadCasino(b.snap, false);
+    this.building.setGarden(b.kind === 'garden');
+    if (b.kind === 'garden' && !b.snap.paint.some((p) => p)) {
+      // Fresh lawn, with a stone path up the middle.
+      const g = this.grid;
+      const r = g.rect;
+      for (let z = r.z0; z <= r.z1; z++) for (let x = r.x0; x <= r.x1; x++) g.setFloor(x, z, Math.abs(x + 0.5 - CENTER_X) < 1.2 ? DECK_STYLE : LAWN_STYLE);
+      this.levels[0].floor.rebuild();
+    }
+    this.street.activeId = hotelLotId(bid);
     this.shiftPlayer(at.x, FACADE_Z - 1.5);
     audio.play('doorbell');
+    const empty = !b.snap.items.length;
     this.events.emit('toast', {
-      text: h.snap.items.length ? `Welcome back to ${h.snap.name}.` : `${h.snap.name}: an empty shell and ${formatMoney(h.bank)} of its own. Build a reception desk, then rooms!`,
+      text: b.kind === 'garden'
+        ? (empty ? `${b.snap.name}: open sky and fresh grass. Add a pool, loungers and a tiki bar.` : `Welcome to ${b.snap.name}.`)
+        : empty ? `${b.snap.name}: an empty shell. It opens once it has a reception desk, a breakfast buffet, a room and a housekeeper.` : `Welcome back to ${b.snap.name}.`,
       kind: 'event',
     });
     this.afterSiteChange();
@@ -607,6 +702,8 @@ export class Game implements World, ItemHost {
     const p = this.parked;
     this.parked = null;
     this.site = 'casino';
+    this.hotelBid = null;
+    this.building.setGarden(false);
     this.money = p.home.money;
     this.xp = p.home.xp;
     this.level = p.home.level;
@@ -627,22 +724,58 @@ export class Game implements World, ItemHost {
     this.refreshStreet();
   }
 
-  /** How your hotel looks from the street (cheap: called with every presence update). */
-  hotelInfo(): HotelInfo | null {
-    const h = this.hotel;
-    if (!h) return null;
-    const live = this.site === 'hotel';
-    const s = h.snap;
-    return {
-      look: live ? { ...this.building.look } : s.look, width: live ? this.layout.width : s.layout.width, depth: live ? this.layout.depth : s.layout.depth,
-      floors: live ? this.floors : s.floors, stars: Math.max(1, Math.min(5, Math.round(live ? this.rating : s.rating))),
-    };
+  /** What the tower you're in still needs before guests can stay (empty outside a tower). */
+  hotelChecklist(): ChecklistItem[] {
+    if (!this.inHotel || this.gardenSite) return [];
+    return towerChecklist(this.items.items.map((i) => ({ kind: i.def.kind })), this.staffCount('janitor'));
   }
 
-  /** Your hotel's floor plan for other players to walk around in. */
-  hotelSnapshot(): CasinoSnapshot | null {
+  /** The tower you're in is open for guests (or, in a Pool Garden, some tower is). */
+  get hotelOpen(): boolean {
+    if (!this.inHotel) return false;
+    if (this.gardenSite) return !!this.hotel?.buildings.some((b) => b.kind === 'tower' && snapChecklist(b.snap).every((c) => c.done));
+    return this.hotelChecklist().every((c) => c.done);
+  }
+
+  /** A guest's review of their stay. */
+  review(stars: number, text: string, name: string, type: string): void {
+    const h = this.hotel;
+    if (!h || !this.inHotel) return;
+    h.reviews.unshift({ stars, text, name, vip: type === 'vip', day: this.day });
+    if (h.reviews.length > MAX_REVIEWS) h.reviews.length = MAX_REVIEWS;
+    if (stars >= 5 && type === 'vip') this.notify(`⭐ ${name.split(' ')[0]} (VIP) left a 5-star review: “${text.split('.')[0]}.”`, 'good');
+    else if (stars <= 1 && Math.random() < 0.5) this.notify(`😠 A 1-star review: “${text.split('.')[0]}.”`, 'bad');
+    this.events.emit('hotel', undefined);
+  }
+
+  /** Average of the latest reviews (0 = none yet). */
+  get reviewAverage(): number {
+    const r = this.hotel?.reviews.slice(0, 12) ?? [];
+    return r.length ? r.reduce((a, x) => a + x.stars, 0) / r.length : 0;
+  }
+
+  /** How your hotel buildings look from the street (cheap: called with every presence update). */
+  hotelInfo(): HotelInfo[] {
+    const h = this.hotel;
+    if (!h) return [];
+    return h.buildings.map((b) => {
+      const live = b.id === this.hotelBid && this.site === 'hotel';
+      const s = b.snap;
+      return {
+        bid: b.id, kind: b.kind,
+        look: live ? { ...this.building.look } : s.look, width: live ? this.layout.width : s.layout.width, depth: live ? this.layout.depth : s.layout.depth,
+        floors: live ? this.floors : s.floors, stars: Math.max(1, Math.min(5, Math.round(live ? this.rating : s.rating))),
+      };
+    });
+  }
+
+  /** Your hotel's floor plans, for other players to walk around in. */
+  hotelSnapshot(): Record<string, CasinoSnapshot> | null {
     this.captureHotel();
-    return this.hotel ? (JSON.parse(JSON.stringify(this.hotel.snap)) as CasinoSnapshot) : null;
+    if (!this.hotel) return null;
+    const out: Record<string, CasinoSnapshot> = {};
+    for (const b of this.hotel.buildings) out[b.id] = JSON.parse(JSON.stringify(b.snap)) as CasinoSnapshot;
+    return out;
   }
 
   /** Objectives for the business you're in. */
@@ -748,15 +881,12 @@ export class Game implements World, ItemHost {
       info: { look: rivalLook(), width: ri.layout.width, depth: ri.layout.depth, floors: ri.floors, tagline: 'HIGH LIMITS · NO MERCY' },
     };
     const lots = [rival, me, ...this.extraLots];
-    if (this.hotel) {
-      const live = this.site === 'hotel';
-      const snap = this.hotel.snap;
-      const stars = Math.max(1, Math.round(live ? this.rating : snap.rating));
+    for (const [i, b] of this.hotelInfo().entries()) {
       lots.push({
-        id: 'hotel', kind: 'hotel', hotelOf: 'me', owner: this.player.name, order: this.createdAt, online: true,
+        id: hotelLotId(b.bid), kind: 'hotel', hotelOf: 'me', owner: this.player.name, order: i, online: true,
         info: {
-          look: live ? { ...this.building.look } : snap.look, width: live ? this.layout.width : snap.layout.width, depth: live ? this.layout.depth : snap.layout.depth,
-          floors: live ? this.floors : snap.floors, tagline: `${'★'.repeat(stars)} HOTEL`, style: 'hotel',
+          look: b.look, width: b.width, depth: b.depth, floors: b.floors,
+          tagline: b.kind === 'garden' ? 'POOL · CABANAS · TIKI BAR' : `${'★'.repeat(b.stars)} HOTEL`, style: b.kind === 'garden' ? 'garden' : 'hotel',
         },
       });
     }
@@ -793,7 +923,7 @@ export class Game implements World, ItemHost {
   private lotSnapshot(lot: StreetLot): CasinoSnapshot | null {
     if (lot.kind === 'rival') return generateRival(this.rival);
     if (lot.kind === 'player') return this.playerLot?.(lot.id) ?? null;
-    if (lot.kind === 'hotel' && lot.hotelOf) return this.playerHotel?.(lot.hotelOf) ?? null;
+    if (lot.kind === 'hotel' && lot.hotelOf) return this.playerHotel?.(lot.hotelOf, lot.id.split('hotel:')[1] ?? '') ?? null;
     return null;
   }
 
@@ -807,10 +937,10 @@ export class Game implements World, ItemHost {
       if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
       if (!this.playerLot?.(lot.id)) return `${lot.info.look.name} is closed right now.`;
     }
-    if (lot.kind === 'hotel' && lot.hotelOf && lot.id !== 'hotel') {
+    if (lot.kind === 'hotel' && lot.hotelOf && lot.hotelOf !== 'me') {
       const until = this.bannedBy?.(lot.hotelOf) ?? 0;
       if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
-      if (!this.playerHotel?.(lot.hotelOf)) return `${lot.info.look.name} isn't open to visitors yet.`;
+      if (!this.lotSnapshot(lot)) return `${lot.info.look.name} isn't open to visitors yet.`;
     }
     return null;
   }
@@ -818,8 +948,8 @@ export class Game implements World, ItemHost {
   /** Walk through another casino's door (or back through your own). */
   enterLot(lot: StreetLot): boolean {
     if (this.state !== 'playing' || lot.id === this.street.activeId) return false;
-    if (lot.id === 'hotel' && this.hotel) {
-      this.enterHotel();
+    if (lot.hotelOf === 'me' && this.hotel) {
+      this.enterHotel(lot.id.slice('hotel:'.length));
       return true;
     }
     if (lot.kind === 'me') {
@@ -1089,8 +1219,8 @@ export class Game implements World, ItemHost {
       this.floaterT.set(item.uid, this.time);
       this.floaters.money(pos, amount, Math.abs(amount) >= 500);
     };
-    if (k === 'bar' || k === 'snack' || k === 'atm') {
-      if (k === 'bar' || k === 'snack') {
+    if (k === 'bar' || k === 'snack' || k === 'atm' || ((k === 'buffet' || k === 'restaurant' || k === 'giftshop' || k === 'vending' || k === 'spa' || k === 'lounger') && o.bet > 0)) {
+      if (k !== 'atm') {
         if (home) this.stats.drinksServed++;
         this.sfxAt('drink', item.cx, item.cz, 0.7);
       } else this.sfxAt('coin', item.cx, item.cz, 0.7);
@@ -1257,6 +1387,11 @@ export class Game implements World, ItemHost {
       lookEdited: this.lookEdited,
       casinoRenamed: this.renamed,
       bestRoomStars: this.items.items.reduce((a, i) => Math.max(a, i.roomStars), 0),
+      hotelTowers: this.hotel?.buildings.filter((b) => b.kind === 'tower').length ?? 0,
+      hotelGardens: this.hotel?.buildings.filter((b) => b.kind === 'garden').length ?? 0,
+      hotelOpen: this.hotelOpen,
+      reviewAvg: this.reviewAverage,
+      gardenItems: this.gardenSite ? this.items.items.length : Math.max(0, ...(this.hotel?.buildings.filter((b) => b.kind === 'garden').map((b) => b.snap.items.length) ?? [0])),
     };
   }
 
@@ -1329,6 +1464,7 @@ export class Game implements World, ItemHost {
       0.5,
       5,
     );
+    if (this.inHotel && this.reviewAverage) this.ratingTarget = clamp(this.ratingTarget + (this.reviewAverage - 3) * 0.2, 0.5, 5);
     this.buzz = Math.max(0, this.buzz - dt * 0.004);
     this.rating = damp(this.rating, this.ratingTarget, 0.06, dt);
   }
@@ -1377,18 +1513,32 @@ export class Game implements World, ItemHost {
     this.spawnT -= dt;
     if (this.spawnT > 0) return;
     if (this.site === 'hotel') {
-      // Guests only come while there's a reception desk and a clean room free.
-      const rooms = this.items.items.filter((i) => i.def.kind === 'room');
-      const hasDesk = this.items.items.some((i) => i.def.kind === 'desk');
-      const free = rooms.filter((r) => !r.dirty && r.freeSeat()).length;
       const inside = this.customers.filter((c) => !c.exited).length;
+      const mult = this.activeEvent?.spawnMult ?? 1;
+      if (this.gardenSite) {
+        // Hotel guests wander over for a swim (only once some tower is open).
+        const spots = this.items.items.reduce((a, i) => a + (i.def.zone === 'garden' || i.def.kind === 'bench' ? i.seats.length : 0), 0);
+        const cap = Math.min(this.maxCustomers(), Math.round(2 + spots * 1.1));
+        if (this.hotelOpen && spots > 0 && inside < cap) {
+          const c = this.spawnCustomer(Math.random() < 0.06 + this.rating * 0.01 ? 'vip' : Math.random() < 0.3 ? 'tourist' : 'regular');
+          c.outings = randInt(2, 5);
+        }
+        const perMin = (2 + this.rating * 1.4 + spots * 0.25) * this.hourMult() * mult;
+        this.spawnT = (60 / perMin) * rand(0.6, 1.4);
+        return;
+      }
+      // A tower only takes guests once it passes its opening checklist and has a clean room free.
+      const rooms = this.items.items.filter((i) => i.def.kind === 'room');
+      const free = rooms.filter((r) => !r.dirty && r.freeSeat()).length;
       const cap = Math.min(this.maxCustomers(), Math.round(3 + rooms.length * 1.4));
-      if (hasDesk && free > 0 && inside < cap) {
+      if (this.hotelOpen && free > 0 && inside < cap) {
         const r = Math.random();
-        const vip = this.rating >= 2.5 ? 0.03 + (this.rating - 2.5) * 0.05 : 0.01;
+        // Luxury rooms and penthouses draw high rollers.
+        const lux = rooms.filter((x) => x.roomClass >= 1 || x.roomStars >= 4).length;
+        const vip = (this.rating >= 2.5 ? 0.03 + (this.rating - 2.5) * 0.05 : 0.01) + Math.min(0.2, lux * 0.025);
         this.spawnCustomer(r < vip ? 'vip' : r < vip + 0.2 ? 'tourist' : 'regular');
       }
-      const perMin = (2 + this.rating * 1.6 + Math.min(this.items.totalAppeal, 80) * 0.06 + rooms.length * 0.6) * this.hourMult();
+      const perMin = (2 + this.rating * 1.6 + Math.min(this.items.totalAppeal, 80) * 0.06 + rooms.length * 0.6) * this.hourMult() * mult;
       this.spawnT = (60 / perMin) * rand(0.6, 1.4);
       return;
     }
@@ -1437,13 +1587,68 @@ export class Game implements World, ItemHost {
     this.events.emit('event', { title, text });
   }
 
+  /** Things that happen at the hotel: celebrities, tour groups, weddings, a critic… */
+  private hotelEvent(): void {
+    this.eventT = rand(150, 280);
+    if (!this.hotelOpen) return;
+    const rooms = this.items.items.filter((i) => i.def.kind === 'room');
+    const spawn = (type: CustomerType, n: number) => {
+      for (let i = 0; i < n; i++) {
+        const [x, z] = spawnPoint();
+        const c = this.spawnCustomer(type, x + rand(-1, 1), z);
+        if (this.gardenSite) c.outings = randInt(2, 5);
+      }
+    };
+    const options: (() => void)[] = [
+      () => {
+        this.events.emit('event', { title: 'Tour group!', text: 'A coach full of sightseers wants rooms for the night.' });
+        spawn('tourist', randInt(4, 7));
+      },
+      () => this.startEvent('busy', 'Convention in town!', 'Every hotel on the Strip is filling up. More guests for a while.', 90, 2),
+    ];
+    if (!this.gardenSite && rooms.length >= 2) {
+      options.push(() => {
+        this.events.emit('event', { title: 'Wedding party!', text: 'A wedding party just arrived. They want the nicest rooms you have.' });
+        spawn('regular', randInt(3, 5));
+        spawn('vip', 1);
+      });
+    }
+    if (!this.gardenSite && rooms.some((r) => r.roomClass >= 1 || r.roomStars >= 4)) {
+      options.push(() => {
+        this.events.emit('event', { title: 'Celebrity sighting!', text: 'A movie star is checking in. Their review could make your name.' });
+        spawn('vip', 1);
+        this.buzz = Math.min(1, this.buzz + 0.3);
+      });
+    }
+    if (!this.gardenSite && rooms.length >= 3) {
+      options.push(() => {
+        // The hotel critic judges rooms, cleanliness and guest reviews.
+        const avgStars = rooms.reduce((a, r) => a + r.roomStars, 0) / rooms.length;
+        const dirty = rooms.filter((r) => r.dirty).length / rooms.length;
+        const reviews = this.reviewAverage || 3;
+        const score = Math.max(1, Math.min(5, Math.round(avgStars * 0.45 + reviews * 0.45 + (1 - dirty) * 1.1 - 0.2)));
+        const prize = score * score * 400;
+        this.addMoney(prize, 'reward');
+        this.buzz = Math.min(1, this.buzz + score * 0.08);
+        audio.play(score >= 4 ? 'jackpot' : 'pop');
+        this.events.emit('event', { title: `Hotel critic: ${'★'.repeat(score)}${'☆'.repeat(5 - score)}`, text: score >= 4 ? `A glowing write-up! Bookings bonus +${formatMoney(prize)}.` : `“Room for improvement.” Decorate rooms and keep them clean. +${formatMoney(prize)}` });
+      });
+    }
+    pick(options)();
+  }
+
   private updateEvents(dt: number): void {
     if (this.activeEvent) {
       this.activeEvent.left -= dt;
       if (this.activeEvent.left <= 0) this.activeEvent = null;
     }
     this.eventT -= dt;
-    if (this.eventT > 0 || this.items.gamblingSeats() < 4) return;
+    if (this.eventT > 0) return;
+    if (this.inHotel) {
+      this.hotelEvent();
+      return;
+    }
+    if (this.items.gamblingSeats() < 4) return;
     this.eventT = rand(140, 260);
     const options: (() => void)[] = [
       () => this.startEvent('happy', 'Happy hour!', 'Guests are pouring in for cheap drinks.', 60, 2),
@@ -1474,8 +1679,19 @@ export class Game implements World, ItemHost {
 
   // ------------------------------------------------------------------ economy actions
 
+  /** Why this item can't go in the building you're in (hotel indoor/outdoor rules). */
+  placeBlock(def: ItemDef): string | null {
+    return this.inHotel ? zoneBlock(def, this.gardenSite) : null;
+  }
+
   purchase(def: ItemDef, tx: number, tz: number, rot: number, color: number): PlacedItem | null {
     if (this.visit) return null;
+    const zb = this.placeBlock(def);
+    if (zb) {
+      audio.play('error');
+      this.notify(zb, 'bad');
+      return null;
+    }
     if (this.money < def.price) {
       audio.play('error');
       this.notify(`Not enough cash for ${def.name}`, 'bad');
@@ -1714,6 +1930,11 @@ export class Game implements World, ItemHost {
   /** Build another storey on top; floors have no limit. The elevator links them all. */
   addFloor(): boolean {
     if (this.visit) return false;
+    if (this.gardenSite) {
+      audio.play('error');
+      this.notify('A Pool Garden is open-air: build upwards in a hotel tower instead.', 'bad');
+      return false;
+    }
     const blockers = this.floors === 1 ? this.items.elevatorBlockers(0) : [];
     if (blockers.length) {
       const b = blockers[0];
@@ -2279,13 +2500,15 @@ export class Game implements World, ItemHost {
 
   private endOfDay(): void {
     const wages = this.workers.reduce((a, w) => a + w.info.wage, 0);
-    const upkeep = this.items.items.reduce((a, i) => a + i.def.upkeep, 0);
+    let upkeep = this.items.items.reduce((a, i) => a + i.def.upkeep, 0);
+    // In the hotel, the buildings you're not standing in still pay their staff and upkeep.
+    if (this.hotel && this.site === 'hotel') upkeep += hotelDailyCosts(this.hotel.buildings.filter((b) => b.id !== this.hotelBid).map((b) => b.snap));
     this.money -= wages + upkeep;
     const best = [...this.dayAcc.byItem.entries()].sort((a, b) => b[1] - a[1])[0];
     // The hotel keeps its own books: while you're at the casino it pays its staff here.
     let hotelNet: number | undefined;
     if (this.hotel && this.site !== 'hotel') {
-      const costs = hotelDailyCosts(this.hotel.snap);
+      const costs = hotelDailyCosts(this.hotel.buildings.map((b) => b.snap));
       this.hotel.bank -= costs;
       hotelNet = Math.round(this.hotelAcc - costs);
       this.hotelAcc = 0;
@@ -2343,12 +2566,20 @@ export class Game implements World, ItemHost {
     for (let i = 0; i < steps; i++) this.step(dt, false);
   }
 
-  /** While you're not in it, the hotel earns on its estimate from last time. */
+  /** Hotel buildings you're not standing in earn on their estimate from last time. */
   private tickHotel(sim: number): void {
-    if (!this.hotel || this.site === 'hotel' || this.state !== 'playing' || this.catchingUp) return;
-    const e = this.hotel.rate * sim * this.incomeMult;
-    this.hotel.bank += e;
-    this.hotelAcc += e;
+    if (!this.hotel || this.state !== 'playing' || this.catchingUp) return;
+    let rate = 0;
+    for (const b of this.hotel.buildings) if (!(this.site === 'hotel' && b.id === this.hotelBid)) rate += b.rate;
+    const e = rate * sim * this.incomeMult;
+    if (!e) return;
+    if (this.site === 'hotel') {
+      this.money += e;
+      this.dayAcc.sales += e;
+    } else {
+      this.hotel.bank += e;
+      this.hotelAcc += e;
+    }
   }
 
   /** The simulation half of a step: guests, staff, machines, the clock. */
@@ -2704,6 +2935,8 @@ export class Game implements World, ItemHost {
     this.createdAt = s.createdAt || Date.now();
     this.cosmetics = sanitizeCosmetics(s.cosmetics);
     this.site = 'casino';
+    this.hotelBid = null;
+    this.building.setGarden(false);
     this.parked = null;
     this.hotelAcc = 0;
     this.hotel = sanitizeHotel(s.hotel, s.look, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
