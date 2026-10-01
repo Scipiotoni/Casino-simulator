@@ -780,6 +780,30 @@ const ZERO_JOINTS: Joints = {
 export interface CharacterOpts {
   override?: THREE.Material;
   castShadow?: boolean;
+  /** Ult (AFK) graphics: a few plain blocks, no face, no shadow blob. */
+  crude?: boolean;
+}
+
+/** Shared block geometry and flat colours for crude characters (cheap to draw by the hundred). */
+const crudeGeo = new Map<string, THREE.BufferGeometry>();
+function crudeBox(w: number, h: number, d: number, y: number): THREE.BufferGeometry {
+  const k = `${w}|${h}|${d}|${y}`;
+  let g = crudeGeo.get(k);
+  if (!g) {
+    g = new THREE.BoxGeometry(w, h, d);
+    g.translate(0, y, 0);
+    crudeGeo.set(k, g);
+  }
+  return g;
+}
+const crudeMats = new Map<number, THREE.Material>();
+function crudeMat(color: number): THREE.Material {
+  let m = crudeMats.get(color);
+  if (!m) {
+    m = new THREE.MeshLambertMaterial({ color });
+    crudeMats.set(color, m);
+  }
+  return m;
 }
 
 export class CharacterModel {
@@ -825,9 +849,12 @@ export class CharacterModel {
   /** Right hand, for holding props (a gun's +z points where the arm points). */
   readonly hand = new THREE.Group();
 
+  /** New NPCs (guests, staff, people on the street) are built crude while this is on. */
+  static crude = false;
+
   constructor(appearance: Appearance, private opts: CharacterOpts = {}) {
     this.root.add(this.body);
-    if (!opts.override) this.root.add(blobShadow());
+    if (!opts.override && !opts.crude) this.root.add(blobShadow());
     this.body.add(this.hips, this.armL, this.armR, this.legL, this.legR, this.headPivot);
     this.hand.position.set(0, -0.33, 0.02);
     this.hand.rotation.x = Math.PI / 2;
@@ -840,11 +867,15 @@ export class CharacterModel {
     this.appearance = { ...a };
     for (const m of this.meshes) {
       m.parent?.remove(m);
-      m.geometry.dispose();
+      if (!m.userData.shared) m.geometry.dispose();
     }
     this.meshes = [];
     const d = dimsFor(a);
     this.dims = d;
+    if (this.opts.crude) {
+      this.buildCrude(a, d);
+      return;
+    }
     const p = new Parts();
     buildHead(p, a);
     buildTorso(p, a, d);
@@ -877,6 +908,34 @@ export class CharacterModel {
     this.refreshFace();
   }
 
+  /** A body of plain blocks: torso, head, two arms, two legs. */
+  private buildCrude(a: Appearance, d: Dims): void {
+    const mk = (g: THREE.BufferGeometry, color: number, parent: THREE.Object3D) => {
+      const mesh = new THREE.Mesh(g, crudeMat(color));
+      mesh.userData.shared = true;
+      parent.add(mesh);
+      this.meshes.push(mesh);
+    };
+    const r = (n: number) => Math.round(n * 50) / 50;
+    this.hips.position.set(0, d.hipY, 0);
+    mk(crudeBox(r(d.torsoW), r(d.torsoH), r(d.torsoD), r(d.torsoH / 2)), a.topColor, this.hips);
+    this.headPivot.position.set(0, d.neckY + 0.02, 0);
+    mk(crudeBox(0.3, 0.3, 0.3, 0.17), a.skin, this.headPivot);
+    this.armL.position.set(-d.shoulderX, d.hipY + d.torsoH - 0.07, 0);
+    this.armR.position.set(d.shoulderX, d.hipY + d.torsoH - 0.07, 0);
+    mk(crudeBox(0.1, 0.4, 0.1, -0.18), a.topColor, this.armL);
+    mk(crudeBox(0.1, 0.4, 0.1, -0.18), a.topColor, this.armR);
+    this.legL.position.set(-d.torsoW * 0.25, d.hipY, 0);
+    this.legR.position.set(d.torsoW * 0.25, d.hipY, 0);
+    mk(crudeBox(0.12, r(d.legLen), 0.12, -r(d.legLen) / 2), a.bottomColor, this.legL);
+    mk(crudeBox(0.12, r(d.legLen), 0.12, -r(d.legLen) / 2), a.bottomColor, this.legR);
+  }
+
+  /** Built crude (Ult graphics). */
+  get crudeBody(): boolean {
+    return !!this.opts.crude;
+  }
+
   /** Group that follows the head (for hats, crowns and halos). */
   get headAnchor(): THREE.Group {
     return this.headPivot;
@@ -906,6 +965,7 @@ export class CharacterModel {
   }
 
   private refreshFace(): void {
+    if (this.opts.crude) return;
     const e = this.pose === 'sleep' || this.pose === 'ko' ? 'blink' : this.blinking > 0 && (this.expression === 'neutral' || this.expression === 'sad' || this.expression === 'angry') ? 'blink' : this.expression;
     this.face.geometry = faceGeometry(this.appearance.eyes, e);
   }
@@ -1202,7 +1262,7 @@ export class CharacterModel {
   }
 
   dispose(): void {
-    for (const m of this.meshes) m.geometry.dispose();
+    for (const m of this.meshes) if (!m.userData.shared) m.geometry.dispose();
     this.meshes = [];
     this.root.removeFromParent();
   }

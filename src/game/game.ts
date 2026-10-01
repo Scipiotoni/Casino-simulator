@@ -14,6 +14,7 @@ import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/buil
 import { Street, type StreetLot } from '../world/street';
 import { MAX_DEPTH_STEPS } from '../world/city';
 import { Sky } from '../world/sky';
+import { CharacterModel } from '../entities/characterModel';
 import { WaypointBeacon } from '../world/waypoint';
 import { WALL_CUT, syncWallCut } from '../world/walls';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
@@ -369,7 +370,8 @@ export class Game implements World, ItemHost {
     this.combat = new Combat(this);
     this.drive = new Driving(this);
     this.street.city.group.add(this.drive.group, this.beacon.group);
-    this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : 14;
+    CharacterModel.crude = settings.quality === 'ult';
+    this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : settings.quality === 'low' ? 14 : 8;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
       const w = this.street.globalToWorld(c.x, c.z);
@@ -2013,7 +2015,7 @@ export class Game implements World, ItemHost {
 
   private maxCustomers(): number {
     const q = this.settings.quality;
-    return q === 'high' ? 90 : q === 'medium' ? 60 : 38;
+    return q === 'ult' ? 600 : q === 'high' ? 90 : q === 'medium' ? 60 : 38;
   }
 
   private hourMult(): number {
@@ -2065,7 +2067,9 @@ export class Game implements World, ItemHost {
     }
     const seats = this.items.gamblingSeats();
     const benchSeats = this.items.countKind((i) => i.def.kind === 'bench') * 2;
-    const cap = Math.min(this.maxCustomers(), Math.round(3 + seats * 1.15 + benchSeats * 0.5));
+    // Ult (AFK): far more guests than seats (the rest queue, watch and wander), arriving 3× as fast.
+    const ult = this.settings.quality === 'ult';
+    const cap = Math.min(this.maxCustomers(), Math.round(ult ? 10 + seats * 3 + benchSeats : 3 + seats * 1.15 + benchSeats * 0.5));
     const inside = this.customers.filter((c) => !c.exited).length;
     const mult = this.activeEvent?.spawnMult ?? 1;
     if (seats > 0 && inside < cap) {
@@ -2080,7 +2084,7 @@ export class Game implements World, ItemHost {
       this.spawnCustomer(type);
     }
     const hotelMult = this.visit ? 1 : hotelGuestBoost(this.hotel).spawn;
-    const perMin = (3.5 + this.rating * 2.4 + Math.min(this.items.totalAppeal, 80) * 0.1 + seats * 0.2) * this.hourMult() * mult * hotelMult;
+    const perMin = (3.5 + this.rating * 2.4 + Math.min(this.items.totalAppeal, 80) * 0.1 + seats * 0.2) * this.hourMult() * mult * hotelMult * (ult ? 3 : 1);
     this.spawnT = (60 / perMin) * rand(0.6, 1.4);
   }
 
@@ -3543,7 +3547,7 @@ export class Game implements World, ItemHost {
 
   /** Running slowly for ~8 seconds in a row: suggest turning the graphics down. */
   private watchFps(span: number): void {
-    if (this.state !== 'playing' || this.modalOpen || document.hidden || this.settings.quality === 'low') {
+    if (this.state !== 'playing' || this.modalOpen || document.hidden || this.settings.quality === 'low' || this.settings.quality === 'ult') {
       this.slowFor = 0;
       return;
     }
@@ -4158,7 +4162,9 @@ export class Game implements World, ItemHost {
   setQuality(q: Quality): void {
     this.settings.quality = q;
     this.renderer.setQuality(q);
-    this.street.crowd.target = q === 'high' ? 30 : q === 'medium' ? 22 : 14;
+    // Ult (AFK): crude block people, so hundreds of guests stay cheap to draw.
+    CharacterModel.crude = q === 'ult';
+    this.street.crowd.target = q === 'high' ? 30 : q === 'medium' ? 22 : q === 'low' ? 14 : 8;
   }
 }
 

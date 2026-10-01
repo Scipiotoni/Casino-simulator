@@ -37,7 +37,7 @@ export class Walker {
   protected riding = 0;
 
   constructor(appearance: Appearance, x: number, z: number) {
-    this.model = new CharacterModel(appearance);
+    this.model = new CharacterModel(appearance, { crude: CharacterModel.crude });
     this.x = x;
     this.z = z;
     this.model.root.position.set(x, 0, z);

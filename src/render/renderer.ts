@@ -6,7 +6,8 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { setMaxAnisotropy } from './textures';
 
-export type Quality = 'low' | 'medium' | 'high';
+/** 'ult' = AFK mode: half resolution, no effects, crude people, many more guests. */
+export type Quality = 'ult' | 'low' | 'medium' | 'high';
 
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
@@ -83,9 +84,9 @@ export class Renderer {
   setQuality(q: Quality): void {
     this.quality = q;
     const dpr = window.devicePixelRatio || 1;
-    const ratio = q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.5) : Math.min(dpr, 1);
+    const ratio = q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.5) : q === 'low' ? Math.min(dpr, 1) : 0.5;
     this.renderer.setPixelRatio(ratio);
-    const shadows = q !== 'low';
+    const shadows = q === 'medium' || q === 'high';
     this.renderer.shadowMap.enabled = shadows;
     this.sun.castShadow = shadows;
     const size = q === 'high' ? 2048 : 1024;
@@ -102,7 +103,7 @@ export class Renderer {
     this.composer = null;
     this.overlayPass = null;
     this.bloom = null;
-    if (q !== 'low') this.buildComposer();
+    if (q === 'medium' || q === 'high') this.buildComposer();
     this.resize();
     this.markShadowsDirty();
   }

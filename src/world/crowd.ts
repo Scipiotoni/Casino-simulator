@@ -96,7 +96,7 @@ export class Crowd {
   private spawn(doors: DoorSpot[], fx: number, fz: number): void {
     const row = this.nearestRow(fz);
     const look = Math.random() < 0.06 ? vipAppearance() : Math.random() < 0.18 ? touristAppearance() : randomCustomerAppearance();
-    const model = new CharacterModel(look, { castShadow: false });
+    const model = new CharacterModel(look, { castShadow: false, crude: CharacterModel.crude });
     let x: number;
     let z: number;
     let route: { x: number; z: number }[];

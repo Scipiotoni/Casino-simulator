@@ -904,7 +904,8 @@ export class Customer extends Walker implements SeatUser {
     // Littering while walking
     if (this.walking && this.inside) {
       const guard = w.items.litterGuardAt(this.x, this.z, this.floor);
-      const p = (0.003 + this.pendingTrash * 0.09) * (1 - guard * 0.9);
+      // Ult (AFK) crowds are 3× bigger: each guest drops a third as much.
+      const p = (0.003 + this.pendingTrash * 0.09) * (1 - guard * 0.9) * (this.model.crudeBody ? 0.33 : 1);
       if (Math.random() < p * dt * 4) {
         const tx = Math.floor(this.x);
         const tz = Math.floor(this.z);

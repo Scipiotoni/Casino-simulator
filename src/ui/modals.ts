@@ -751,13 +751,14 @@ export class Modals {
     body.appendChild(toggle('Lounge music', () => st.musicOn, (v) => (st.musicOn = v)));
     body.appendChild(toggle('Show FPS', () => st.showFps, (v) => (st.showFps = v)));
     const q = h('div', { class: 'seg' });
-    for (const [id, label] of [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
+    for (const [id, label] of [['ult', 'Ult (AFK)'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
       q.appendChild(h('button', {
         class: `seg-btn${st.quality === id ? ' on' : ''}`, text: label,
         onClick: () => { g.setQuality(id); q.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.textContent === label)); this.onSettingsChanged?.(); },
       }));
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Graphics' }), q));
+    body.appendChild(h('p', { class: 'muted small', text: 'Ult (AFK) is for leaving the game running: up to 600 guests (3× as many arrive, and far more than you have seats), everyone drawn as simple blocks, half resolution and no shadows or glow.' }));
     const cam = h('div', { class: 'seg' });
     for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person'], ['first', 'First person']] as const) {
       cam.appendChild(h('button', {
