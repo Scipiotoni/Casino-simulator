@@ -2,11 +2,12 @@ import * as THREE from 'three';
 import { Exterior, type LotLook } from './exterior';
 import { CENTER_X, DOOR_TILES, FACADE_Z } from './grid';
 import {
-  MIN_COLS, BLOCK_COLS, STREET_ROWS, type SlotRef, cityX, cityZ, fillerFor, globalToSlot, onRoadNetwork, slotAt, slotKey, slotToGlobal,
+  MIN_COLS, BLOCK_COLS, STREET_ROWS, type SlotRef, cityX, cityZ, fillerFor, globalToSlot, openGround, slotAt, slotKey, slotToGlobal,
 } from './city';
 import { CityView } from './cityView';
 import { Crowd, type DoorSpot } from './crowd';
 import { Police } from './police';
+import { Outskirts } from './outskirts';
 import { SIDEWALK_Z0 } from './grid';
 export { ROAD_MID } from './grid';
 
@@ -60,6 +61,8 @@ export class Street {
   readonly crowd = new Crowd();
   /** The city police (they come when you shoot people). */
   readonly police = new Police();
+  /** The desert, roads and mountains around the city. */
+  readonly outskirts = new Outskirts();
   private doors: DoorSpot[] = [];
   lots: StreetLot[] = [];
   activeId = 'me';
@@ -73,7 +76,7 @@ export class Street {
 
   constructor() {
     this.group.add(this.city.group);
-    this.city.group.add(this.crowd.group, this.police.group);
+    this.city.group.add(this.crowd.group, this.police.group, this.outskirts.group);
   }
 
   /**
@@ -251,14 +254,14 @@ export class Street {
   /** The player may stroll every sidewalk, cross any road and step into a lot's doorway. */
   isStreetWalkable(tx: number, tz: number): boolean {
     const g = this.worldToGlobal(tx + 0.5, tz + 0.5);
-    if (onRoadNetwork(g.x, g.z, this.cols)) return true;
+    if (openGround(g.x, g.z, this.cols)) return true;
     return this.doorAt(tx, tz) !== null;
   }
 
   /** Is this world point out on the roads and sidewalks (not inside any building)? */
   isOutdoors(x: number, z: number): boolean {
     const g = this.worldToGlobal(x, z);
-    return onRoadNetwork(g.x, g.z, this.cols);
+    return openGround(g.x, g.z, this.cols);
   }
 
   /** Build/refresh exteriors near the focus point; the active lot's shell hides while you're inside. */
@@ -269,6 +272,7 @@ export class Street {
     if (this.builtCols !== this.cols) {
       this.builtCols = this.cols;
       this.city.build(this.cols);
+      this.outskirts.build(this.cols);
     }
     const act = this.placeOf(this.activeId);
     // The city is drawn in the global frame: carry it into the active lot's frame.

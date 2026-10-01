@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CharacterModel } from '../entities/characterModel';
 import { defaultAppearance, SKIN_TONES, type Appearance } from '../entities/appearance';
 import { Car } from './cityView';
-import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, cityX, onRoadNetwork, streetZ } from './city';
+import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, cityX, openGround, streetZ } from './city';
 import { buildGun } from '../items/models/guns';
 import { gunDef } from '../game/guns';
 import { audio } from '../core/audio';
@@ -156,7 +156,7 @@ export class Police {
   }
 
   private out(x: number, z: number): boolean {
-    return onRoadNetwork(x, z, this.cols);
+    return openGround(x, z, this.cols);
   }
 
   /** Nothing but street between two points (buildings block the view and bullets). */

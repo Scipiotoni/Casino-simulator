@@ -24,14 +24,14 @@ export const ALLEY = 8;
 /** Distance between two streets (centre to centre). */
 export const ROW_GAP = 2 * (ROAD_MID - FACADE_Z) + 2 * MAX_DEPTH + ALLEY;
 /** Streets in the city (rows of lots). */
-export const STREET_ROWS = 3;
+export const STREET_ROWS = 4;
 /** The city is at least this many lots wide. */
-export const MIN_COLS = 12;
+export const MIN_COLS = 20;
 /** Half the road width (curb to centre line). */
 export const ROAD_HALF = ROAD_MID - (SIDEWALK_Z0 + 4);
 
-export const STREET_NAMES = ['Casino Strip', 'Palm Avenue', 'Downtown Boulevard'];
-export const STREET_BLURBS = ['Casinos & hotels', 'Houses', 'Shops & offices'];
+export const STREET_NAMES = ['Casino Strip', 'Palm Avenue', 'Downtown Boulevard', 'Sunset Drive'];
+export const STREET_BLURBS = ['Casinos & hotels', 'Houses', 'Shops & offices', 'Warehouses & nightlife'];
 const AVENUE_NAMES = ['1st Ave', '2nd Ave', '3rd Ave', '4th Ave', '5th Ave', '6th Ave', '7th Ave', '8th Ave', '9th Ave', '10th Ave', '11th Ave', '12th Ave'];
 
 export function avenueName(k: number): string {
@@ -152,6 +152,30 @@ export function onRoadNetwork(gx: number, gz: number, cols: number): boolean {
   return false;
 }
 
+/** How far the open desert reaches past the city edge before the mountains (metres). */
+export const WILDS = 280;
+
+/** Out past the city edge, in the open desert (not yet in the mountains). */
+export function inWilds(gx: number, gz: number, cols: number): boolean {
+  const [x0, x1] = cityX(cols);
+  const [z0, z1] = cityZ();
+  if (gx >= x0 && gx <= x1 && gz >= z0 && gz <= z1) return false;
+  const dx = Math.max(x0 - gx, 0, gx - x1);
+  const dz = Math.max(z0 - gz, 0, gz - z1);
+  return Math.hypot(dx, dz) < WILDS && !(wildsBlock?.(gx, gz) ?? false);
+}
+
+let wildsBlock: ((gx: number, gz: number) => boolean) | null = null;
+/** Rocks, cacti and landmarks out in the desert you can't walk or drive through. */
+export function setWildsObstacles(fn: ((gx: number, gz: number) => boolean) | null): void {
+  wildsBlock = fn;
+}
+
+/** Anywhere you can walk or drive outside: the streets, avenues and the desert around the city. */
+export function openGround(gx: number, gz: number, cols: number): boolean {
+  return onRoadNetwork(gx, gz, cols) || inWilds(gx, gz, cols);
+}
+
 /** Tiny deterministic hash → 0..1 for filler variety. */
 export function hash01(n: number): number {
   let x = (n | 0) ^ 0x9e3779b9;
@@ -169,6 +193,7 @@ const FILLERS_BY_ROW: FillerKind[][] = [
   ['shops', 'diner', 'apartments', 'parking', 'cinema', 'hotelOld', 'office', 'park'],
   ['villa', 'cottage', 'brownstone', 'apartments', 'park', 'villa', 'cottage', 'church'],
   ['office', 'tower', 'tower', 'warehouse', 'shops', 'gasstation', 'apartments', 'parking', 'office'],
+  ['warehouse', 'cinema', 'diner', 'warehouse', 'gasstation', 'parking', 'shops', 'hotelOld', 'park'],
 ];
 
 const FILLER_NAMES: Record<FillerKind, string[]> = {

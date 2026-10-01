@@ -25,7 +25,7 @@ export class Renderer {
   private height = 1;
 
   constructor(readonly container: HTMLElement, quality: Quality) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: false, logarithmicDepthBuffer: true });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.45;
@@ -48,7 +48,9 @@ export class Renderer {
     });
     pmrem.dispose();
 
-    this.camera = new THREE.PerspectiveCamera(38, 1, 0.5, 200);
+    this.camera = new THREE.PerspectiveCamera(38, 1, 0.5, 2600);
+    // Distant desert and mountains fade into the sky.
+    this.scene.fog = new THREE.Fog(0x1b1430, 320, 2300);
 
     this.hemi = new THREE.HemisphereLight(0xfff1dd, 0x4a2a6a, 0.8);
     this.scene.add(this.hemi);
@@ -128,12 +130,36 @@ export class Renderer {
     if (this.bloom) this.bloom.strength = strength;
   }
 
-  /** 0 = daytime, 1 = late night: dimmer fill light and stronger neon glow. */
-  setMood(night: number): void {
-    this.hemi.intensity = 0.8 - night * 0.22;
-    this.sun.intensity = 1.25 - night * 0.35;
-    this.renderer.toneMappingExposure = 1.45 - night * 0.08;
+  /** Direction towards the sun (or moon) for the shadow-casting light. */
+  private sunDir = new THREE.Vector3(-14, 26, 10).normalize();
+  private tmpC = new THREE.Color();
+
+  /**
+   * Light the world from the sky (sun or moon, sky fill, fog). `indoor` (0..1) blends towards
+   * the casino's own warm lighting, which doesn't care what time it is outside.
+   */
+  applySky(L: { dir: THREE.Vector3; sunColor: THREE.Color; sunIntensity: number; hemiSky: THREE.Color; hemiGround: THREE.Color; hemiIntensity: number; fog: THREE.Color; fogNear: number; fogFar: number; exposure: number; night: number }, indoor: number): void {
+    const night = L.night;
+    const c = this.tmpC;
+    this.hemi.color.copy(L.hemiSky).lerp(c.setHex(0xfff1dd), indoor);
+    this.hemi.groundColor.copy(L.hemiGround).lerp(c.setHex(0x4a2a6a), indoor);
+    this.hemi.intensity = THREE.MathUtils.lerp(L.hemiIntensity, 0.8 - night * 0.22, indoor);
+    this.sun.color.copy(L.sunColor).lerp(c.setHex(0xfff0dc), indoor);
+    this.sun.intensity = THREE.MathUtils.lerp(L.sunIntensity, 1.25 - night * 0.35, indoor);
+    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(L.exposure, 1.45 - night * 0.08, indoor);
     if (this.bloom) this.bloom.strength = 0.5 + night * 0.3;
+    const fog = this.scene.fog as THREE.Fog;
+    fog.color.copy(L.fog);
+    fog.near = L.fogNear;
+    fog.far = L.fogFar;
+    const want = indoor > 0.5 ? c.setRGB(-14, 26, 10) : c.setRGB(L.dir.x, L.dir.y, L.dir.z);
+    const d = new THREE.Vector3(want.r, want.g, want.b).normalize();
+    if (d.distanceToSquared(this.sunDir) > 0.0004) {
+      this.sunDir.copy(d);
+      const t = this.sun.target.position;
+      this.sun.position.copy(t).addScaledVector(d, 32);
+      this.markShadowsDirty();
+    }
   }
 
   resize(): void {
@@ -163,8 +189,8 @@ export class Renderer {
     const cx = (minX + maxX) / 2;
     const cz = (minZ + maxZ) / 2;
     const half = Math.max(maxX - minX, maxZ - minZ) / 2 + 4;
-    this.sun.position.set(cx - 14, 26, cz + 10);
     this.sun.target.position.set(cx, 0, cz);
+    this.sun.position.set(cx, 0, cz).addScaledVector(this.sunDir, 32);
     const cam = this.sun.shadow.camera;
     cam.left = -half;
     cam.right = half;

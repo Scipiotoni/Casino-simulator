@@ -41,9 +41,77 @@ export const WALL_STYLES: WallStyle[] = [
   { id: 'hedge', name: 'Garden Hedge', price: 45, color: 0xffffff, trim: 0x2e5a22, rough: 1, pattern: 'hedge', swatch: '#3f7a2e' },
 ];
 
-/** A wall's thickness, and how tall built walls stand (a little taller than the building's own). */
+/** A wall's thickness, and how tall built walls stand (up to the ceiling). */
 const T = 0.24;
-export const BUILT_WALL_H = WALL_H + 0.5;
+export const BUILT_WALL_H = WALL_H;
+
+/**
+ * The cutaway: walls standing between the camera and what you're looking at drop down to a
+ * stub (like the building's outer walls do), the rest stand to the ceiling. Shared by every
+ * floor's walls; the game sets it each frame.
+ */
+export const WALL_CUT = {
+  /** Point the camera looks at (world xz). */
+  focus: new THREE.Vector2(),
+  /** Horizontal direction from the focus towards the camera (unit). */
+  toCam: new THREE.Vector2(0, 1),
+  /** 0 = every wall full height (first person), 1 = cut the ones in front. */
+  on: 0,
+  /** Height the cut walls drop to. */
+  low: 0.42,
+  /** Also cut every wall that faces the camera, wherever it is (the top-down view). */
+  face: 0,
+};
+const cutUniforms = {
+  uCutFocus: { value: WALL_CUT.focus },
+  uCutDir: { value: WALL_CUT.toCam },
+  uCutOn: { value: 0 },
+  uCutLow: { value: 0.42 },
+  uCutFace: { value: 0 },
+};
+/** Copy WALL_CUT into the shader uniforms (call once per frame). */
+export function syncWallCut(): void {
+  cutUniforms.uCutOn.value = WALL_CUT.on;
+  cutUniforms.uCutLow.value = WALL_CUT.low;
+  cutUniforms.uCutFace.value = WALL_CUT.face;
+}
+
+const cutCache = new Map<string, THREE.Material>();
+/**
+ * A copy of a wall material whose vertices fold down when the wall is in front of the camera.
+ * `lift` raises trims a hair above the folded wall top so they don't flicker against it.
+ */
+function cutaway(m: THREE.Material, lift = 0): THREE.Material {
+  const key = `${m.uuid}:${lift}`;
+  const hit = cutCache.get(key);
+  if (hit) return hit;
+  const c = m.clone();
+  c.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, cutUniforms);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec3 aCenter;
+        uniform vec2 uCutFocus;
+        uniform vec2 uCutDir;
+        uniform float uCutOn;
+        uniform float uCutLow;
+        uniform float uCutFace;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        {
+          vec2 cw = (modelMatrix * vec4(aCenter.x, 0.0, aCenter.y, 1.0)).xz;
+          float front = dot(cw - uCutFocus, uCutDir);
+          // Which way the wall runs: 1 = along x (faces ±z), 2 = along z (faces ±x), 0 = a post.
+          float fx = abs(uCutDir.y);
+          float fz = abs(uCutDir.x);
+          float facing = aCenter.z < 0.5 ? min(fx, fz) : aCenter.z < 1.5 ? fx : fz;
+          float k = uCutOn * max(smoothstep(0.2, 1.4, front), uCutFace * smoothstep(0.5, 0.72, facing));
+          transformed.y = mix(transformed.y, transformed.y > uCutLow ? uCutLow + ${lift.toFixed(3)} : transformed.y, k);
+        }`);
+  };
+  c.customProgramCacheKey = () => `wallcut${lift}`;
+  cutCache.set(key, c);
+  return c;
+}
 
 const texCache = new Map<string, THREE.Texture>();
 const neonMats = new Map<number, THREE.Material>();
@@ -194,6 +262,12 @@ class BoxBatch {
   nor: number[] = [];
   uv: number[] = [];
   idx: number[] = [];
+  cen: number[] = [];
+  /** Tile the next boxes belong to (decides whether they're cut away). */
+  cx = 0;
+  cz = 0;
+  /** 1 = runs along x, 2 = along z, 0 = a corner post. */
+  dir = 0;
 
   add(cx: number, cy: number, cz: number, sx: number, sy: number, sz: number, uvScale = 1.25): void {
     const x0 = cx - sx / 2, x1 = cx + sx / 2;
@@ -212,6 +286,7 @@ class BoxBatch {
       const b = this.pos.length / 3;
       for (const [px, py, pz] of cs) {
         this.pos.push(px, py, pz);
+        this.cen.push(this.cx, this.cz, this.dir);
         this.nor.push(n[0], n[1], n[2]);
         const u = n[0] !== 0 ? pz : n[2] !== 0 ? px : px;
         const v = n[1] !== 0 ? pz : py;
@@ -227,6 +302,7 @@ class BoxBatch {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setAttribute('aCenter', new THREE.Float32BufferAttribute(this.cen, 3));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
     return g;
@@ -289,10 +365,23 @@ export class WallRenderer {
         const body = batch(bodies, s);
         const trim = batch(trims, s);
         const neon = st.neon ? batch(neons, s) : null;
+        const runX = lone || ((e || w) && !(so || n));
+        const runZ = !lone && (so || n) && !(e || w);
+        for (const b of [body, trim, neon]) {
+          if (!b) continue;
+          b.cx = cx;
+          b.cz = cz;
+          b.dir = runX ? 1 : runZ ? 2 : 0;
+        }
         const plain = st.glass || st.pattern === 'hedge';
         // Grow a piece sideways (away from the wall face) only, never along its length.
         const proud = (sx: number, sz: number, d: number): [number, number] => sx > sz ? [sx, sz + d * 2] : sz > sx ? [sx + d * 2, sz] : [sx + d * 2, sz + d * 2];
+        const tileDir = runX ? 1 : runZ ? 2 : 0;
+        const setDir = (d: number) => {
+          for (const bb of [body, trim, neon]) if (bb) bb.dir = d;
+        };
         for (const [px, pz, sx, sz] of pieces) {
+          setDir(sx > sz + 0.01 ? 1 : sz > sx + 0.01 ? 2 : tileDir);
           if (st.glass) {
             // Glass pane in a metal frame: rails top and bottom.
             body.add(px, H / 2, pz, sx, H - 0.24, sz);
@@ -301,7 +390,7 @@ export class WallRenderer {
             trim.add(px, H - 0.06, pz, bx, 0.12, bz);
             continue;
           }
-          body.add(px, H / 2, pz, sx, H, sz);
+          body.add(px, (H - 0.012) / 2, pz, sx, H - 0.012, sz);
           // Skirting board
           const [kx, kz] = proud(sx, sz, 0.025);
           trim.add(px, 0.09, pz, kx, 0.18, kz);
@@ -321,6 +410,7 @@ export class WallRenderer {
             neon.add(px, 0.2, pz, nx, 0.03, nz);
           }
         }
+        setDir(tileDir);
         // Pilasters at the ends and corners of every run.
         const count = (e ? 1 : 0) + (w ? 1 : 0) + (so ? 1 : 0) + (n ? 1 : 0);
         const corner = (e || w) && (so || n);
@@ -342,17 +432,17 @@ export class WallRenderer {
     for (const [s, b] of bodies) {
       const st = WALL_STYLES[s] ?? WALL_STYLES[0];
       const m = styleMats(st);
-      const add = (geo: THREE.BufferGeometry | null, material: THREE.Material, shadow: boolean) => {
+      const add = (geo: THREE.BufferGeometry | null, material: THREE.Material, shadow: boolean, lift = 0) => {
         if (!geo) return;
-        const mesh = new THREE.Mesh(geo, material);
+        const mesh = new THREE.Mesh(geo, cutaway(material, lift));
         mesh.castShadow = shadow;
         mesh.receiveShadow = !st.glass;
         if (st.glass) mesh.renderOrder = 3;
         this.group.add(mesh);
       };
       add(b.build(), m.body, !st.glass);
-      add(trims.get(s)?.build() ?? null, m.trim, true);
-      if (m.neon) add(neons.get(s)?.build() ?? null, m.neon, false);
+      add(trims.get(s)?.build() ?? null, m.trim, true, 0.012);
+      if (m.neon) add(neons.get(s)?.build() ?? null, m.neon, false, 0.02);
     }
   }
 

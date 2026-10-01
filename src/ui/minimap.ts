@@ -3,7 +3,8 @@ import { h } from './dom';
 import { audio } from '../core/audio';
 import { CENTER_X, DEPTH_STEP, DOOR_TILES, FACADE_Z, ROAD_MID, SIDEWALK_Z0, START_DEPTH, WIDTHS } from '../world/grid';
 import type { StreetLot } from '../world/street';
-import { AVE_WALK, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, avenueX, blocksFor, streetZ } from '../world/city';
+import { AVE_WALK, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, WILDS, avenueX, blocksFor, streetZ } from '../world/city';
+import { RING } from '../world/outskirts';
 
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 
@@ -107,7 +108,7 @@ export class Minimap {
   private zoomAt(f: number, px?: number, py?: number): void {
     const v = this.view;
     const before = px !== undefined && py !== undefined ? { x: v.x0 + px / v.s, z: v.z0 + py / v.s } : null;
-    if (this.big) this.zoomBig = Math.max(1, Math.min(14, this.zoomBig * f));
+    if (this.big) this.zoomBig = Math.max(0.45, Math.min(14, this.zoomBig * f));
     else this.zoomSmall = Math.max(0.35, Math.min(5, this.zoomSmall * f));
     if (this.big && before && px !== undefined && py !== undefined) {
       // Work out the new scale and shift the centre so `before` stays under the cursor.
@@ -226,8 +227,41 @@ export class Minimap {
     const X = (x: number) => (x - x0) * s;
     const Z = (z: number) => (z - z0) * s;
 
-    c.fillStyle = '#1b1726';
+    // Mountains, the open desert around town (rounded at the corners), then the city.
+    c.fillStyle = '#3b2a22';
     c.fillRect(0, 0, W, H);
+    c.fillStyle = '#7a5e3c';
+    c.beginPath();
+    c.roundRect(X(bd.x0 - WILDS), Z(bd.z0 - WILDS), (bd.x1 - bd.x0 + WILDS * 2) * s, (bd.z1 - bd.z0 + WILDS * 2) * s, WILDS * s);
+    c.fill();
+    // Ring road, the roads out of town and the highway to the overlook
+    c.fillStyle = '#34313d';
+    const RW = 11;
+    const rx0 = bd.x0 - RING;
+    const rx1 = bd.x1 + RING;
+    const rz0 = bd.z0 - RING;
+    const rz1 = bd.z1 + RING;
+    c.fillRect(X(rx0 - RW / 2), Z(rz0 - RW / 2), (rx1 - rx0 + RW) * s, RW * s);
+    c.fillRect(X(rx0 - RW / 2), Z(rz1 - RW / 2), (rx1 - rx0 + RW) * s, RW * s);
+    c.fillRect(X(rx0 - RW / 2), Z(rz0), RW * s, (rz1 - rz0) * s);
+    c.fillRect(X(rx1 - RW / 2), Z(rz0), RW * s, (rz1 - rz0) * s);
+    for (let r = 0; r < STREET_ROWS; r++) c.fillRect(X(rx0), Z(streetZ(r) - ROAD_HALF), (rx1 - rx0) * s, ROAD_HALF * 2 * s);
+    for (let k = 0; k <= blocksFor(st.cols); k++) {
+      const [a, b] = avenueX(k);
+      c.fillRect(X((a + b) / 2 - 4.5), Z(rz0), 9 * s, (rz1 - rz0) * s);
+    }
+    const mz = (bd.z0 + bd.z1) / 2;
+    c.fillRect(X(rx1), Z(mz - RW / 2), (bd.x1 + WILDS - 32 - rx1) * s, RW * s);
+    c.beginPath();
+    c.arc(X(bd.x1 + WILDS - 32), Z(mz), 28 * s, 0, Math.PI * 2);
+    c.fill();
+    // The oasis
+    c.fillStyle = '#2aa6c4';
+    c.beginPath();
+    c.arc(X((bd.x0 + bd.x1) / 2 - 60), Z(bd.z0 - RING - 120), 22 * s, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = '#1b1726';
+    c.fillRect(X(bd.x0), Z(bd.z0), (bd.x1 - bd.x0) * s, (bd.z1 - bd.z0) * s);
     // Sidewalks, then roads, of every street and avenue.
     const blocks = blocksFor(st.cols);
     for (const pass of [0, 1]) {

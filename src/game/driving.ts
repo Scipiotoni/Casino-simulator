@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Game } from './game';
 import { type CarDef, type CarMods, CARS, STOLEN_SPECS, buildCar, carDef, defaultMods, sanitizeMods, tunedSpecs } from '../world/vehicles';
 import type { Car } from '../world/cityView';
-import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, onRoadNetwork, streetZ } from '../world/city';
+import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from '../world/city';
 import { HEAT } from '../world/police';
 import { audio } from '../core/audio';
 import { clamp, damp, formatMoney } from '../core/math';
@@ -105,7 +105,7 @@ export class Driving {
     for (const [a, b] of [[0.5, 0.5], [0.5, -0.5], [-0.5, 0.5], [-0.5, -0.5], [0, 0]]) {
       const px = x + fx * len * a + rx * wid * b;
       const pz = z + fz * len * a + rz * wid * b;
-      if (!onRoadNetwork(px, pz, this.cols)) return false;
+      if (!openGround(px, pz, this.cols)) return false;
     }
     return true;
   }
@@ -236,7 +236,7 @@ export class Driving {
     for (const [dx, dz, d] of spots) {
       const x = v.x + dx * d;
       const z = v.z + dz * d;
-      if (onRoadNetwork(x, z, this.cols)) {
+      if (openGround(x, z, this.cols)) {
         at = { x, z };
         break;
       }

@@ -13,6 +13,8 @@ import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
 import { MAX_DEPTH_STEPS } from '../world/city';
+import { Sky } from '../world/sky';
+import { WALL_CUT, syncWallCut } from '../world/walls';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
 import {
@@ -322,7 +324,9 @@ export class Game implements World, ItemHost {
   private camFocus: THREE.Vector3 | null = null;
   private hoverT = 0;
   private hoverUid = -1;
-  private nightT = 0;
+  private indoorT = 1;
+  /** The sky (and the light it casts), driven by the clock. */
+  readonly sky = new Sky();
   /** Is the player inside the loaded casino (not out on the street)? */
   inside = true;
   private transitionT = 0;
@@ -364,7 +368,7 @@ export class Game implements World, ItemHost {
       audio.playAt('honk', w.x, w.z, 0.8);
     };
     this.floorGroup.add(this.levels[0].floor.group);
-    scene.add(this.floorGroup, this.building.group, this.street.group, this.items.group, this.trash.group, this.effects.group, this.player.model.root);
+    scene.add(this.sky.group, this.floorGroup, this.building.group, this.street.group, this.items.group, this.trash.group, this.effects.group, this.player.model.root);
     this.effects.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     this.refreshStreet();
     this.resetWorld();
@@ -3772,8 +3776,17 @@ export class Game implements World, ItemHost {
     const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
     this.cam.update(dt, fx, fz);
     this.building.update(dt, this.cam.yaw, this.cam.low, this.cam.mode === 'first' && !this.tableFocus);
-    // Built walls stand full height up close, and are cut down in the top-down view.
-    const wallH = this.cam.mode === 'top' || this.build.active ? 0.42 : 1;
+    // Built walls stand to the ceiling; the ones between the camera and what you're looking
+    // at drop down (never through your own eyes). Building mode cuts them all down.
+    const wallH = this.build.active ? 0.42 : 1;
+    const camP = this.renderer.camera.position;
+    WALL_CUT.on = this.cam.mode === 'first' && !this.tableFocus ? 0 : this.build.active ? 0 : 1;
+    WALL_CUT.face = this.cam.mode === 'top' ? 1 : 0;
+    WALL_CUT.focus.set(fx, fz);
+    WALL_CUT.toCam.set(camP.x - fx, camP.z - fz);
+    if (WALL_CUT.toCam.lengthSq() < 1e-4) WALL_CUT.toCam.set(Math.sin(this.cam.yaw), Math.cos(this.cam.yaw));
+    WALL_CUT.toCam.normalize();
+    syncWallCut();
     for (const l of this.levels) {
       l.floor.walls.heightTarget = wallH;
       l.floor.walls.update(dt);
@@ -3783,10 +3796,13 @@ export class Game implements World, ItemHost {
     this.street.city.player.z = pg.z;
     this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
     // Neon pops a little more after dark
-    const hour = this.clockMinutes / 60;
-    const night = hour >= 20 || hour < 5 ? 1 : hour >= 17 ? (hour - 17) / 3 : hour < 8 ? 1 - (hour - 5) / 3 : 0;
-    this.nightT = damp(this.nightT, this.state === 'playing' ? night : 0.6, 0.5, dt);
-    this.renderer.setMood(this.nightT);
+    // The sky follows the clock; indoors the casino keeps its own lighting.
+    this.sky.set(this.state === 'playing' ? this.clockMinutes : 19.8 * 60, dt);
+    this.sky.follow(this.renderer.camera);
+    this.street.outskirts.update(dt, this.sky.light.night);
+    const indoor = this.inside && this.cam.mode !== 'top' ? 1 : this.inside ? 0.7 : 0;
+    this.indoorT = damp(this.indoorT, indoor, 3, dt);
+    this.renderer.applySky(this.sky.light, this.indoorT);
     if (!render) return;
     const { w, h } = this.renderer.size;
     this.floaters.update(dt, this.renderer.camera, w, h);

@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { mat, gold } from '../render/materials';
-import { lotTexture, wallTexture } from '../render/textures';
-import { CENTER_X, ROAD_MID, type Grid } from './grid';
+import { canvasTexture, makeCanvas, wallTexture } from '../render/textures';
+import { CENTER_X, type Grid } from './grid';
 
-export const WALL_H = 2.5;
+export const WALL_H = 3;
 const WALL_T = 0.2;
 const CUT_H = 0.28;
 
@@ -36,8 +36,6 @@ interface WallSide {
   cut: number; // 0 = full height, 1 = cut away
 }
 
-/** Size of the ground plane around the active lot (it covers the whole city). */
-const STREET_LEN = 2400;
 /** How far the street drops per floor you go up (matches the exterior storeys). */
 export const STORY_DROP = 3;
 
@@ -68,6 +66,7 @@ export class Building {
   }
 
   private applyGarden(): void {
+    if (this.ceiling) this.ceiling.visible = !this.garden && this.ceilingOn;
     for (const s of this.sides) {
       for (const w of s.walls) w.material = this.garden ? this.hedgeMat : this.wallMat;
       for (const t of s.trims) t.visible = !this.garden;
@@ -75,6 +74,9 @@ export class Building {
     }
   }
   look: CasinoLook;
+  /** The ceiling over the floor, seen from below through your own eyes. */
+  private ceiling: THREE.Mesh | null = null;
+  private ceilingOn = false;
 
   constructor(private grid: Grid, look: CasinoLook) {
     this.look = { ...look };
@@ -83,20 +85,7 @@ export class Building {
     this.group.add(this.interior, this.street, this.drop);
     this.wallMat = new THREE.MeshStandardMaterial({ color: look.wallColor, map: wallTexture(), roughness: 0.8 });
     this.trimMat = new THREE.MeshStandardMaterial({ color: look.trimColor, emissive: look.trimColor, emissiveIntensity: 1.7 });
-    this.buildStreet();
     this.rebuild();
-  }
-
-  /** Bare ground under the whole city (the roads themselves are drawn by the city view). */
-  private buildStreet(): void {
-    const lot = lotTexture().clone();
-    lot.repeat.set(STREET_LEN / 2, STREET_LEN / 2);
-    lot.needsUpdate = true;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(STREET_LEN, STREET_LEN), mat(0xffffff, { map: lot, rough: 1 }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(CENTER_X, -0.03, ROAD_MID);
-    ground.receiveShadow = true;
-    this.street.add(ground);
   }
 
   setLook(look: Partial<CasinoLook>): void {
@@ -164,6 +153,17 @@ export class Building {
       south.extras.push(m);
     }
     this.upperFill = [glass, sill, head];
+
+    // Ceiling with light panels: only from your own eyes (it faces down, and hides otherwise).
+    const ct = ceilingTexture().clone();
+    ct.repeat.set((x1 - x0) / 4, (z1 - z0) / 4);
+    ct.needsUpdate = true;
+    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), new THREE.MeshStandardMaterial({ map: ct, emissive: 0xffffff, emissiveMap: ct, emissiveIntensity: 0.55, roughness: 0.85 }));
+    ceil.rotation.x = Math.PI / 2;
+    ceil.position.set((x0 + x1) / 2, WALL_H - 0.01, (z0 + z1) / 2);
+    ceil.visible = this.ceilingOn && !this.garden;
+    this.dynamic.add(ceil);
+    this.ceiling = ceil;
 
     // Outer walls running down to the street, seen past the folded walls upstairs.
     for (const c of [...this.drop.children]) {
@@ -233,6 +233,10 @@ export class Building {
 
   /** Walls between the camera and the floor fold down so the player is never hidden. */
   update(dt: number, camYaw: number, camPitchLow = false, full = false): void {
+    if (full !== this.ceilingOn) {
+      this.ceilingOn = full;
+      if (this.ceiling) this.ceiling.visible = full && !this.garden;
+    }
     const cx = Math.sin(camYaw);
     const cz = Math.cos(camYaw);
     for (const s of this.sides) {
@@ -251,4 +255,43 @@ export class Building {
       }
     }
   }
+}
+
+let ceilTex: THREE.CanvasTexture | null = null;
+/** 4×4 m of ceiling: acoustic tiles with a glowing light panel and a gold-rimmed downlight. */
+function ceilingTexture(): THREE.CanvasTexture {
+  if (ceilTex) return ceilTex;
+  const { canvas, ctx } = makeCanvas(256, 256);
+  // The colour channel doubles as the emissive map: tiles stay dark, the lights glow.
+  ctx.fillStyle = '#2a2430';
+  ctx.fillRect(0, 0, 256, 256);
+  ctx.strokeStyle = '#1a161e';
+  ctx.lineWidth = 3;
+  for (let i = 0; i <= 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * 64, 0);
+    ctx.lineTo(i * 64, 256);
+    ctx.moveTo(0, i * 64);
+    ctx.lineTo(256, i * 64);
+    ctx.stroke();
+  }
+  const g = ctx.createLinearGradient(64, 64, 192, 192);
+  g.addColorStop(0, '#fff3dc');
+  g.addColorStop(1, '#ffe0b0');
+  ctx.fillStyle = '#b8902a';
+  ctx.fillRect(60, 60, 136, 136);
+  ctx.fillStyle = g;
+  ctx.fillRect(66, 66, 124, 124);
+  for (const [x, y] of [[16, 16], [240, 16], [16, 240], [240, 240]]) {
+    ctx.fillStyle = '#b8902a';
+    ctx.beginPath();
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff6e0';
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ceilTex = canvasTexture(canvas, true);
+  return ceilTex;
 }
