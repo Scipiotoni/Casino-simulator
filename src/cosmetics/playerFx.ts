@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { CharacterModel } from '../entities/characterModel';
 import { mat, glow, gold } from '../render/materials';
 import { disposeTree } from '../items/models/common';
+import { softDotTexture } from '../render/textures';
 
 const PIPS: Record<number, [number, number][]> = {
   1: [[0, 0]],
@@ -74,27 +75,35 @@ function makePup(golden: boolean): THREE.Group {
 
 function makeCrown(): THREE.Group {
   const g = new THREE.Group();
-  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.14, 0.08, 16, 1, true), gold());
+  const shiny = new THREE.MeshStandardMaterial({ color: 0xffd24a, metalness: 1, roughness: 0.18, emissive: 0x8a5a00, emissiveIntensity: 0.9 });
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.18, 0.12, 20, 1, true), shiny);
   band.material.side = THREE.DoubleSide;
   g.add(band);
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 6), gold());
-    spike.position.set(Math.sin(a) * 0.14, 0.08, Math.cos(a) * 0.14);
-    const gem = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 6), glow([0xff3fa4, 0x2fe6ff, 0x39ff88][i % 3], 1.6));
-    gem.position.set(Math.sin(a) * 0.15, 0.005, Math.cos(a) * 0.15);
-    g.add(spike, gem);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.2, 6), shiny);
+    spike.position.set(Math.sin(a) * 0.19, 0.15, Math.cos(a) * 0.19);
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 6), shiny);
+    ball.position.set(Math.sin(a) * 0.19, 0.26, Math.cos(a) * 0.19);
+    const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.035), glow([0xff3fa4, 0x2fe6ff, 0x39ff88, 0xc8102e][i % 4], 2.8));
+    gem.position.set(Math.sin(a) * 0.205, 0.0, Math.cos(a) * 0.205);
+    g.add(spike, ball, gem);
   }
+  // A soft golden glow so it reads from across the room.
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: softDotTexture(), color: 0xffd24a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.scale.set(0.9, 0.6, 1);
+  halo.position.y = 0.12;
+  g.add(halo);
   return g;
 }
 
 function makeSparkles(n: number): THREE.Points {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
-  const m = new THREE.PointsMaterial({ color: 0xffe27a, size: 0.07, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+  const m = new THREE.PointsMaterial({ color: 0xffe27a, size: 0.14, map: softDotTexture(), transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
   const p = new THREE.Points(geo, m);
   p.frustumCulled = false;
-  p.userData.seed = Array.from({ length: n }, () => [Math.random() * Math.PI * 2, 0.3 + Math.random() * 0.35, Math.random() * 1.8, 0.6 + Math.random()]);
+  p.userData.seed = Array.from({ length: n }, () => [Math.random() * Math.PI * 2, 0.35 + Math.random() * 0.6, Math.random() * 2.4, 0.6 + Math.random()]);
   return p;
 }
 
@@ -134,22 +143,32 @@ export class PlayerFx {
     if (ids.includes('crown')) {
       const c = makeCrown();
       c.position.y = 0.46;
+      c.name = 'crown';
       this.headGroup.add(c);
     }
     if (ids.includes('halo')) {
-      const halo = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.018, 8, 32), glow(0xfff4d6, 2.4));
-      halo.rotation.x = Math.PI / 2;
-      halo.position.y = ids.includes('crown') ? 0.66 : 0.56;
+      const halo = new THREE.Group();
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.27, 0.04, 10, 40), glow(0xfff4d6, 3.6));
+      ring.rotation.x = Math.PI / 2;
+      const shine = new THREE.Sprite(new THREE.SpriteMaterial({ map: softDotTexture(), color: 0xfff1b8, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false }));
+      shine.scale.set(1.1, 0.5, 1);
+      halo.add(ring, shine);
+      halo.position.y = ids.includes('crown') ? 0.82 : 0.6;
       halo.name = 'halo';
       this.headGroup.add(halo);
     }
     if (ids.includes('sparkle')) {
-      this.sparkles = makeSparkles(46);
+      this.sparkles = makeSparkles(130);
       this.group.add(this.sparkles);
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.9, 32), new THREE.MeshBasicMaterial({ map: softDotTexture(), color: 0xffd24a, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.y = 0.03;
+      disc.name = 'glowdisc';
+      this.group.add(disc);
     }
     if (ids.includes('dice')) {
       for (let i = 0; i < 2; i++) {
-        const d = makeDie(0.16);
+        const d = makeDie(0.3);
         this.dice.push(d);
         this.group.add(d);
       }
@@ -158,6 +177,7 @@ export class PlayerFx {
     if (pupKind) {
       // The pup lives in world space (it follows rather than being glued to you).
       this.pup = makePup(pupKind === 'gold');
+      this.pup.scale.setScalar(1.7);
       this.model.root.parent?.add(this.pup);
       this.pupPos.copy(this.model.root.position);
     }
@@ -172,7 +192,7 @@ export class PlayerFx {
       const pos = this.sparkles.geometry.getAttribute('position') as THREE.BufferAttribute;
       const seeds = this.sparkles.userData.seed as number[][];
       seeds.forEach(([a, r, h, sp], i) => {
-        const y = (h + t * 0.5 * sp) % 1.9;
+        const y = (h + t * 0.5 * sp) % 2.4;
         const ang = a + t * sp * 1.4;
         pos.setXYZ(i, Math.sin(ang) * r, y, Math.cos(ang) * r);
       });
@@ -181,11 +201,18 @@ export class PlayerFx {
     }
     this.dice.forEach((d, i) => {
       const a = t * 1.6 + i * Math.PI;
-      d.position.set(Math.sin(a) * 0.75, 1.05 + Math.sin(t * 2 + i) * 0.12, Math.cos(a) * 0.75);
+      d.position.set(Math.sin(a) * 1.0, 1.25 + Math.sin(t * 2 + i) * 0.15, Math.cos(a) * 1.0);
       d.rotation.set(t * 1.3 + i, t * 1.7, t * 0.9);
     });
     const halo = this.headGroup.getObjectByName('halo');
-    if (halo) halo.position.y = (this.key.includes('crown') ? 0.66 : 0.56) + Math.sin(t * 2.5) * 0.02;
+    if (halo) {
+      halo.position.y = (this.key.includes('crown') ? 0.82 : 0.6) + Math.sin(t * 2.5) * 0.03;
+      halo.rotation.y = t * 0.8;
+    }
+    const crown = this.headGroup.getObjectByName('crown');
+    if (crown) crown.rotation.y = t * 0.6;
+    const disc = this.group.getObjectByName('glowdisc') as THREE.Mesh | undefined;
+    if (disc) (disc.material as THREE.MeshBasicMaterial).opacity = 0.4 + Math.sin(t * 3) * 0.15;
     if (this.pup) {
       if (!this.pup.parent && this.model.root.parent) this.model.root.parent.add(this.pup);
       this.pup.visible = visible && this.model.root.visible;

@@ -36,6 +36,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 
 **The city**
 - A whole city grid: three streets (the **Casino Strip**, **Palm Avenue** for houses and **Downtown Boulevard**) crossed by avenues every four lots, with crosswalks, working traffic lights, street-name signs, lamps, trees, hydrants and **cars** that drive the roads, stop at red lights and honk if you stand in their lane. Lots are further apart and you walk faster outdoors.
+- **The city is busy.** Passers-by stroll every sidewalk, cross at the crosswalks and walk in and out of casinos, hotels, the gun shop and the apartments, most of all the casinos and hotels. Your casino and hotel are full of guests the moment you walk back in, even after time away.
 - Every unused lot holds a **filler building** (apartments, glass towers, diners, shops, motels, brownstones, villas, a chapel, a cinema, a gas station, parks and parking lots). When a player needs the space (a new casino, a hotel building or a house), the filler makes way for it.
 - Lots now go up to 68 tiles deep (the next street's buildings start behind them); old saves deeper than that are trimmed, with anything that no longer fits refunded.
 - A live **city map** (bottom right, `M` to enlarge) shows every building and player. Click a sidewalk or road to teleport there, or a building to land at its front door.
@@ -49,7 +50,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 
 **Multiplayer**
 - Everyone who opens the game (the public site, or the shared Claude artifact) builds a casino on the same street. You see each other walking around live, with name tags, and you can walk into any published casino and play its games. Losses and wins at another player's tables are settled into their bank through a shared ledger, even if they're offline.
-- Owners can **blacklist** a player for 10 minutes: they're walked out and can't come back in until it ends, and there's a 30-minute cooldown before you can blacklist them again.
+- **Blacklist** anyone, any time, for no reason at all: from **Menu → Players & blacklist** (everyone online plus every casino owner on the street) or by clicking a player. Pick 5 min, 15 min, 30 min, 1 h or 4 h, change it, or lift it early. A blacklisted player is walked out of your casino, hotel and house and can't get back in until it runs out.
 
 **Hotel and rebirths**
 - From casino level 6, open a **hotel** next door: a second, completely separate tycoon with its own bank, level, goals, staff and floor plan. It starts as an empty tower with $12,000 of its own. Walk in through its doors and build it like the casino, then expand it wider, deeper and taller.
@@ -76,7 +77,7 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - Over 100 new decorations: statues, a grand piano, a T-Rex skeleton, a classic car, a jade dragon, neon flamingos, a disco ball, a koi pond and much more for every business; lobby touches for the hotel; garden pieces (flower beds, tiki torches, a gazebo, a fire pit); and house furniture and toys (sofas, beds, a pool table, a home cinema, a gaming setup, a hot tub).
 
 **Luxury shop**
-- Spend your profits on very expensive, completely useless things: a solid-gold crown, a neon halo, a sparkle aura, orbiting lucky dice, a casino pup and a golden pup for your character; searchlights, rainbow neon, nightly fireworks and a gold-plated facade for your casino. Switch them on and off any time. Other players see them too.
+- Spend your profits on very expensive, completely useless things, now big and bright enough to spot from across the street (their icons also show next to your name and on your name tag): a solid-gold crown, a neon halo, a sparkle aura, orbiting lucky dice, a casino pup and a golden pup for your character; searchlights, rainbow neon, nightly fireworks and a gold-plated facade for your casino. Switch them on and off any time. Other players see them too.
 
 **Juice**
 - Bloom-lit neon, chasing marquee bulbs, confetti, coin showers, floating money, emoji thought bubbles, camera shake on jackpots, and brighter neon after dark.

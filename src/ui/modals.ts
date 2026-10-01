@@ -29,6 +29,8 @@ export class Modals {
   onMainMenu: (() => void) | null = null;
   onNewCasino: (() => void) | null = null;
   onSettingsChanged: (() => void) | null = null;
+  /** The players list with blacklist controls (set by the net layer). */
+  openPlayers: (() => void) | null = null;
   /** One line about multiplayer (set by the net layer). */
   netStatus: (() => string) | null = null;
 
@@ -715,6 +717,7 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('help', 16)} How to play`, onClick: () => this.openHelp() }),
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
       h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
+      h('button', { class: 'btn', text: '👥 Players & blacklist', onClick: () => (this.openPlayers ? this.openPlayers() : g.notify('Multiplayer isn’t connected here.', 'bad')) }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));
     body.appendChild(slider('Sound effects', st.sfx, (v) => { st.sfx = v; this.onSettingsChanged?.(); }));

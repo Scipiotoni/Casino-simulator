@@ -287,6 +287,7 @@ export class Game implements World, ItemHost {
     this.cam.setMode(settings.camera ?? 'top');
     this.build = new BuildController(this);
     this.gunplay = new GunPlay(this);
+    this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : 14;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
       const w = this.street.globalToWorld(c.x, c.z);
@@ -710,7 +711,7 @@ export class Game implements World, ItemHost {
     this.hotelBid = bid;
     this.build.cancel(false);
     this.select(null);
-    this.loadCasino(b.snap, false);
+    this.loadCasino(b.snap, false, this.hotelOpenSnap(b));
     this.building.setGarden(b.kind === 'garden');
     if (b.kind === 'garden' && !b.snap.paint.some((p) => p)) {
       // Fresh lawn, with a stone path up the middle.
@@ -761,6 +762,12 @@ export class Game implements World, ItemHost {
     this.events.emit('visit', undefined);
     this.events.emit('hotel', undefined);
     this.refreshStreet();
+  }
+
+  /** Is this building taking guests (a garden counts once any tower is open)? */
+  private hotelOpenSnap(b: HotelBuilding): boolean {
+    const towers = this.hotel?.buildings.filter((x) => x.kind === 'tower') ?? [];
+    return b.kind === 'tower' ? snapChecklist(b.snap).every((c) => c.done) : towers.some((t) => snapChecklist(t.snap).every((c) => c.done));
   }
 
   /** What the tower you're in still needs before guests can stay (empty outside a tower). */
@@ -1395,7 +1402,7 @@ export class Game implements World, ItemHost {
     const money = this.money;
     this.visit = null;
     this.street.activeId = 'me';
-    this.loadCasino(v.home, false);
+    this.loadCasino(v.home, false, true);
     this.restoreHomeProfile(v.home);
     this.money = money;
     if (kicked) {
@@ -1432,7 +1439,11 @@ export class Game implements World, ItemHost {
   }
 
   /** Put a casino's floor plan into the world (yours or one you're visiting). */
-  private loadCasino(s: CasinoSnapshot, visiting: boolean): void {
+  /**
+   * Put a casino's floor plan into the world (yours or one you're visiting). `crowd` fills it
+   * with guests straight away: nobody walks into an empty building just because you weren't there.
+   */
+  private loadCasino(s: CasinoSnapshot, visiting: boolean, crowd = visiting): void {
     // Lots stop where the next street's buildings begin.
     this.layout = { ...s.layout, depth: Math.min(s.layout.depth, MAX_DEPTH_STEPS) };
     this.setFloorCount(s.floors || 1);
@@ -1449,9 +1460,10 @@ export class Game implements World, ItemHost {
     this.jackpotPot = s.jackpotPot || JACKPOT_SEED;
     this.spawnT = 0.5;
     this.activeEvent = null;
-    if (visiting) {
+    if (crowd) {
       // A lively floor to walk into.
-      const cap = Math.min(this.maxCustomers(), Math.round(4 + this.items.gamblingSeats() * 0.55));
+      const seats = this.items.gamblingSeats() + this.items.items.reduce((a, i) => a + (i.def.kind === 'room' || i.def.kind === 'bar' || i.def.kind === 'buffet' || i.def.kind === 'pool' ? i.seats.length : 0), 0);
+      const cap = seats ? Math.min(this.maxCustomers(), Math.round(6 + seats * 0.8)) : 0;
       for (let i = 0; i < cap; i++) {
         const g = this.gridAt(0);
         const spot = g.randomInsideWalkable();
@@ -3479,6 +3491,7 @@ export class Game implements World, ItemHost {
   setQuality(q: Quality): void {
     this.settings.quality = q;
     this.renderer.setQuality(q);
+    this.street.crowd.target = q === 'high' ? 30 : q === 'medium' ? 22 : 14;
   }
 }
 

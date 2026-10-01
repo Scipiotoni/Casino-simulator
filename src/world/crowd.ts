@@ -1,0 +1,199 @@
+import * as THREE from 'three';
+import { CharacterModel } from '../entities/characterModel';
+import { randomCustomerAppearance, touristAppearance, vipAppearance } from '../entities/appearance';
+import { AVE_WALK, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, streetZ } from './city';
+
+/** A door on the street people walk in and out of (global frame). */
+export interface DoorSpot {
+  lotId: string;
+  /** Just inside the doorway. */
+  x: number;
+  z: number;
+  /** In front of it, on the middle of the sidewalk. */
+  wx: number;
+  wz: number;
+  row: number;
+  /** How busy it is (casinos and hotels draw crowds). */
+  weight: number;
+}
+
+interface Ped {
+  model: CharacterModel;
+  x: number;
+  z: number;
+  route: { x: number; z: number }[];
+  i: number;
+  speed: number;
+  /** Walks into a door at the end of the route (vanishes there). */
+  enters: boolean;
+  panic: number;
+  fade: number;
+}
+
+/** Middle of the sidewalk on one side of a street. */
+function walkZ(row: number, side: number): number {
+  return streetZ(row) + (side ? 1 : -1) * (ROAD_HALF + 2.3);
+}
+
+/**
+ * Passers-by on the city sidewalks: they come out of casinos, hotels and shops, stroll
+ * along, cross at the crosswalks and walk into other buildings, so the whole city feels
+ * busy wherever you are. People near gunfire run.
+ */
+export class Crowd {
+  readonly group = new THREE.Group();
+  private peds: Ped[] = [];
+  private spawnT = 0;
+  /** How many people to keep around the camera. */
+  target = 20;
+  cols = 12;
+
+  private nearestRow(z: number): number {
+    let best = 0;
+    for (let r = 1; r < STREET_ROWS; r++) if (Math.abs(streetZ(r) - z) < Math.abs(streetZ(best) - z)) best = r;
+    return best;
+  }
+
+  /** Crosswalk x positions (both sides of every avenue). */
+  private crossings(): number[] {
+    const out: number[] = [];
+    for (let k = 0; k <= blocksFor(this.cols); k++) {
+      const [a, b] = avenueX(k);
+      out.push(a + AVE_WALK - 1.3 + 0.3, b - AVE_WALK + 1.3 - 0.3);
+    }
+    return out;
+  }
+
+  /** Sidewalk route from a point on a street's sidewalk to another sidewalk point (crossing if needed). */
+  private routeTo(fromX: number, fromZ: number, toX: number, toZ: number, row: number): { x: number; z: number }[] {
+    const fromSide = fromZ > streetZ(row) ? 1 : 0;
+    const toSide = toZ > streetZ(row) ? 1 : 0;
+    const za = walkZ(row, fromSide);
+    const zb = walkZ(row, toSide);
+    if (fromSide === toSide) return [{ x: toX, z: zb }];
+    const xs = this.crossings();
+    const mid = (fromX + toX) / 2;
+    const cx = xs.reduce((a, b) => (Math.abs(b - mid) < Math.abs(a - mid) ? b : a), xs[0]);
+    return [{ x: cx, z: za }, { x: cx, z: zb }, { x: toX, z: zb }];
+  }
+
+  private pickDoor(doors: DoorSpot[], row: number, fx: number, not?: string): DoorSpot | null {
+    const near = doors.filter((d) => d.row === row && d.lotId !== not && Math.abs(d.wx - fx) < 85);
+    const total = near.reduce((a, d) => a + d.weight, 0);
+    let r = Math.random() * total;
+    for (const d of near) {
+      r -= d.weight;
+      if (r <= 0) return d;
+    }
+    return null;
+  }
+
+  private spawn(doors: DoorSpot[], fx: number, fz: number): void {
+    const row = this.nearestRow(fz);
+    const look = Math.random() < 0.06 ? vipAppearance() : Math.random() < 0.18 ? touristAppearance() : randomCustomerAppearance();
+    const model = new CharacterModel(look, { castShadow: false });
+    let x: number;
+    let z: number;
+    let route: { x: number; z: number }[];
+    let enters = false;
+    const out = Math.random() < 0.5 ? this.pickDoor(doors, row, fx) : null;
+    if (out) {
+      // Somebody walks out of a building…
+      x = out.x;
+      z = out.z;
+      route = [{ x: out.wx, z: out.wz }];
+      const next = Math.random() < 0.65 ? this.pickDoor(doors, row, fx, out.lotId) : null;
+      if (next) {
+        route.push(...this.routeTo(out.wx, out.wz, next.wx, next.wz, row), { x: next.x, z: next.z });
+        enters = true;
+      } else {
+        const side = out.wz > streetZ(row) ? 1 : 0;
+        route.push({ x: fx + (Math.random() < 0.5 ? -1 : 1) * 95, z: walkZ(row, side) });
+      }
+    } else {
+      // …or strolls in from down the street, heading for a door.
+      const side = Math.random() < 0.5 ? 1 : 0;
+      x = fx + (Math.random() < 0.5 ? -1 : 1) * (35 + Math.random() * 45);
+      z = walkZ(row, side) + (Math.random() - 0.5) * 1.6;
+      const to = this.pickDoor(doors, row, fx);
+      if (to) {
+        route = [...this.routeTo(x, z, to.wx, to.wz, row), { x: to.x, z: to.z }];
+        enters = true;
+      } else route = [{ x: fx + (x < fx ? 95 : -95), z }];
+    }
+    // A little spread so people don't walk in single file.
+    const off = (Math.random() - 0.5) * 1.4;
+    route = route.map((p, i) => (i === route.length - 1 && enters ? p : { x: p.x, z: p.z + off }));
+    model.root.position.set(x, 0, z);
+    this.group.add(model.root);
+    this.peds.push({ model, x, z, route, i: 0, speed: 1.2 + Math.random() * 0.5, enters, panic: 0, fade: 0 });
+  }
+
+  /** Gunfire at (gx, gz): everybody close by runs for it. */
+  scare(gx: number, gz: number, radius: number): void {
+    for (const p of this.peds) {
+      if (Math.hypot(p.x - gx, p.z - gz) > radius || p.panic > 0) continue;
+      p.panic = 8;
+      const away = p.x >= gx ? 1 : -1;
+      p.route = [{ x: p.x + away * 70, z: p.z }];
+      p.i = 0;
+      p.enters = false;
+      p.model.setExpression('surprised', 3);
+    }
+  }
+
+  update(dt: number, fx: number, fz: number, doors: DoorSpot[], visible: boolean): void {
+    this.group.visible = visible;
+    this.spawnT -= dt;
+    if (this.spawnT <= 0 && this.peds.length < this.target) {
+      this.spawnT = 0.35;
+      this.spawn(doors, fx, fz);
+    }
+    for (let k = this.peds.length - 1; k >= 0; k--) {
+      const p = this.peds[k];
+      p.panic = Math.max(0, p.panic - dt);
+      const speed = p.panic > 0 ? 4.6 : p.speed;
+      const t = p.route[p.i];
+      let done = false;
+      if (t) {
+        const dx = t.x - p.x;
+        const dz = t.z - p.z;
+        const d = Math.hypot(dx, dz);
+        const step = speed * dt;
+        if (d <= step) {
+          p.x = t.x;
+          p.z = t.z;
+          p.i++;
+        } else {
+          p.x += (dx / d) * step;
+          p.z += (dz / d) * step;
+          p.model.root.rotation.y = Math.atan2(dx, dz);
+        }
+      } else done = true;
+      const far = Math.hypot(p.x - fx, p.z - fz) > 110;
+      if (done || far) {
+        // Walked in through a door (or out of sight): gone.
+        p.fade += dt * 4;
+        p.model.root.scale.setScalar(Math.max(0.01, 1 - p.fade));
+        if (p.fade >= 1 || far) {
+          p.model.dispose();
+          this.peds.splice(k, 1);
+          continue;
+        }
+      }
+      p.model.root.position.set(p.x, 0, p.z);
+      p.model.moveSpeed = speed / 1.4;
+      p.model.setPose(done ? 'idle' : p.panic > 0 ? 'run' : 'walk');
+      if (visible) p.model.update(dt);
+    }
+  }
+
+  /** People within `r` of a global point (for tests and effects). */
+  near(gx: number, gz: number, r: number): number {
+    return this.peds.filter((p) => Math.hypot(p.x - gx, p.z - gz) < r).length;
+  }
+
+  get count(): number {
+    return this.peds.length;
+  }
+}

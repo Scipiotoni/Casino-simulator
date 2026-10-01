@@ -5,6 +5,8 @@ import {
   MIN_COLS, BLOCK_COLS, STREET_ROWS, type SlotRef, cityX, cityZ, fillerFor, globalToSlot, onRoadNetwork, slotAt, slotKey, slotToGlobal,
 } from './city';
 import { CityView } from './cityView';
+import { Crowd, type DoorSpot } from './crowd';
+import { SIDEWALK_Z0 } from './grid';
 export { ROAD_MID } from './grid';
 
 export type LotKind = 'me' | 'rival' | 'player' | 'hotel' | 'house' | 'filler' | 'shop';
@@ -52,6 +54,9 @@ const SPECIALS: { id: string; slot: SlotRef; name: string; tagline: string }[] =
 export class Street {
   readonly group = new THREE.Group();
   readonly city = new CityView();
+  /** People walking the sidewalks (drawn in the city's global frame). */
+  readonly crowd = new Crowd();
+  private doors: DoorSpot[] = [];
   lots: StreetLot[] = [];
   activeId = 'me';
   /** Lot columns along each street. */
@@ -64,6 +69,7 @@ export class Street {
 
   constructor() {
     this.group.add(this.city.group);
+    this.city.group.add(this.crowd.group);
   }
 
   /**
@@ -153,6 +159,16 @@ export class Street {
     }
     this.lots = out;
     this.byId = new Map(out.map((l) => [l.id, l]));
+    // Doors people walk in and out of: casinos and hotels are the busy ones.
+    this.doors = out.map((l) => {
+      const s = this.slots.get(l.id)!;
+      const d = slotToGlobal(s, CENTER_X - 0.5 + Math.random(), FACADE_Z + 0.3);
+      const w = slotToGlobal(s, CENTER_X, SIDEWALK_Z0 + 1.8);
+      const weight = l.kind === 'filler' ? (l.info.filler?.kind === 'park' || l.info.filler?.kind === 'parking' ? 0 : 0.35)
+        : l.kind === 'house' ? 0.25 : l.kind === 'shop' ? 1 : l.kind === 'hotel' ? (l.info.style === 'garden' ? 1 : 2.5) : 3;
+      return { lotId: l.id, x: d.x, z: d.z, wx: w.x, wz: w.z, row: s.row, weight };
+    }).filter((d) => d.weight > 0);
+    this.crowd.cols = this.cols;
   }
 
   get(id: string): StreetLot | undefined {
@@ -255,6 +271,8 @@ export class Street {
     this.city.group.position.set(o.x, 0, o.z);
     this.city.group.rotation.y = act.side === 1 ? Math.PI : 0;
     this.city.update(dt, sim, f.x, f.z);
+    // Your own building's door has real guests; the crowd uses everybody else's.
+    if (sim > 0) this.crowd.update(sim, f.x, f.z, this.doors.filter((d) => d.lotId !== this.activeId), true);
     for (const l of this.lots) {
       const c = this.toGlobal(l.id, CENTER_X, FACADE_Z - 12);
       if (l.id !== this.activeId && Math.hypot(c.x - f.x, c.z - f.z) > VIEW_R) continue;

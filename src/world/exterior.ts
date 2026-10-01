@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mat, glow, gold } from '../render/materials';
-import { canvasTexture, drawNeonText, makeCanvas, roundRect } from '../render/textures';
+import { canvasTexture, drawNeonText, makeCanvas, roundRect, softDotTexture } from '../render/textures';
 import { Dyn, bake, box, cyl, sph, disposeTree } from '../items/models/common';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z1, WIDTHS, START_DEPTH, DEPTH_STEP } from './grid';
 import { SIGN_FONTS, type CasinoLook } from './building';
@@ -169,11 +169,11 @@ export class Exterior {
     const dyn = new Dyn();
     const cos = this.info.cos ?? [];
     const golden = cos.includes('goldfacade');
-    const wall = golden ? gold() : mat(look.wallColor, { rough: 0.75 });
+    const wall = golden ? mat(0xffc93d, { metal: 0.95, rough: 0.18, emissive: 0x7a4f00, emissiveIntensity: 0.8 }) : mat(look.wallColor, { rough: 0.75 });
     const wallDark = golden ? mat(0xb8861b, { metal: 0.8, rough: 0.32, emissive: 0x3a2200, emissiveIntensity: 0.3 }) : mat(shade(look.wallColor, 0.7), { rough: 0.8 });
     // Rainbow neon needs its own material (the shared cache would recolour every casino).
     const trim = cos.includes('rainbow')
-      ? (this.rainbow = new THREE.MeshStandardMaterial({ color: look.trimColor, emissive: look.trimColor, emissiveIntensity: 1.3, roughness: 0.4 }))
+      ? (this.rainbow = new THREE.MeshStandardMaterial({ color: look.trimColor, emissive: look.trimColor, emissiveIntensity: 2.4, roughness: 0.4 }))
       : mat(look.trimColor, { emissive: look.trimColor, emissiveIntensity: 0.9, rough: 0.4 });
     const g = gold();
     const lit = mat(0x3a2a20, { emissive: 0xffb45a, emissiveIntensity: 0.32, rough: 0.15, metal: 0.3 });
@@ -352,6 +352,14 @@ export class Exterior {
     }
     bulbGeo.dispose();
     this.buildYard(x0, x1);
+    if (cos.includes('rainbow')) {
+      // Rainbow neon also runs up every corner of the building.
+      for (const [cx, cz] of [[x0, z1], [x1, z1], [x0, z0], [x1, z0]]) {
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.22, H + 0.6, 0.22), trim);
+        strip.position.set(cx, (H + 0.6) / 2, cz);
+        s.add(strip);
+      }
+    }
     if (cos.includes('searchlights')) this.buildSearchlights(x0, x1, H, (z0 + z1) / 2);
     if (cos.includes('fireworks')) this.buildFireworks(H, (z0 + z1) / 2);
   }
@@ -408,10 +416,13 @@ export class Exterior {
   private fwBase = new THREE.Vector3();
 
   private buildSearchlights(x0: number, x1: number, H: number, zc: number): void {
-    const beamGeo = new THREE.ConeGeometry(1.4, 26, 20, 1, true);
-    beamGeo.translate(0, 13, 0);
-    const beamMat = new THREE.MeshBasicMaterial({ color: 0xfff1c4, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-    for (const [x, ph] of [[x0 + 1.5, 0], [x1 - 1.5, Math.PI]] as const) {
+    const beamGeo = new THREE.ConeGeometry(2.6, 48, 24, 1, true);
+    beamGeo.translate(0, 24, 0);
+    const beamMat = new THREE.MeshBasicMaterial({ color: 0xfff1c4, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    const core = new THREE.ConeGeometry(0.9, 48, 16, 1, true);
+    core.translate(0, 24, 0);
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    for (const [x, ph] of [[x0 + 1.5, 0], [x1 - 1.5, Math.PI], [x0 + 1.5, Math.PI / 2], [x1 - 1.5, Math.PI * 1.5]] as const) {
       const base = new THREE.Group();
       base.position.set(x, H + 0.3, zc);
       const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 0.5, 14), mat(0x2b2b35, { metal: 0.6, rough: 0.4 }));
@@ -420,7 +431,11 @@ export class Exterior {
       pivot.position.y = 0.3;
       pivot.userData.phase = ph;
       const beam = new THREE.Mesh(beamGeo, beamMat);
-      pivot.add(beam);
+      pivot.add(beam, new THREE.Mesh(core, coreMat));
+      const lens = new THREE.Mesh(new THREE.CircleGeometry(0.42, 18), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      lens.rotation.x = -Math.PI / 2;
+      lens.position.y = 0.27;
+      pivot.add(lens);
       base.add(pivot);
       this.shell.add(base);
       this.beams.push(pivot);
@@ -429,11 +444,11 @@ export class Exterior {
 
   private buildFireworks(H: number, zc: number): void {
     this.fwBase.set(CENTER_X, H + 1, zc);
-    const N = 60;
-    for (let i = 0; i < 3; i++) {
+    const N = 110;
+    for (let i = 0; i < 5; i++) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
-      const m = new THREE.PointsMaterial({ color: 0xffffff, size: 0.35, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const m = new THREE.PointsMaterial({ color: 0xffffff, size: 0.9, map: softDotTexture(), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
       const pts = new THREE.Points(geo, m);
       pts.frustumCulled = false;
       this.shell.add(pts);
@@ -463,9 +478,9 @@ export class Exterior {
       if (r.t > 2.4) {
         // New burst: random colour, spot and size.
         r.t = -Math.random() * 1.2;
-        r.origin.set(this.fwBase.x + (Math.random() - 0.5) * 12, this.fwBase.y + 6 + Math.random() * 6, this.fwBase.z + (Math.random() - 0.5) * 6);
+        r.origin.set(this.fwBase.x + (Math.random() - 0.5) * 16, this.fwBase.y + 8 + Math.random() * 10, this.fwBase.z + (Math.random() - 0.5) * 8);
         m.color.setHSL(Math.random(), 1, 0.62);
-        const sp = 3 + Math.random() * 3;
+        const sp = 5 + Math.random() * 4;
         for (let i = 0; i < r.vel.length / 3; i++) {
           const u = Math.random() * 2 - 1;
           const a = Math.random() * Math.PI * 2;

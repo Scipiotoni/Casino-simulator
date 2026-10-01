@@ -361,6 +361,8 @@ export class GunPlay {
   private scareCrowd(): void {
     const g = this.g;
     const p = g.player;
+    const pg = g.street.worldToGlobal(p.x, p.z);
+    g.street.crowd.scare(pg.x, pg.z, 22);
     for (const c of g.customers) {
       if (c.inside || c.exited || c.gone || c.state === 'leave') continue;
       if (Math.hypot(c.x - p.x, c.z - p.z) > 16) continue;

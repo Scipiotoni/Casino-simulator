@@ -4160,3 +4160,29 @@ p.small {
 .tier.done {
   opacity: 0.6;
 }
+
+/* ------------------------------------------------------------------ players & blacklist */
+.ban-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.player-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.muted.pos {
+  color: var(--green);
+}
+.luxe-badges {
+  font-size: 15px;
+  letter-spacing: 1px;
+  filter: drop-shadow(0 0 6px rgba(255, 210, 74, 0.8));
+}
+.luxe-badges:empty {
+  display: none;
+}

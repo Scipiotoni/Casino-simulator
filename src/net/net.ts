@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { HotelInfo } from '../game/game';
 import { roman } from '../game/game';
 import { PlayerFx } from '../cosmetics/playerFx';
-import { cleanCosmetics, equipped } from '../cosmetics/catalog';
+import { cleanCosmetics, cosmetic, equipped } from '../cosmetics/catalog';
 import type { Game } from '../game/game';
 import type { Hud } from '../ui/hud';
 import { CharacterModel } from '../entities/characterModel';
@@ -11,7 +11,7 @@ import { migrateSave, sanitizeSnapshot, type CasinoSnapshot, type SaveData } fro
 import { SIGN_FONTS, type CasinoLook } from '../world/building';
 import { CENTER_X, FACADE_Z, type Layout } from '../world/grid';
 import type { StreetLot } from '../world/street';
-import { h, icon } from '../ui/dom';
+import { h, icon, clear } from '../ui/dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { dampAngle } from '../core/math';
@@ -80,6 +80,9 @@ export const ARTIFACT_CAPABILITIES = {
 /** How long a blacklist lasts, and how long before you can blacklist that player again. */
 export const BAN_MS = 10 * 60 * 1000;
 export const BAN_COOLDOWN_MS = 30 * 60 * 1000;
+/** Blacklist lengths to pick from (minutes), and the longest allowed. */
+export const BAN_CHOICES = [5, 15, 30, 60, 240];
+export const BAN_MAX_MIN = 24 * 60;
 
 const PID_KEY = 'jackpot-tycoon:pid';
 
@@ -167,6 +170,7 @@ export class Net {
     game.playerHotel = (pid, bid) => this.lots.get(pid)?.hotelSnap?.[bid] ?? null;
     game.bannedBy = (pid) => this.bannedBy(pid);
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
+    hud.modals.openPlayers = () => this.openPlayers();
     hud.modals.netStatus = () => `${this.status}${this.online ? ` ${this.remotes.size} other ${this.remotes.size === 1 ? 'player is' : 'players are'} online.` : ''}`;
   }
 
@@ -275,7 +279,8 @@ export class Net {
       r.pid = pid;
       r.name = typeof pr.nm === 'string' && pr.nm.trim() ? pr.nm.slice(0, 20) : 'Player';
       r.rb = rebirthsOf(pr.rb);
-      r.label.textContent = r.rb ? `⟳${roman(r.rb)} ${r.name}` : r.name;
+      const lux = cleanCosmetics(pr.cos).map((id) => cosmetic(id)?.icon ?? '').join('');
+      r.label.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}`;
       r.tx = num(pr.x);
       r.tz = num(pr.z);
       r.yaw = num(pr.yaw);
@@ -453,23 +458,93 @@ export class Net {
     return until;
   }
 
-  /** Blacklist another player from your casino for a while. */
-  ban(pid: string, name: string): void {
+  /**
+   * Blacklist another player from your casino, hotel and house for a while. No reason
+   * needed, no cooldown: pick a time, or blacklist them again to change it.
+   */
+  ban(pid: string, name: string, minutes = BAN_MS / 60000): void {
     const now = Date.now();
     const net = this.game.net;
-    const cool = net.banCooldown[pid] ?? 0;
-    if (cool > now) {
-      audio.play('error');
-      this.game.notify(`You can blacklist ${name} again in ${Math.ceil((cool - now) / 60000)} min.`, 'bad');
-      return;
-    }
-    net.bans[pid] = now + BAN_MS;
-    net.banCooldown[pid] = now + BAN_MS + BAN_COOLDOWN_MS;
+    net.bans[pid] = now + Math.max(1, Math.min(BAN_MAX_MIN, minutes)) * 60000;
+    delete net.banCooldown[pid];
     audio.play('bust');
-    this.game.notify(`${name} is blacklisted from your casino for 10 minutes.`, 'good');
+    this.game.notify(`${name} is blacklisted from your casino and hotel for ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`}. Your security walks them out.`, 'good');
     this.publishT = 0;
     this.presenceT = 0;
+    this.lastPresence = '';
     this.game.requestSave();
+  }
+
+  /** Let a blacklisted player back in early. */
+  unban(pid: string, name: string): void {
+    const net = this.game.net;
+    delete net.bans[pid];
+    delete net.banCooldown[pid];
+    audio.play('click');
+    this.game.notify(`${name} is welcome again.`, 'info');
+    this.publishT = 0;
+    this.presenceT = 0;
+    this.lastPresence = '';
+    this.game.requestSave();
+  }
+
+  /** Everyone you could blacklist: players online now and owners of casinos on the street. */
+  private knownPlayers(): { pid: string; name: string; online: boolean; where: string }[] {
+    const out = new Map<string, { pid: string; name: string; online: boolean; where: string }>();
+    for (const r of this.remotes.values()) out.set(r.pid, { pid: r.pid, name: r.name, online: true, where: this.whereOf(r) });
+    for (const [pid, l] of this.lots) if (!out.has(pid)) out.set(pid, { pid, name: l.owner, online: false, where: 'Offline' });
+    for (const pid of Object.keys(this.game.net.bans)) if (!out.has(pid)) out.set(pid, { pid, name: 'Player', online: false, where: 'Offline' });
+    return [...out.values()].sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
+  }
+
+  private whereOf(r: Remote): string {
+    const g = this.game;
+    const lotId = this.localLot(r.lot);
+    return r.out ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId.startsWith('hotel:') ? 'In your hotel' : lotId === 'house' ? 'At your house' : lotId.endsWith('~house') ? 'At home' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
+  }
+
+  /** Blacklist controls: pick how long. */
+  private banControls(pid: string, name: string, onChange: () => void): HTMLElement {
+    const g = this.game;
+    const now = Date.now();
+    const until = g.net.bans[pid] ?? 0;
+    const row = h('div', { class: 'ban-row' });
+    if (until > now) {
+      row.append(
+        h('span', { class: 'chip bad', text: `🚫 Blacklisted · ${Math.ceil((until - now) / 60000)} min left` }),
+        h('button', { class: 'btn small', text: 'Lift ban', onClick: () => { this.unban(pid, name); onChange(); } }),
+      );
+    }
+    for (const m of BAN_CHOICES) {
+      row.appendChild(h('button', {
+        class: 'btn small danger', text: m >= 60 ? `${m / 60} h` : `${m} min`, title: `Blacklist ${name} for ${m} minutes`,
+        onClick: () => { this.ban(pid, name, m); onChange(); },
+      }));
+    }
+    return row;
+  }
+
+  /** Menu → Players: see who's around and blacklist anyone, any time. */
+  openPlayers(): void {
+    const body = h('div', { class: 'stack' });
+    const render = () => {
+      clear(body);
+      body.appendChild(h('p', { class: 'muted small', text: 'Blacklist anyone, for any reason (or none). They’re walked out of your casino, hotel and house and can’t come back in until the time runs out. Lift it whenever you like.' }));
+      const list = this.knownPlayers();
+      if (!list.length) {
+        body.appendChild(h('p', { class: 'muted', text: this.online ? 'Nobody else is here right now.' : 'You’re offline: other players show up here when you’re connected.' }));
+        return;
+      }
+      for (const p of list) {
+        body.appendChild(h('div', { class: 'player-row' },
+          h('div', {}, h('b', { text: p.name }), h('span', { class: `muted small${p.online ? ' pos' : ''}`, text: ` · ${p.online ? '● ' : ''}${p.where}` })),
+          this.banControls(p.pid, p.name, render),
+        ));
+      }
+    };
+    render();
+    const t = window.setInterval(render, 15000);
+    this.hud.modals.open('Players & blacklist', body, { onClose: () => window.clearInterval(t) });
   }
 
   // ------------------------------------------------------------------ per frame
@@ -552,7 +627,12 @@ export class Net {
         floors: g.homeFloors,
       },
     };
+    // Presence is small: shed the least important parts first so bans always get through.
+    const casino = data.casino as Record<string, unknown>;
     if (JSON.stringify(data).length > 3800) delete data.owes;
+    if (JSON.stringify(data).length > 3800) casino.hotel = (casino.hotel as unknown[]).slice(0, 2);
+    if (JSON.stringify(data).length > 3800) delete casino.house;
+    if (JSON.stringify(data).length > 3800) delete data.cos;
     return data;
   }
 
@@ -708,7 +788,8 @@ export class Net {
     const r = [...this.remotes.values()].find((x) => x.pid === pid);
     const name = r?.name ?? 'Player';
     const lotId = r ? this.localLot(r.lot) : '';
-    const where = !r ? 'Gone' : r.out ? 'Out on the street' : lotId === 'me' ? 'In your casino' : lotId.startsWith('hotel:') ? 'In your hotel' : lotId === 'house' ? 'At your house' : lotId.endsWith('~house') ? 'At home' : `At ${g.street.get(lotId)?.info.look.name ?? 'another casino'}`;
+    const where = !r ? 'Gone' : this.whereOf(r);
+    void lotId;
     const owed = g.net.credited[pid] ?? 0;
     el.appendChild(h('div', { class: 'card-head' },
       h('div', { class: 'card-emoji', html: icon('you', 30) }),
@@ -720,23 +801,9 @@ export class Net {
     el.appendChild(h('div', { class: 'card-stats' },
       h('div', { class: 'kv' }, h('span', { text: 'At your tables, all time' }), h('b', { class: owed >= 0 ? 'pos' : 'neg', text: owed >= 0 ? `lost ${formatMoney(owed)}` : `won ${formatMoney(-owed)}` })),
     ));
-    const now = Date.now();
-    const banned = (g.net.bans[pid] ?? 0) > now;
-    const cool = (g.net.banCooldown[pid] ?? 0) > now;
-    const btn = h('button', {
-      class: 'btn danger', disabled: banned || cool,
-      html: banned
-        ? `${icon('close', 16)} Blacklisted · ${Math.ceil(((g.net.bans[pid] ?? 0) - now) / 60000)} min left`
-        : cool
-          ? `${icon('close', 16)} Cooldown · ${Math.ceil(((g.net.banCooldown[pid] ?? 0) - now) / 60000)} min`
-          : `${icon('close', 16)} Blacklist for 10 min`,
-      onClick: () => {
-        this.ban(pid, name);
-        g.select(null);
-      },
-    });
-    el.appendChild(h('div', { class: 'card-actions one' }, btn));
-    el.appendChild(h('p', { class: 'muted small', text: 'A blacklisted player is walked out of your casino and can’t come back in until it ends. After that, a 30-minute cooldown before you can blacklist them again.' }));
+    el.appendChild(h('div', { class: 'field-label', text: '🚫 Blacklist' }));
+    el.appendChild(this.banControls(pid, name, () => g.select({ kind: 'remote', pid })));
+    el.appendChild(h('p', { class: 'muted small', text: 'No reason needed. They’re walked out of your casino, hotel and house and can’t come back until it runs out.' }));
   }
 }
 

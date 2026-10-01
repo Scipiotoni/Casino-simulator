@@ -12,6 +12,7 @@ import { Modals } from './modals';
 import { escapeHtml } from './floaters';
 import { openTableGame } from './games';
 import { Minimap } from './minimap';
+import { cosmetic } from '../cosmetics/catalog';
 import { GunBar, openGunShop } from './guns';
 import { openVault } from './vault';
 
@@ -19,6 +20,7 @@ import { openVault } from './vault';
 export class Hud {
   readonly root: HTMLElement;
   private moneyEl!: HTMLElement;
+  private luxeEl!: HTMLElement;
   private rateEl!: HTMLElement;
   private starsEl!: HTMLElement;
   private nameEl!: HTMLElement;
@@ -72,11 +74,12 @@ export class Hud {
     const g = this.game;
     // Top bar
     this.nameEl = h('div', { class: 'brand-name', text: g.building.look.name });
+    this.luxeEl = h('span', { class: 'luxe-badges', title: 'Your Luxe items' });
     this.lvlEl = h('span', { class: 'lvl-badge', text: 'LV 1' });
     this.xpFill = h('i');
     const brand = h('button', { class: 'pill brand', 'aria-label': 'Casino settings', onClick: () => this.modals.openCasino() },
       this.nameEl,
-      h('div', { class: 'lvl' }, this.lvlEl, h('div', { class: 'xpbar' }, this.xpFill)),
+      h('div', { class: 'lvl' }, this.lvlEl, h('div', { class: 'xpbar' }, this.xpFill), this.luxeEl),
     );
     this.moneyEl = h('div', { class: 'money', text: formatMoney(g.money) });
     this.starsEl = h('span', { class: 'stars' });
@@ -204,6 +207,9 @@ export class Hud {
       if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });
     });
     g.events.on('visit', () => this.renderVisit());
+    const luxe = () => (this.luxeEl.textContent = g.cosmetics.on.map((id) => cosmetic(id)?.icon ?? '').join(''));
+    g.events.on('cosmetics', luxe);
+    luxe();
     g.events.on('gunshop', () => {
       if (!this.modals.isOpen) openGunShop(g, this.modals);
     });
