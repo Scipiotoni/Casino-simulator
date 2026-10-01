@@ -34,6 +34,9 @@ export class Input {
   /** Mouse movement while captured (first-person look), pixels this frame. */
   lookDX = 0;
   lookDY = 0;
+  /** Mouse movement this frame while it's free (not captured), pixels. */
+  freeDX = 0;
+  freeDY = 0;
   /** Right mouse button held (aim down sights). */
   rightHeld = false;
   /** First person wants the mouse captured: the next left click on the canvas grabs it. */
@@ -112,6 +115,8 @@ export class Input {
     this.panDY = 0;
     this.lookDX = 0;
     this.lookDY = 0;
+    this.freeDX = 0;
+    this.freeDY = 0;
     this.pointer.moved = false;
   }
 
@@ -253,7 +258,11 @@ export class Input {
         this.dragDY += p.y - py;
       }
     }
-    if (e.pointerType !== 'touch') this.lastPointerType = e.pointerType;
+    if (e.pointerType !== 'touch') {
+      this.lastPointerType = e.pointerType;
+      this.freeDX += e.movementX || 0;
+      this.freeDY += e.movementY || 0;
+    }
     this.pointer.x = p.x;
     this.pointer.y = p.y;
     this.pointer.moved = true;

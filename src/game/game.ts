@@ -2104,7 +2104,8 @@ export class Game implements World, ItemHost {
 
   /** Why this item can't go in the building you're in (hotel indoor/outdoor rules). */
   placeBlock(def: ItemDef): string | null {
-    if (def.kind === 'vault' && this.items.items.some((i) => i.def.kind === 'vault')) return 'You already have a vault. Open it to upgrade it instead.';
+    // (Moving your one vault is fine; buying a second isn't.)
+    if (def.kind === 'vault' && this.items.items.some((i) => i.def.kind === 'vault' && i !== this.build.movingItem)) return 'You already have a vault. Open it to upgrade it instead.';
     return this.inHotel ? zoneBlock(def, this.gardenSite) : null;
   }
 
@@ -3216,16 +3217,17 @@ export class Game implements World, ItemHost {
         dx = input.dragDX * 1.6;
         dy = input.dragDY * 1.6;
       } else if (!input.isTouch && input.pointer.over && !this.build.active && !this.modalOpen && this.combat.ko <= 0) {
-        // Mouse not captured: the crosshair follows the cursor, and pushing toward the edge
-        // of the screen turns you (all the way round if you hold it there).
+        // Mouse not captured: the crosshair stays in the middle and moving the mouse turns
+        // the view, just like when it's captured. The (hidden) cursor can still bump into
+        // the edge of the screen, so holding it there keeps turning you that way.
+        dx = input.freeDX;
+        dy = input.freeDY;
         const { w, h } = this.renderer.size;
-        const ox = clamp((input.pointer.x - w / 2) / (w / 2), -1, 1);
-        const oy = clamp((input.pointer.y - h / 2) / (h / 2), -1, 1);
-        this.cam.aimNdc = { x: ox, y: -oy };
-        const edge = (o: number) => (Math.abs(o) > 0.4 ? Math.sign(o) * ((Math.abs(o) - 0.4) / 0.6) ** 1.4 : 0);
+        const ex = input.pointer.x < 24 ? -1 : input.pointer.x > w - 24 ? 1 : 0;
+        const ey = input.pointer.y < 24 ? -1 : input.pointer.y > h - 24 ? 1 : 0;
         const k = (this.settings.lookSens ?? 1) * ads;
-        this.cam.lookYaw -= edge(ox) * 3.2 * k * dt;
-        this.cam.pitch = clamp(this.cam.pitch - edge(oy) * 1.8 * k * dt, -1.35, 1.35);
+        if (ex && Math.abs(input.freeDX) < 2) this.cam.lookYaw -= ex * 2.6 * k * dt;
+        if (ey && Math.abs(input.freeDY) < 2) this.cam.pitch = clamp(this.cam.pitch - ey * 1.4 * k * dt, -1.35, 1.35);
       }
       if (this.combat.ko <= 0) {
         this.cam.lookYaw -= dx * sens;

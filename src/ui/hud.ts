@@ -483,7 +483,10 @@ export class Hud {
       }
       return;
     }
-    if (item.upgradable && item.level < MAX_LEVEL) {
+    if (def.kind === 'vault') {
+      // The vault is upgraded from inside (bigger tiers, longer codes), not like a machine.
+      if (g.inHouse && !g.visit) actions.appendChild(h('button', { class: 'btn gold', html: '🔐 Open vault', onClick: () => { g.select(null); g.events.emit('vault', item); } }));
+    } else if (item.upgradable && item.level < MAX_LEVEL) {
       actions.appendChild(h('button', { class: 'btn gold', html: `${icon('upgrade', 16)} Upgrade <b>${formatMoney(item.upgradeCost)}</b>`, onClick: () => { if (g.upgrade(item)) this.renderCard({ kind: 'item', item }); } }));
     }
     if (item.setup && !g.visit) {

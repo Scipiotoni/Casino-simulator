@@ -84,6 +84,21 @@ function keypad(digits: number, onEnter: (code: string) => void, opts: { title: 
  * The vault, start to finish: pick a code the first time, type it to open the door (with
  * the unlock animation), then move money between the vault, the casino and the hotel.
  */
+/** Pick the vault up and put it somewhere else in the house (anyone standing at it can, it's your house). */
+function moveVaultBtn(g: Game, modals: Modals): HTMLElement {
+  return h('button', {
+    class: 'btn', html: `${icon('move', 16)} Move vault`, title: 'Pick the vault up and put it somewhere else in your house',
+    onClick: () => {
+      const v = g.items.items.find((i) => i.def.kind === 'vault');
+      if (!v || !g.inHouse || g.visit) return;
+      modals.closeAll();
+      g.select(null);
+      g.build.startMove(v);
+      g.notify('Click where the vault should go (R rotates).', 'info');
+    },
+  });
+}
+
 export function openVault(game: Game, modals: Modals): void {
   const g = game;
   const hs = g.house;
@@ -118,7 +133,7 @@ export function openVault(game: Game, modals: Modals): void {
       kp.shake('WRONG CODE');
     }
   }, { title: t.name.toUpperCase(), sub: g.vaultLockUntil > Date.now() ? `LOCKED · ${locked()}s` : `ENTER ${t.digits}-DIGIT CODE`, hideDigits: true });
-  modals.open('Vault', h('div', { class: 'stack vault-pad', style: `--steel:${STEEL[hs.tier - 1]}` }, kp.el), { cls: 'small vault-modal' });
+  modals.open('Vault', h('div', { class: 'stack vault-pad', style: `--steel:${STEEL[hs.tier - 1]}` }, kp.el, h('div', { class: 'btn-row center' }, moveVaultBtn(g, modals))), { cls: 'small vault-modal' });
 }
 
 /** Choose a new code (typed twice so a slip of the finger can't lock you out). */
@@ -665,6 +680,7 @@ export function openBank(game: Game, modals: Modals): void {
         modals.close();
       }),
     }));
+    btns.appendChild(moveVaultBtn(g, modals));
     body.appendChild(btns);
     if (next) body.appendChild(h('p', { class: 'muted small', text: `Next: ${next.name}, holds ${formatMoney(next.cap)}, ${next.digits}-digit code, ${next.bolts} bolts, ${(next.interest * 100).toFixed(2)}% a day.` }));
     if (hs.log.length) {

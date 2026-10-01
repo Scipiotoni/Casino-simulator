@@ -27,7 +27,7 @@ export class CombatHud {
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
-    this.lockHint.innerHTML = '<b>🖱 Click to capture the mouse</b><span>Then the mouse turns you all the way round · A/D strafe · click shoots · right-click aims · Esc frees it</span>';
+    this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
     this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted);
   }
@@ -45,7 +45,8 @@ export class CombatHud {
     // Mouse free: the crosshair rides on the cursor (which is hidden over the game).
     const ndc = fp ? g.cam.aimNdc : null;
     const canvas = g.renderer.renderer.domElement;
-    const cur = ndc ? 'none' : '';
+    // First person: the cursor is hidden over the game; the crosshair is your pointer.
+    const cur = (fp && !g.input.isTouch && !g.build.active && !g.modalOpen) || ndc ? 'none' : '';
     if (canvas.style.cursor !== cur) canvas.style.cursor = cur;
     if (ndc) {
       const { w, h: hh } = g.renderer.size;
