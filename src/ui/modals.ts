@@ -369,8 +369,15 @@ export class Modals {
         row.appendChild(h('button', {
           class: 'btn gold', html: `${icon('home', 16)} Go home`,
           onClick: () => {
-            const d = g.street.toGlobal('house', CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
-            if (g.teleportTo(d.x, d.z)) this.close();
+            const lot = g.street.get('house');
+            if (!lot) return;
+            if (g.travelBlock(lot)) {
+              // Not at one of your buildings: point the way instead.
+              const d = g.street.toGlobal('house', CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
+              g.setWaypoint(d.x, d.z, 'your house');
+              g.notify('Waypoint set to your house. Fast travel only works from your casino or hotel.', 'info');
+              this.close();
+            } else if (g.teleportToLot(lot)) this.close();
           },
         }));
       } else {

@@ -26,12 +26,15 @@ export class CombatHud {
   private wantedKey = '';
   private speedo = h('div', { class: 'speedo', hidden: true });
   private speedoKey = '';
+  private wp = h('button', { class: 'wp-hud', hidden: true, title: 'Clear the waypoint' });
+  private wpKey = '';
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp);
+    this.wp.addEventListener('click', () => game.clearWaypoint());
   }
 
   update(dt: number): void {
@@ -130,6 +133,23 @@ export class CombatHud {
       this.speedo.hidden = !car;
       if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
     }
+    // Waypoint: what it is, how far, and which way (relative to where the camera looks).
+    const wpt = playing ? g.waypoint : null;
+    if (wpt) {
+      const p = g.street.worldToGlobal(g.player.x, g.player.z);
+      const dist = Math.hypot(wpt.x - p.x, wpt.z - p.z);
+      const side = g.street.placeOf(g.street.activeId).side;
+      const ca = g.cam.yaw + (side ? Math.PI : 0);
+      // Camera forward is (-sin, -cos); angle of the waypoint from it, clockwise on screen.
+      const ang = Math.atan2(wpt.x - p.x, wpt.z - p.z) - Math.atan2(-Math.sin(ca), -Math.cos(ca));
+      const deg = Math.round((-ang * 180) / Math.PI / 5) * 5;
+      const key = `${wpt.label}|${Math.round(dist / 5)}|${deg}`;
+      if (key !== this.wpKey) {
+        this.wpKey = key;
+        this.wp.innerHTML = `<i style="transform:rotate(${deg}deg)">➤</i><b>${wpt.label === 'Waypoint' ? 'Waypoint' : wpt.label.replace(/[<>&]/g, '')}</b><span>${dist >= 1000 ? `${(dist / 1000).toFixed(1)} km` : `${Math.round(dist)} m`}</span><u>✕</u>`;
+      }
+    } else this.wpKey = '';
+    this.wp.hidden = !wpt;
     // Desktop first person with the mouse free: invite a click.
     this.lockHint.hidden = !(fp && !g.input.isTouch && !g.input.locked && !g.input.lockFailed && !g.modalOpen && !g.build.active && c.ko <= 0);
     void dt;

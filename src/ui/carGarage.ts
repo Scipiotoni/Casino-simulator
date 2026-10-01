@@ -12,7 +12,7 @@ import {
 import { modsOf } from '../game/driving';
 
 /** A slowly turning 3D view of the car you're working on. */
-class CarPreview {
+export class CarPreview {
   readonly canvas: HTMLCanvasElement;
   private renderer: THREE.WebGLRenderer | null = null;
   private scene = new THREE.Scene();

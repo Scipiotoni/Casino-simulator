@@ -5,7 +5,7 @@ import { buildModel } from '../items/models';
 import type { ItemDef } from '../items/catalog';
 import { CharacterModel, type Pose } from '../entities/characterModel';
 import type { Appearance } from '../entities/appearance';
-import type { GunDef } from '../game/guns';
+import type { GunDef, GunMods } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 
 function makeRenderer(w: number, h: number): THREE.WebGLRenderer {
@@ -88,10 +88,11 @@ class ThumbRenderer {
 let thumbs: ThumbRenderer | null = null;
 
 /** Side view of a gun for the gun shop. */
-export function gunThumb(def: GunDef): string {
+export function gunThumb(def: GunDef, mods?: GunMods | null): string {
   try {
     thumbs ??= new ThumbRenderer();
-    return thumbs.object(`gun:${def.id}`, () => buildGun(def).group, new THREE.Vector3(1, 0.35, 0.12));
+    const key = mods ? `gun:${def.id}:${mods.skin}:${mods.sight}:${mods.muzzle}:${mods.mag}:${mods.laser}:${mods.charm}` : `gun:${def.id}`;
+    return thumbs.object(key, () => buildGun(def, mods).group, new THREE.Vector3(1, 0.35, 0.12));
   } catch {
     return '';
   }

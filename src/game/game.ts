@@ -7,13 +7,14 @@ import { Emitter } from '../core/events';
 import { clamp, damp, distToRect, formatMoney } from '../core/math';
 import { pick, rand, randInt } from '../core/rng';
 import {
-  Grid, CENTER_X, FACADE_Z, DOOR_TILES, WIDTHS, MAX_WIDTH, depthCost, depthLevel, floorCost, floorLevel, type Layout,
+  Grid, CENTER_X, FACADE_Z, SIDEWALK_Z0, DOOR_TILES, WIDTHS, MAX_WIDTH, depthCost, depthLevel, floorCost, floorLevel, type Layout,
 } from '../world/grid';
 import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
 import { MAX_DEPTH_STEPS } from '../world/city';
 import { Sky } from '../world/sky';
+import { WaypointBeacon } from '../world/waypoint';
 import { WALL_CUT, syncWallCut } from '../world/walls';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
@@ -132,6 +133,8 @@ export interface GameEvents {
   dealer: void;
   /** At your garage door (on foot). */
   garage: void;
+  /** A waypoint was set or cleared. */
+  waypoint: void;
   /** You started or stopped doing something (sitting, punching the bag…). */
   activity: void;
 }
@@ -365,7 +368,7 @@ export class Game implements World, ItemHost {
     this.gunplay = new GunPlay(this);
     this.combat = new Combat(this);
     this.drive = new Driving(this);
-    this.street.city.group.add(this.drive.group);
+    this.street.city.group.add(this.drive.group, this.beacon.group);
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : 14;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
@@ -607,7 +610,7 @@ export class Game implements World, ItemHost {
     const cos = { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] };
     const stats = { ...this.stats };
     const house = this.house;
-    const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] };
+    const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } };
     this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
     this.rebirths = n;
     this.stats = stats;
@@ -1267,7 +1270,7 @@ export class Game implements World, ItemHost {
     }
     this.spend(d.price, 'purchase');
     const slots = [...this.guns.slots];
-    const next = { owned: [...this.guns.owned, id], equipped: id, slots };
+    const next = { owned: [...this.guns.owned, id], equipped: id, slots, mods: { ...this.guns.mods } };
     autoSlot(next, id);
     this.guns = next;
     audio.play('reload');
@@ -2589,9 +2592,63 @@ export class Game implements World, ItemHost {
     this.notify('Elevator moved on every floor.', 'good');
   }
 
+  // ------------------------------------------------------------------ waypoints & fast travel
+
+  /** The spot you marked on the map (global frame), or null. */
+  waypoint: { x: number; z: number; label: string } | null = null;
+  private beacon = new WaypointBeacon();
+
+  setWaypoint(x: number, z: number, label = 'Waypoint'): void {
+    this.waypoint = { x, z, label };
+    audio.play('pop', { pitch: 1.3 });
+    this.events.emit('waypoint', undefined);
+  }
+
+  clearWaypoint(): void {
+    if (!this.waypoint) return;
+    this.waypoint = null;
+    this.events.emit('waypoint', undefined);
+  }
+
+  /** Your casino, your hotel buildings and your house. */
+  ownsLot(lot: StreetLot): boolean {
+    return lot.kind === 'me' || lot.hotelOf === 'me' || (lot.id === 'house' && !!this.house);
+  }
+
+  /** In one of your own buildings, or standing right outside one (where fast travel works). */
+  get atOwnBuilding(): boolean {
+    if (this.inside) return !this.visit;
+    const p = this.street.worldToGlobal(this.player.x, this.player.z);
+    return this.street.lots.some((l) => {
+      if (!this.ownsLot(l)) return false;
+      const d = this.street.toGlobal(l.id, CENTER_X, SIDEWALK_Z0 + 1.6);
+      return Math.hypot(d.x - p.x, d.z - p.z) < 14;
+    });
+  }
+
+  /** Why you can't fast-travel to this building right now (null = go ahead). */
+  travelBlock(lot: StreetLot): string | null {
+    if (!this.ownsLot(lot)) return 'You can only teleport to your own buildings. Mark a waypoint and walk or drive there.';
+    if (!this.atOwnBuilding) return 'Fast travel only works between your own buildings: get to your casino, hotel or house first.';
+    return null;
+  }
+
+  /** Fast travel to the sidewalk outside one of your own buildings (from another one). */
+  teleportToLot(lot: StreetLot): boolean {
+    const block = this.travelBlock(lot);
+    if (block) {
+      audio.play('error');
+      this.notify(block, 'bad');
+      return false;
+    }
+    const d = this.street.toGlobal(lot.id, CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
+    return this.teleportTo(d.x, d.z);
+  }
+
   /**
-   * Minimap teleport to a point of the street (global frame). Only the sidewalks and the
-   * road are allowed; you can never land inside a casino.
+   * Put the player on a point of the street (global frame). Only the sidewalks and the road
+   * are allowed; you can never land inside a casino. Players get here through fast travel
+   * between their own buildings (teleportToLot).
    */
   teleportTo(gx: number, gz: number): boolean {
     if (this.state !== 'playing' || this.photoMode) return false;
@@ -3665,6 +3722,18 @@ export class Game implements World, ItemHost {
 
     // Driving (before the player, who sits in the car)
     if (playing && sim > 0) this.drive.update(sim);
+    // Waypoint: the beacon out in the world, cleared once you get there.
+    {
+      const wp = playing ? this.waypoint : null;
+      const pg = this.street.worldToGlobal(this.player.x, this.player.z);
+      const dist = wp ? Math.hypot(wp.x - pg.x, wp.z - pg.z) : 0;
+      this.beacon.update(dt, wp, dist);
+      if (wp && !this.inside && dist < 7) {
+        this.clearWaypoint();
+        audio.play('levelup', { volume: 0.5 });
+        this.notify(`You've reached ${wp.label === 'Waypoint' ? 'your waypoint' : wp.label}.`, 'good');
+      }
+    }
 
     // Player movement
     const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0;
@@ -3913,7 +3982,7 @@ export class Game implements World, ItemHost {
         ...home,
         ...live,
         house: this.houseSave(),
-        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
+        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } },
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         day: this.day,
@@ -3941,7 +4010,7 @@ export class Game implements World, ItemHost {
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
         hotel: this.hotelSave(),
         house: this.houseSave(),
-        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
+        guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } },
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         rebirths: this.rebirths,
@@ -3980,7 +4049,7 @@ export class Game implements World, ItemHost {
       cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
       hotel: this.hotelSave(),
       house: this.houseSave(),
-      guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots] },
+      guns: { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } },
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
       rebirths: this.rebirths,

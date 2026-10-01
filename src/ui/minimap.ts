@@ -10,7 +10,8 @@ const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 
 /**
  * Live map of the street (both sides of the road). Shows every casino, you and the other
- * players; click the sidewalk or road to teleport there, or a casino to land at its door.
+ * players; click anywhere to mark a waypoint, or one of your own buildings to fast-travel
+ * there (only from another of your buildings). The map turns with the camera.
  */
 export class Minimap {
   readonly el: HTMLElement;
@@ -37,7 +38,7 @@ export class Minimap {
   private compassBtn: HTMLElement;
 
   constructor(private game: Game) {
-    this.canvas = h('canvas', { class: 'mm-canvas', 'aria-label': 'Street map: click to teleport' }) as HTMLCanvasElement;
+    this.canvas = h('canvas', { class: 'mm-canvas', 'aria-label': 'City map: click to set a waypoint' }) as HTMLCanvasElement;
     this.ctx = this.canvas.getContext('2d')!;
     const toggle = h('button', {
       class: 'mm-toggle', text: '⤢', title: 'Bigger map (M)', 'aria-label': 'Toggle big map',
@@ -204,20 +205,31 @@ export class Minimap {
     const pz = u.y;
     const gx = this.view.x0 + px / this.view.s;
     const gz = this.view.z0 + pz / this.view.s;
-    // A building: land on the sidewalk right outside its door.
+    // Tap the waypoint again to clear it.
+    const wp = g.waypoint;
+    if (wp && Math.hypot(wp.x - gx, wp.z - gz) * this.view.s < 14 * Math.min(2, window.devicePixelRatio || 1)) {
+      g.clearWaypoint();
+      audio.play('click');
+      this.t = 0;
+      return;
+    }
     const lot = g.street.lots.find((l) => {
       const b = this.lotRect(l);
       return gx >= b.x0 && gx <= b.x1 && gz >= b.z0 && gz <= b.z1;
     });
-    let ok: boolean;
+    // Your own buildings: fast travel there (only from another of your buildings).
+    if (lot && g.ownsLot(lot) && !g.travelBlock(lot)) {
+      g.teleportToLot(lot);
+      return;
+    }
+    // Anywhere else: mark a waypoint (a building's is at its door).
     if (lot) {
       const d = g.street.toGlobal(lot.id, CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
-      ok = g.teleportTo(d.x, d.z);
-    } else ok = g.teleportTo(gx, gz);
-    if (!ok && g.combat.teleportLock <= 0) {
-      audio.play('error');
-      g.notify('You can only teleport onto a sidewalk or a road, never inside a building.', 'bad');
-    }
+      const name = lot.kind === 'house' ? (lot.houseOf === 'me' ? 'your house' : `${lot.owner}'s house`) : lot.info.look.name;
+      g.setWaypoint(d.x, d.z, name);
+      if (g.ownsLot(lot)) g.notify(`Waypoint set to ${name}. Fast travel only works from one of your own buildings.`, 'info');
+    } else g.setWaypoint(gx, gz);
+    this.t = 0;
   }
 
   update(dt: number): void {
@@ -460,6 +472,38 @@ export class Minimap {
       if (d.car) c.rect(X(d.x) - 4, Z(d.z) - 4, 8, 8);
       else c.arc(X(d.x), Z(d.z), Math.max(3, s * 0.5), 0, Math.PI * 2);
       c.fill();
+    }
+    // Your waypoint: a dashed route line and a pin.
+    const wpt = g.waypoint;
+    if (wpt) {
+      c.strokeStyle = 'rgba(255,197,61,0.9)';
+      c.lineWidth = Math.max(2, s * 0.25);
+      c.setLineDash([8, 6]);
+      c.beginPath();
+      c.moveTo(X(me.x), Z(me.z));
+      c.lineTo(X(wpt.x), Z(wpt.z));
+      c.stroke();
+      c.setLineDash([]);
+      const px = X(wpt.x);
+      const pz = Z(wpt.z);
+      const pr = 8 * Math.min(2, window.devicePixelRatio || 1);
+      c.save();
+      c.translate(px, pz);
+      c.rotate(-rot);
+      c.fillStyle = '#ffc53d';
+      c.strokeStyle = '#17151f';
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(0, 0);
+      c.bezierCurveTo(-pr, -pr, -pr, -pr * 2.2, 0, -pr * 2.2);
+      c.bezierCurveTo(pr, -pr * 2.2, pr, -pr, 0, 0);
+      c.fill();
+      c.stroke();
+      c.fillStyle = '#17151f';
+      c.beginPath();
+      c.arc(0, -pr * 1.45, pr * 0.32, 0, Math.PI * 2);
+      c.fill();
+      c.restore();
     }
     // You: an arrow showing which way you face
     const yaw = g.player.yaw + (st.placeOf(st.activeId).side ? Math.PI : 0);

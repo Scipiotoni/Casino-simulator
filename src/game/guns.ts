@@ -74,10 +74,180 @@ export interface GunState {
   equipped: string | null;
   /** What's on keys 1–5 (weapon ids, null = empty). */
   slots: (string | null)[];
+  /** Skins and attachments per weapon you own. */
+  mods: Record<string, GunMods>;
 }
 
 export function emptyGuns(): GunState {
-  return { owned: [], equipped: null, slots: Array(SLOTS).fill(null) };
+  return { owned: [], equipped: null, slots: Array(SLOTS).fill(null), mods: {} };
+}
+
+// ------------------------------------------------------------------ customization
+
+export type Sight = 'iron' | 'reddot' | 'holo' | 'scope';
+export type Muzzle = 'none' | 'suppressor' | 'compensator';
+export type MagSize = 'standard' | 'extended' | 'drum';
+export type Charm = 'none' | 'dice' | 'chip' | 'cherry' | 'skull' | 'star';
+
+/** How a weapon you own is customized at Bullseye Guns. */
+export interface GunMods {
+  skin: string;
+  sight: Sight;
+  muzzle: Muzzle;
+  mag: MagSize;
+  laser: boolean;
+  charm: Charm;
+}
+
+export interface GunSkin {
+  id: string;
+  name: string;
+  price: number;
+  /** Main colour (null = the gun's own). */
+  color: number | null;
+  /** Second colour for grips and frames. */
+  accent: number | null;
+  metal: number;
+  rough: number;
+  /** Glows (neon skins). */
+  glow?: boolean;
+  /** Painted pattern. */
+  pattern?: 'camo' | 'carbon' | 'tiger' | 'digital' | 'galaxy';
+  swatch: string;
+}
+
+export const GUN_SKINS: GunSkin[] = [
+  { id: 'stock', name: 'Factory', price: 0, color: null, accent: null, metal: 0.65, rough: 0.32, swatch: 'linear-gradient(135deg,#555,#222)' },
+  { id: 'blackout', name: 'Blackout', price: 600, color: 0x111114, accent: 0x0a0a0c, metal: 0.4, rough: 0.6, swatch: '#111114' },
+  { id: 'chrome', name: 'Mirror Chrome', price: 2500, color: 0xe8edf2, accent: 0x9aa0ab, metal: 1, rough: 0.06, swatch: 'linear-gradient(135deg,#fff,#9aa0ab)' },
+  { id: 'gold', name: '24K Gold', price: 9000, color: 0xf2b632, accent: 0x8a5a12, metal: 1, rough: 0.15, swatch: 'linear-gradient(135deg,#ffe28a,#c98a12)' },
+  { id: 'rose', name: 'Rose Gold', price: 7000, color: 0xe8a48c, accent: 0x6b3a30, metal: 1, rough: 0.18, swatch: 'linear-gradient(135deg,#f6c7b6,#b8705a)' },
+  { id: 'camo', name: 'Woodland Camo', price: 1500, color: 0xffffff, accent: 0x2f3a22, metal: 0.1, rough: 0.8, pattern: 'camo', swatch: 'radial-gradient(circle at 30% 40%,#4a5a2a 0 25%,#2f3a22 26% 50%,#7a6a3a 51%)' },
+  { id: 'desert', name: 'Desert Digital', price: 1500, color: 0xffffff, accent: 0x6b5a3a, metal: 0.1, rough: 0.8, pattern: 'digital', swatch: 'linear-gradient(90deg,#c8a878 0 33%,#9a7a4a 33% 66%,#e2c89a 66%)' },
+  { id: 'carbon', name: 'Carbon Fibre', price: 3500, color: 0xffffff, accent: 0x111114, metal: 0.3, rough: 0.35, pattern: 'carbon', swatch: 'repeating-linear-gradient(45deg,#222 0 4px,#3a3a40 4px 8px)' },
+  { id: 'tiger', name: 'Tiger Stripe', price: 4000, color: 0xffffff, accent: 0x17151f, metal: 0.2, rough: 0.5, pattern: 'tiger', swatch: 'repeating-linear-gradient(60deg,#ff8a1f 0 6px,#17151f 6px 9px)' },
+  { id: 'neonpink', name: 'Neon Pink', price: 6000, color: 0xff3fa4, accent: 0x2a0a1a, metal: 0.3, rough: 0.3, glow: true, swatch: '#ff3fa4' },
+  { id: 'neoncyan', name: 'Neon Ice', price: 6000, color: 0x2fe6ff, accent: 0x0a1f2a, metal: 0.3, rough: 0.3, glow: true, swatch: '#2fe6ff' },
+  { id: 'galaxy', name: 'Galaxy', price: 15000, color: 0xffffff, accent: 0x1a0d33, metal: 0.4, rough: 0.25, pattern: 'galaxy', swatch: 'radial-gradient(circle at 30% 30%,#b77bff,#1a0d33 60%,#2fe6ff)' },
+  { id: 'diamond', name: 'Diamond Encrusted', price: 50000, color: 0xf4fbff, accent: 0xbfe8ff, metal: 0.9, rough: 0.02, glow: true, swatch: 'linear-gradient(135deg,#fff,#bfe8ff,#fff)' },
+];
+
+export const SIGHTS: { id: Sight; name: string; price: number; blurb: string }[] = [
+  { id: 'iron', name: 'Iron sights', price: 0, blurb: 'What it came with.' },
+  { id: 'reddot', name: 'Red dot', price: 900, blurb: 'Aimed shots 30% tighter.' },
+  { id: 'holo', name: 'Holographic', price: 1800, blurb: 'Aimed shots 40% tighter, a little zoom.' },
+  { id: 'scope', name: '4× Scope', price: 3500, blurb: 'Big zoom and pinpoint aimed shots; a bit worse from the hip.' },
+];
+
+export const MUZZLES: { id: Muzzle; name: string; price: number; blurb: string }[] = [
+  { id: 'none', name: 'Bare barrel', price: 0, blurb: 'Loud and proud.' },
+  { id: 'suppressor', name: 'Suppressor', price: 2500, blurb: 'Quiet shots that don’t send people running. Range −10%.' },
+  { id: 'compensator', name: 'Compensator', price: 1600, blurb: 'Kick −40%, spread −15%.' },
+];
+
+export const MAGS: { id: MagSize; name: string; price: number; blurb: string }[] = [
+  { id: 'standard', name: 'Standard', price: 0, blurb: 'Factory magazine.' },
+  { id: 'extended', name: 'Extended', price: 1200, blurb: '+50% rounds, reloads a touch slower.' },
+  { id: 'drum', name: 'Drum', price: 4000, blurb: 'Double the rounds, slower reloads.' },
+];
+
+export const LASER_PRICE = 1400;
+
+export const CHARMS: { id: Charm; name: string; price: number }[] = [
+  { id: 'none', name: 'None', price: 0 },
+  { id: 'dice', name: 'Lucky dice', price: 300 },
+  { id: 'chip', name: 'Poker chip', price: 300 },
+  { id: 'cherry', name: 'Slot cherries', price: 400 },
+  { id: 'star', name: 'Gold star', price: 500 },
+  { id: 'skull', name: 'Skull', price: 500 },
+];
+
+export function defaultGunMods(): GunMods {
+  return { skin: 'stock', sight: 'iron', muzzle: 'none', mag: 'standard', laser: false, charm: 'none' };
+}
+
+/** Which attachments a weapon takes (melee: skins and charms only; the sniper has its own scope). */
+export function gunTakes(def: GunDef): { sight: boolean; muzzle: boolean; mag: boolean; laser: boolean } {
+  if (def.melee) return { sight: false, muzzle: false, mag: false, laser: false };
+  const toy = def.kind === 'paint' || def.kind === 'confetti' || def.kind === 'laser';
+  return { sight: def.kind !== 'sniper' && def.kind !== 'minigun', muzzle: !toy && def.kind !== 'minigun', mag: def.kind !== 'laser' && def.kind !== 'minigun', laser: true };
+}
+
+export function sanitizeGunMods(def: GunDef, raw: unknown): GunMods {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const t = gunTakes(def);
+  const pick = <T extends string>(v: unknown, list: { id: T }[], d: T): T => (list.some((o) => o.id === v) ? (v as T) : d);
+  return {
+    skin: GUN_SKINS.some((s) => s.id === r.skin) ? (r.skin as string) : 'stock',
+    sight: t.sight ? pick(r.sight, SIGHTS, 'iron') : 'iron',
+    muzzle: t.muzzle ? pick(r.muzzle, MUZZLES, 'none') : 'none',
+    mag: t.mag ? pick(r.mag, MAGS, 'standard') : 'standard',
+    laser: t.laser && r.laser === true,
+    charm: pick(r.charm, CHARMS, 'none'),
+  };
+}
+
+/** A weapon's mods (made from the defaults the first time). */
+export function gunModsOf(st: GunState, id: string): GunMods {
+  st.mods ??= {};
+  st.mods[id] ??= defaultGunMods();
+  return st.mods[id];
+}
+
+/** The stats a customized weapon actually has, plus how its attachments change aiming. */
+export interface TunedGun extends GunDef {
+  /** Spread multiplier when aimed down the sights. */
+  adsAcc: number;
+  /** Spread multiplier from the hip. */
+  hipAcc: number;
+  /** Recoil multiplier. */
+  kickMul: number;
+  /** Suppressed: quieter, doesn't scare people off. */
+  quiet: boolean;
+  mods: GunMods;
+}
+
+export function tunedGun(def: GunDef, mods: GunMods | null | undefined): TunedGun {
+  const m = mods ? sanitizeGunMods(def, mods) : defaultGunMods();
+  const t: TunedGun = { ...def, adsAcc: 1, hipAcc: 1, kickMul: 1, quiet: false, mods: m };
+  if (def.melee) return t;
+  if (m.mag === 'extended') {
+    t.mag = Math.round(def.mag * 1.5);
+    t.reload = def.reload * 1.15;
+  } else if (m.mag === 'drum') {
+    t.mag = Math.round(def.mag * 2);
+    t.reload = def.reload * 1.4;
+  }
+  if (m.muzzle === 'suppressor') {
+    t.quiet = true;
+    t.range = def.range * 0.9;
+  } else if (m.muzzle === 'compensator') {
+    t.kickMul = 0.6;
+    t.spread = def.spread * 0.85;
+  }
+  if (m.sight === 'reddot') t.adsAcc = 0.7;
+  else if (m.sight === 'holo') {
+    t.adsAcc = 0.6;
+    t.adsFov = def.adsFov * 0.88;
+  } else if (m.sight === 'scope') {
+    t.adsAcc = 0.45;
+    t.hipAcc = 1.1;
+    t.adsFov = Math.min(def.adsFov, 24);
+  }
+  if (m.laser) t.hipAcc *= 0.7;
+  return t;
+}
+
+/** Short list of what's fitted ("Gold · Red dot · Suppressor"), '' when stock. */
+export function gunModsSummary(m: GunMods): string {
+  const out: string[] = [];
+  if (m.skin !== 'stock') out.push(GUN_SKINS.find((s) => s.id === m.skin)?.name ?? '');
+  if (m.sight !== 'iron') out.push(SIGHTS.find((s) => s.id === m.sight)?.name ?? '');
+  if (m.muzzle !== 'none') out.push(MUZZLES.find((s) => s.id === m.muzzle)?.name ?? '');
+  if (m.mag !== 'standard') out.push(`${MAGS.find((s) => s.id === m.mag)?.name} mag`);
+  if (m.laser) out.push('Laser');
+  if (m.charm !== 'none') out.push(CHARMS.find((s) => s.id === m.charm)?.name ?? '');
+  return out.filter(Boolean).join(' · ');
 }
 
 /** Put a new weapon on the first free slot (if there is one). */
@@ -101,5 +271,12 @@ export function sanitizeGuns(raw: unknown): GunState {
     // Older saves: put the guns you own on the slots in order.
     owned.slice(0, SLOTS).forEach((x, i) => (slots[i] = x));
   }
-  return { owned, equipped: eq, slots };
+  const mods: Record<string, GunMods> = {};
+  if (r.mods && typeof r.mods === 'object') {
+    for (const [k, v] of Object.entries(r.mods as Record<string, unknown>)) {
+      const d = gunDef(k);
+      if (d && owned.includes(k)) mods[k] = sanitizeGunMods(d, v);
+    }
+  }
+  return { owned, equipped: eq, slots, mods };
 }

@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { mat, glow, gold, chrome } from '../../render/materials';
-import type { GunDef } from '../../game/guns';
+import { type GunDef, type GunMods, GUN_SKINS, gunTakes } from '../../game/guns';
+import { canvasTexture, makeCanvas, seeded } from '../../render/textures';
 import { box, cyl, sph } from './common';
 
 /**
  * A gun model built along +z (barrel forward), grip down (-y), origin at the grip. Returns the
  * group and the muzzle point (in the group's frame).
  */
-export function buildGun(def: GunDef): { group: THREE.Group; muzzle: THREE.Vector3; spin?: THREE.Object3D } {
+export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): { group: THREE.Group; muzzle: THREE.Vector3; spin?: THREE.Object3D } {
   const g = new THREE.Group();
   const body = def.kind === 'cannon' ? gold() : mat(def.color, { rough: 0.32, metal: 0.65 });
   const dark = mat(0x17151f, { rough: 0.42, metal: 0.55 });
@@ -337,9 +338,200 @@ export function buildGun(def: GunDef): { group: THREE.Group; muzzle: THREE.Vecto
       break;
     }
   }
+  if (mods) {
+    applySkin(g, mods.skin, new Set<THREE.Material>([body, polymer, wood]), new Set<THREE.Material>([dark, woodDark]));
+    muzzle = addAttachments(g, def, mods, muzzle, beam);
+  }
   g.traverse((o) => {
     const m = o as THREE.Mesh;
     if (m.isMesh) m.castShadow = false;
   });
   return { group: g, muzzle, spin };
+}
+
+// ------------------------------------------------------------------ skins and attachments
+
+const patternCache = new Map<string, THREE.Texture>();
+function patternTexture(kind: string): THREE.Texture {
+  const hit = patternCache.get(kind);
+  if (hit) return hit;
+  const { canvas, ctx } = makeCanvas(64, 64);
+  const rnd = seeded(kind.length * 31);
+  if (kind === 'camo') {
+    ctx.fillStyle = '#5a6a3a';
+    ctx.fillRect(0, 0, 64, 64);
+    for (const c of ['#2f3a22', '#7a6a3a', '#3e4a2a', '#1f2616']) {
+      ctx.fillStyle = c;
+      for (let i = 0; i < 6; i++) {
+        ctx.beginPath();
+        ctx.ellipse(rnd() * 64, rnd() * 64, 4 + rnd() * 10, 3 + rnd() * 6, rnd() * 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (kind === 'digital') {
+    const cols = ['#c8a878', '#9a7a4a', '#e2c89a', '#7a5a3a'];
+    for (let y = 0; y < 64; y += 4) for (let x = 0; x < 64; x += 4) {
+      ctx.fillStyle = cols[Math.floor(rnd() * cols.length)];
+      ctx.fillRect(x, y, 4, 4);
+    }
+  } else if (kind === 'carbon') {
+    for (let y = 0; y < 64; y += 8) for (let x = 0; x < 64; x += 8) {
+      const g2 = ctx.createLinearGradient(x, y, x + 8, y + 8);
+      const flip = ((x + y) / 8) % 2 === 0;
+      g2.addColorStop(0, flip ? '#3a3a42' : '#18181c');
+      g2.addColorStop(1, flip ? '#18181c' : '#3a3a42');
+      ctx.fillStyle = g2;
+      ctx.fillRect(x, y, 8, 8);
+    }
+  } else if (kind === 'tiger') {
+    ctx.fillStyle = '#ff8a1f';
+    ctx.fillRect(0, 0, 64, 64);
+    ctx.fillStyle = '#17151f';
+    for (let i = 0; i < 7; i++) {
+      const x = i * 10 + rnd() * 4;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.quadraticCurveTo(x + 8, 32, x - 2, 64);
+      ctx.lineTo(x + 3, 64);
+      ctx.quadraticCurveTo(x + 12, 32, x + 4, 0);
+      ctx.fill();
+    }
+  } else if (kind === 'galaxy') {
+    const gr = ctx.createLinearGradient(0, 0, 64, 64);
+    gr.addColorStop(0, '#1a0d33');
+    gr.addColorStop(0.5, '#4a1a7a');
+    gr.addColorStop(1, '#0d2a4a');
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, 0, 64, 64);
+    for (let i = 0; i < 40; i++) {
+      ctx.fillStyle = `rgba(255,255,255,${0.4 + rnd() * 0.6})`;
+      ctx.fillRect(rnd() * 64, rnd() * 64, 1, 1);
+    }
+  }
+  const t = canvasTexture(canvas, true);
+  t.repeat.set(4, 4);
+  patternCache.set(kind, t);
+  return t;
+}
+
+const skinMats = new Map<string, [THREE.Material, THREE.Material]>();
+function skinMaterials(id: string): [THREE.Material, THREE.Material] | null {
+  const sk = GUN_SKINS.find((s) => s.id === id);
+  if (!sk || sk.id === 'stock') return null;
+  const hit = skinMats.get(id);
+  if (hit) return hit;
+  // Shiny metals read dark under the dim close-up lighting of the gun in your hands:
+  // keep some of the colour diffuse and give it a faint glow of its own.
+  const shiny = sk.metal > 0.8;
+  const main = new THREE.MeshStandardMaterial({
+    color: sk.color ?? 0xffffff, metalness: shiny ? 0.55 : sk.metal, roughness: shiny ? Math.max(0.22, sk.rough) : sk.rough,
+    map: sk.pattern ? patternTexture(sk.pattern) : null,
+    emissive: sk.glow ? (sk.color ?? 0xffffff) : shiny ? (sk.color ?? 0xffffff) : 0x000000,
+    emissiveIntensity: sk.glow ? (sk.id === 'diamond' ? 0.3 : 0.9) : shiny ? 0.12 : 0,
+  });
+  const accent = new THREE.MeshStandardMaterial({ color: sk.accent ?? 0x17151f, metalness: Math.min(1, sk.metal + 0.1), roughness: Math.max(0.1, sk.rough) });
+  const pair: [THREE.Material, THREE.Material] = [main, accent];
+  skinMats.set(id, pair);
+  return pair;
+}
+
+function applySkin(g: THREE.Group, skin: string, mainSet: Set<THREE.Material>, accentSet: Set<THREE.Material>): void {
+  const mats = skinMaterials(skin);
+  if (!mats) return;
+  g.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const cur = m.material as THREE.Material;
+    if (mainSet.has(cur)) m.material = mats[0];
+    else if (accentSet.has(cur)) m.material = mats[1];
+  });
+}
+
+/** Sights, muzzle devices, magazines, a laser and a charm, placed from the gun's own shape. */
+function addAttachments(g: THREE.Group, def: GunDef, mods: GunMods, muzzle: THREE.Vector3, beam: boolean): THREE.Vector3 {
+  const takes = gunTakes(def);
+  g.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(g);
+  const black = mat(0x0c0c10, { rough: 0.5, metal: 0.4 });
+  const steel = chrome();
+  const len = Math.max(0.15, bb.max.z - bb.min.z);
+  const top = bb.max.y;
+  const out = muzzle.clone();
+  const tube = (r: number, l: number, m: THREE.Material, x: number, y: number, z: number, seg = 12) => {
+    const c = cyl(g, r, r, l, m, x, y, z, seg);
+    c.rotation.x = Math.PI / 2;
+    return c;
+  };
+  if (takes.sight && mods.sight !== 'iron') {
+    const z = bb.min.z + len * 0.42;
+    if (mods.sight === 'reddot') {
+      box(g, 0.026, 0.008, 0.04, black, 0, top + 0.004, z);
+      const hood = tube(0.016, 0.03, black, 0, top + 0.024, z, 12);
+      void hood;
+      const lens = tube(0.012, 0.002, mat(0xff3b3b, { emissive: 0xff2020, emissiveIntensity: 1.6, transparent: true, opacity: 0.7 }), 0, top + 0.024, z + 0.012, 12);
+      void lens;
+    } else if (mods.sight === 'holo') {
+      box(g, 0.03, 0.01, 0.06, black, 0, top + 0.005, z);
+      for (const sx of [-1, 1]) box(g, 0.005, 0.04, 0.05, black, sx * 0.018, top + 0.03, z);
+      box(g, 0.04, 0.005, 0.05, black, 0, top + 0.05, z);
+      box(g, 0.03, 0.03, 0.002, mat(0x2fe6ff, { emissive: 0x2fe6ff, emissiveIntensity: 0.9, transparent: true, opacity: 0.45 }), 0, top + 0.03, z + 0.02);
+    } else {
+      const sl = Math.min(0.22, len * 0.55);
+      for (const sz of [-0.3, 0.3]) box(g, 0.02, 0.022, 0.018, black, 0, top + 0.011, z + sz * sl);
+      tube(0.02, sl, black, 0, top + 0.04, z, 14);
+      for (const sz of [-1, 1]) {
+        tube(0.027, 0.04, black, 0, top + 0.04, z + sz * (sl / 2 + 0.015), 14);
+        tube(0.024, 0.003, mat(0x2fe6ff, { rough: 0.05, metal: 0.9, emissive: 0x0b3a44, emissiveIntensity: 1 }), 0, top + 0.04, z + sz * (sl / 2 + 0.036), 14);
+      }
+      cyl(g, 0.01, 0.01, 0.02, black, 0, top + 0.068, z, 10);
+    }
+  }
+  if (takes.muzzle && mods.muzzle !== 'none') {
+    if (mods.muzzle === 'suppressor') {
+      tube(0.02, 0.16, black, out.x, out.y, out.z + 0.08, 14);
+      tube(0.022, 0.01, steel, out.x, out.y, out.z + 0.005, 14);
+      out.z += 0.16;
+    } else {
+      tube(0.016, 0.05, steel, out.x, out.y, out.z + 0.025, 12);
+      for (const sx of [-1, 1]) box(g, 0.004, 0.012, 0.03, black, out.x + sx * 0.016, out.y + 0.004, out.z + 0.025);
+      out.z += 0.05;
+    }
+  }
+  if (takes.mag && mods.mag !== 'standard') {
+    const z = Math.max(bb.min.z + 0.04, muzzle.z * 0.38);
+    const y = bb.min.y + 0.02;
+    if (mods.mag === 'extended') box(g, 0.026, 0.12, 0.036, black, 0, y - 0.05, z).rotation.x = -0.1;
+    else {
+      const d = cyl(g, 0.06, 0.06, 0.04, black, 0, y - 0.05, z, 18);
+      d.rotation.z = Math.PI / 2;
+      cyl(g, 0.02, 0.02, 0.045, steel, 0, y - 0.05, z, 10).rotation.z = Math.PI / 2;
+    }
+  }
+  if (takes.laser && mods.laser) {
+    const z = def.melee ? 0.1 : muzzle.z * 0.72;
+    const y = def.melee ? 0.03 : muzzle.y - 0.035;
+    box(g, 0.02, 0.018, 0.05, black, 0, y, z);
+    const tip = sph(g, 0.006, glow(0xff2020, 4), 0, y, z + 0.027, 8, 6);
+    void tip;
+    if (beam) {
+      const L = 9;
+      const b = cyl(g, 0.0025, 0.0025, L, new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.45, depthWrite: false }), 0, y, z + 0.03 + L / 2, 5);
+      b.rotation.x = Math.PI / 2;
+    }
+  }
+  if (mods.charm !== 'none') {
+    // Hangs off the back of the gun (the pommel on a melee weapon).
+    const z = bb.min.z + (def.melee ? 0.01 : 0.05);
+    const y = def.melee ? -0.02 : muzzle.y - 0.04;
+    cyl(g, 0.002, 0.002, 0.04, mat(0x9aa0ab, { metal: 0.8 }), 0.022, y - 0.02, z, 4);
+    const cy = y - 0.045;
+    if (mods.charm === 'dice') box(g, 0.022, 0.022, 0.022, mat(0xf4f1ea, { rough: 0.4 }), 0.022, cy, z).rotation.set(0.5, 0.6, 0);
+    else if (mods.charm === 'chip') tube(0.016, 0.006, mat(0xc8102e, { rough: 0.5 }), 0.022, cy, z, 14).rotation.set(0, 0, 0);
+    else if (mods.charm === 'cherry') {
+      sph(g, 0.01, mat(0xd21f3c, { rough: 0.3 }), 0.016, cy, z, 10, 8);
+      sph(g, 0.01, mat(0xd21f3c, { rough: 0.3 }), 0.03, cy - 0.004, z, 10, 8);
+    } else if (mods.charm === 'star') sph(g, 0.013, gold(), 0.022, cy, z, 5, 2);
+    else sph(g, 0.013, mat(0xf4f1ea, { rough: 0.6 }), 0.022, cy, z, 10, 8);
+  }
+  return out;
 }

@@ -5040,3 +5040,76 @@ p.small {
   justify-content: space-between;
   gap: 8px;
 }
+
+/* ------------------------------------------------------------------ gun workbench */
+.gun-skins {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+}
+
+.gun-skin {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.gun-skin i {
+  width: 34px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.gun-skin small {
+  color: var(--gold);
+  font-weight: 700;
+}
+
+.gun-skin.on {
+  border-color: var(--gold);
+  background: rgba(255, 197, 61, 0.14);
+}
+
+/* ------------------------------------------------------------------ waypoint */
+.wp-hud {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--safe-top, 0px) + 128px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 12px;
+  border-radius: 99px;
+  background: rgba(23, 21, 31, 0.85);
+  border: 1px solid rgba(255, 197, 61, 0.55);
+  color: #fff;
+  font: 800 12px var(--font-body);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.wp-hud i {
+  display: inline-block;
+  color: var(--gold);
+  font-style: normal;
+  /* ➤ points right; turn it to point up first. */
+  rotate: -90deg;
+}
+
+.wp-hud span {
+  color: var(--gold);
+}
+
+.wp-hud u {
+  text-decoration: none;
+  opacity: 0.55;
+}

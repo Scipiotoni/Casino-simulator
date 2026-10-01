@@ -63,7 +63,7 @@ describe('the house bank', () => {
 
 describe('guns', () => {
   it('saves only real guns and only equips owned ones', () => {
-    expect(sanitizeGuns({ owned: ['pistol', 'nope', 'pistol'], equipped: 'shotgun' })).toEqual({ owned: ['pistol'], equipped: null, slots: ['pistol', null, null, null, null] });
+    expect(sanitizeGuns({ owned: ['pistol', 'nope', 'pistol'], equipped: 'shotgun' })).toEqual({ owned: ['pistol'], equipped: null, slots: ['pistol', null, null, null, null], mods: {} });
     // Slots keep only owned weapons, once each.
     expect(sanitizeGuns({ owned: ['bat', 'rifle'], slots: ['rifle', 'rifle', 'nope', null, 'bat', 'x'] }).slots).toEqual(['rifle', null, null, null, 'bat']);
     expect(gunDef('katana')?.melee).toBe(true);

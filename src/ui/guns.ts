@@ -3,7 +3,8 @@ import type { Modals } from './modals';
 import { h, clear } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
-import { GUNS, SLOTS, gunDef } from '../game/guns';
+import { GUNS, SLOTS, gunDef, gunModsOf, gunModsSummary, tunedGun } from '../game/guns';
+import { openGunCustomize } from './gunCustomize';
 import { gunThumb } from './preview';
 
 /** The counter at Bullseye Guns: buy, draw or holster. */
@@ -22,7 +23,10 @@ export function openGunShop(game: Game, modals: Modals): void {
       const owned = g.guns.owned.includes(d.id);
       const on = g.guns.equipped === d.id;
       const locked = !owned && level() < d.unlock;
-      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${d.auto ? 'Full auto' : 'Semi-auto'} · ${d.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''} · ${d.dmg} damage · range ${d.range} m`;
+      const mods = owned ? gunModsOf(g.guns, d.id) : null;
+      const t = tunedGun(d, mods);
+      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${d.auto ? 'Full auto' : 'Semi-auto'} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''} · ${d.dmg} damage · range ${Math.round(t.range)} m`;
+      const fitted = mods ? gunModsSummary(mods) : '';
       const slotRow = h('div', { class: 'slot-row' });
       if (owned) {
         slotRow.appendChild(h('span', { class: 'muted small', text: 'Key' }));
@@ -36,13 +40,16 @@ export function openGunShop(game: Game, modals: Modals): void {
         }
       }
       grid.appendChild(h('div', { class: `gun-card${on ? ' on' : ''}${locked ? ' locked' : ''}` },
-        h('img', { class: 'gun-thumb', src: gunThumb(d), alt: '' }),
+        h('img', { class: 'gun-thumb', src: gunThumb(d, mods), alt: '' }),
         h('div', { class: 'gun-name', text: d.name }),
         h('div', { class: 'muted small', text: d.blurb }),
         h('div', { class: 'gun-stats', text: stats }),
+        fitted ? h('div', { class: 'gun-stats pos', text: `🎨 ${fitted}` }) : null,
         slotRow,
         owned
-          ? h('button', { class: `btn small${on ? '' : ' gold'}`, text: on ? 'Holster' : 'Draw', onClick: () => { g.equipGun(on ? null : d.id); render(); } })
+          ? h('div', { class: 'btn-row' },
+            h('button', { class: `btn small${on ? '' : ' gold'}`, text: on ? 'Holster' : 'Draw', onClick: () => { g.equipGun(on ? null : d.id); render(); } }),
+            h('button', { class: 'btn small', text: '🎨 Customize', onClick: () => { modals.close(); openGunCustomize(g, modals, d.id, () => openGunShop(g, modals)); } }))
           : h('button', {
             class: 'btn small gold', disabled: locked,
             html: locked ? `Casino level ${d.unlock}` : `Buy <b>${formatMoney(d.price)}</b>`,
@@ -119,22 +126,23 @@ export class GunBar {
     const gp = g.gunplay;
     const out = gp.canShoot;
     const fp = g.cam.mode === 'first';
-    const key = `${has}|${d?.id}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${out}|${g.input.isTouch}|${fp}|${gp.adsTouch}|${g.guns.slots.join(',')}`;
+    const key = `${has}|${d?.id}|${gp.def ? JSON.stringify(gp.def.mods) : ''}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${out}|${g.input.isTouch}|${fp}|${gp.adsTouch}|${g.guns.slots.join(',')}`;
     if (key === this.key) return;
     this.key = key;
     this.el.hidden = !has;
     if (!has) return;
     this.el.classList.toggle('armed', !!d && out);
     this.name.textContent = d ? `${d.melee ? '🏏' : '🔫'} ${d.name}` : '🔫 Holstered';
-    this.ammo.textContent = d ? (d.melee ? 'Melee' : gp.reloading > 0 ? 'Reloading…' : `${gp.ammoOf(d.id)} / ${d.mag}`) : '1–5 to draw';
+    this.ammo.textContent = d ? (d.melee ? 'Melee' : gp.reloading > 0 ? 'Reloading…' : `${gp.ammoOf(d.id)} / ${gp.def?.mag ?? d.mag}`) : '1–5 to draw';
     // The five slots: click to draw, the number key does the same.
     this.slotsEl.replaceChildren(...g.guns.slots.map((id, k) => {
       const sd = gunDef(id);
+      const sm = id ? g.guns.mods?.[id] : null;
       return h('button', {
         class: `gb-slot${id && id === g.guns.equipped ? ' on' : ''}${id ? '' : ' empty'}`,
         title: sd ? `${k + 1}: ${sd.name}` : `${k + 1}: empty (assign in the gun shop)`,
         onClick: () => { if (id) g.useSlot(k); else g.notify('Assign weapons to keys at Bullseye Guns (the number buttons under each one).', 'info'); },
-      }, h('b', { text: String(k + 1) }), h('img', { src: sd ? gunThumb(sd) : '', alt: '', hidden: !sd }));
+      }, h('b', { text: String(k + 1) }), h('img', { src: sd ? gunThumb(sd, sm) : '', alt: '', hidden: !sd }));
     }));
     this.hint.textContent = !d ? '' : out
       ? (d.melee ? (g.input.isTouch ? 'Tap FIRE to swing' : 'Click to swing') : g.input.isTouch ? (fp ? 'Drag to look · Hold FIRE' : 'Hold FIRE') : fp ? 'Click shoot · Right-click aim · R reload' : 'Click to shoot · R reload · V first person')

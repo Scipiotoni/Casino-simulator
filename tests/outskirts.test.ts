@@ -63,3 +63,34 @@ describe('the home garage', () => {
     expect(sanitizeParked(undefined, 4)).toEqual([]);
   });
 });
+
+import { GUN_SKINS, gunDef as gd, sanitizeGunMods, tunedGun, gunTakes, gunModsSummary, sanitizeGuns as sg } from '../src/game/guns';
+
+describe('gun customization', () => {
+  it('attachments change the stats the way the workbench says', () => {
+    const rifle = gd('rifle')!;
+    const stock = tunedGun(rifle, null);
+    expect(stock.mag).toBe(rifle.mag);
+    const t = tunedGun(rifle, { skin: 'gold', sight: 'scope', muzzle: 'suppressor', mag: 'drum', laser: true, charm: 'dice' });
+    expect(t.mag).toBe(rifle.mag * 2);
+    expect(t.reload).toBeGreaterThan(rifle.reload);
+    expect(t.quiet).toBe(true);
+    expect(t.adsFov).toBeLessThanOrEqual(24);
+    expect(t.adsAcc).toBeLessThan(1);
+    expect(t.range).toBeLessThan(rifle.range);
+    expect(tunedGun(rifle, { ...t.mods, muzzle: 'compensator' }).kickMul).toBeLessThan(1);
+    expect(gunModsSummary(t.mods)).toContain('24K Gold');
+  });
+
+  it('melee weapons only take skins and charms; bad saves are cleaned', () => {
+    const bat = gd('bat')!;
+    expect(gunTakes(bat)).toEqual({ sight: false, muzzle: false, mag: false, laser: false });
+    expect(sanitizeGunMods(bat, { skin: 'galaxy', sight: 'scope', mag: 'drum', laser: true, charm: 'skull' })).toEqual({ skin: 'galaxy', sight: 'iron', muzzle: 'none', mag: 'standard', laser: false, charm: 'skull' });
+    expect(sanitizeGunMods(gd('pistol')!, { skin: 'nope', sight: 'x', laser: 'yes' }).skin).toBe('stock');
+    expect(GUN_SKINS[0].price).toBe(0);
+    // Mods survive a save only for guns you own.
+    const st = sg({ owned: ['pistol'], mods: { pistol: { skin: 'chrome' }, rifle: { skin: 'gold' } } });
+    expect(st.mods.pistol.skin).toBe('chrome');
+    expect(st.mods.rifle).toBeUndefined();
+  });
+});

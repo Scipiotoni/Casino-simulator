@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Game } from './game';
-import { type GunDef, gunDef } from './guns';
+import { type GunDef, type TunedGun, gunDef, gunModsOf, tunedGun } from './guns';
 import { buildGun } from '../items/models/guns';
 import { audio, type SfxName } from '../core/audio';
 import { softDotTexture } from '../render/textures';
@@ -24,6 +24,8 @@ const SPLAT_COLORS = [0xff4d9a, 0x39ff88, 0x2fe6ff, 0xffc53d, 0xb77bff, 0xff8a1f
 /** The gun on screen in first person: your hand around the grip, sway, recoil and reloads. */
 interface ViewModel {
   id: string;
+  /** Mods it was built with. */
+  key?: string;
   holder: THREE.Group;
   gun: THREE.Group;
   muzzle: THREE.Vector3;
@@ -50,7 +52,7 @@ export class GunPlay {
   private ammo = new Map<string, number>();
   private cool = 0;
   reloading = 0;
-  private held: { id: string; group: THREE.Group; muzzle: THREE.Vector3; spin?: THREE.Object3D } | null = null;
+  private held: { id: string; key: string; group: THREE.Group; muzzle: THREE.Vector3; spin?: THREE.Object3D } | null = null;
   private tracers: Tracer[] = [];
   private splats: Splat[] = [];
   private flash: THREE.Sprite;
@@ -89,13 +91,38 @@ export class GunPlay {
     this.group.add(this.flash);
   }
 
-  get def(): GunDef | null {
-    return gunDef(this.g.guns.equipped);
+  private tuned: { key: string; def: TunedGun } | null = null;
+
+  /** The weapon in your hand, with its attachments' effects. */
+  get def(): TunedGun | null {
+    const id = this.g.guns.equipped;
+    const base = gunDef(id);
+    if (!base || !id) return null;
+    const mods = gunModsOf(this.g.guns, id);
+    const key = `${id}|${mods.skin}|${mods.sight}|${mods.muzzle}|${mods.mag}|${mods.laser}|${mods.charm}`;
+    if (this.tuned?.key !== key) this.tuned = { key, def: tunedGun(base, mods) };
+    return this.tuned.def;
   }
 
+  /** Rounds left in a weapon's magazine (never more than its magazine holds). */
   ammoOf(id: string): number {
-    const d = gunDef(id);
-    return this.ammo.get(id) ?? d?.mag ?? 0;
+    const base = gunDef(id);
+    if (!base) return 0;
+    const mag = tunedGun(base, this.g.guns.mods?.[id]).mag;
+    return Math.min(mag, this.ammo.get(id) ?? mag);
+  }
+
+  /** The look of a weapon changed: rebuild the models in your hands. */
+  refreshModels(): void {
+    this.tuned = null;
+    if (this.held) {
+      this.held.group.removeFromParent();
+      this.held = null;
+    }
+    if (this.vm) {
+      this.vm.holder.removeFromParent();
+      this.vm = null;
+    }
   }
 
   /** Out on the roads and sidewalks with your feet on the ground. */
@@ -144,30 +171,33 @@ export class GunPlay {
   private syncHeld(): void {
     const d = this.def;
     const show = !!d && this.canShoot;
-    if (this.held && (!show || this.held.id !== d?.id)) {
+    if (this.held && (!show || this.held.id !== d?.id || this.held.key !== this.tuned?.key)) {
       this.held.group.removeFromParent();
       this.held.group.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
       this.held = null;
     }
     if (show && !this.held && d) {
-      const b = buildGun(d);
+      const b = buildGun(d, d.mods, true);
       this.g.player.model.hand.add(b.group);
-      this.held = { id: d.id, group: b.group, muzzle: b.muzzle, spin: b.spin };
+      this.held = { id: d.id, key: this.tuned?.key ?? '', group: b.group, muzzle: b.muzzle, spin: b.spin };
     }
     this.g.player.model.aim = show && d ? (d.twoHand ? 2 : 1) : 0;
     const fp = show && this.g.cam.mode === 'first';
-    if (this.vm && (!fp || this.vm.id !== d?.id)) {
+    if (this.vm && (!fp || this.vm.id !== d?.id || this.vm.key !== this.tuned?.key)) {
       this.vm.holder.removeFromParent();
       this.vm.gun.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
       this.vm = null;
     }
-    if (fp && !this.vm && d) this.vm = this.buildViewModel(d);
+    if (fp && !this.vm && d) {
+      this.vm = this.buildViewModel(d);
+      this.vm.key = this.tuned?.key;
+    }
   }
 
   /** The gun as you see it in your own hands. */
-  private buildViewModel(d: GunDef): ViewModel {
+  private buildViewModel(d: TunedGun): ViewModel {
     const look = this.g.player.appearance;
-    const b = buildGun(d);
+    const b = buildGun(d, d.mods, true);
     const holder = new THREE.Group();
     const gun = new THREE.Group();
     gun.add(b.group);
@@ -390,7 +420,7 @@ export class GunPlay {
   /** A trigger pull waiting for the cooldown to end (seconds left). */
   private queued = 0;
 
-  private fire(d: GunDef): void {
+  private fire(d: TunedGun): void {
     const g = this.g;
     const left = this.ammoOf(d.id);
     if (left <= 0) {
@@ -428,10 +458,10 @@ export class GunPlay {
     }
     const sfx: SfxName = d.kind === 'laser' ? 'laser' : d.kind === 'paint' ? 'paintball' : d.kind === 'confetti' ? 'confettiGun' : d.kind === 'shotgun' ? 'shotgun'
       : d.kind === 'smg' || d.kind === 'minigun' || d.kind === 'rifle' ? 'smg' : d.kind === 'cannon' || d.kind === 'sniper' || d.kind === 'revolver' ? 'gunHeavy' : 'gunshot';
-    audio.play(sfx, { pitch: 0.94 + Math.random() * 0.12 });
+    audio.play(sfx, d.quiet ? { pitch: 1.5 + Math.random() * 0.1, volume: 0.3 } : { pitch: 0.94 + Math.random() * 0.12 });
     if (fp) {
       // Recoil: the view kicks up (aimed shots kick less), the gun punches back.
-      const kick = (heavy ? 0.055 : d.auto ? 0.014 : 0.03) * (this.aiming ? 0.6 : 1);
+      const kick = (heavy ? 0.055 : d.auto ? 0.014 : 0.03) * (this.aiming ? 0.6 : 1) * d.kickMul;
       g.cam.kick += kick;
       g.cam.kickYaw += (Math.random() - 0.5) * kick * 0.6;
       this.vmKick = Math.min(1, this.vmKick + (heavy ? 1 : 0.5));
@@ -449,7 +479,7 @@ export class GunPlay {
       base = ray.ray.direction.clone().normalize();
     }
     // Accuracy: aimed shots are tight, running and spraying open it up.
-    const acc = fp ? (this.aiming ? 0.25 : 0.85) * (1 + this.spreadK * 1.2) : 1;
+    const acc = (fp ? (this.aiming ? 0.25 * d.adsAcc : 0.85 * d.hipAcc) * (1 + this.spreadK * 1.2) : d.hipAcc);
     for (let i = 0; i < d.pellets; i++) {
       const dir = base.clone();
       const sp = d.pellets > 1 ? d.spread * Math.max(0.7, acc) : d.spread * acc;
@@ -464,7 +494,8 @@ export class GunPlay {
       this.shootRay(d, origin, dir, muzzle, !fp);
     }
     this.spreadK = Math.min(1, this.spreadK + (d.auto ? 0.12 : 0.35));
-    this.scareCrowd();
+    // A suppressed shot doesn't send everyone running.
+    if (!d.quiet) this.scareCrowd();
     g.events.emit('guns', undefined);
     if (this.ammoOf(d.id) <= 0) this.reload();
   }
