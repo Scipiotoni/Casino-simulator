@@ -17,7 +17,7 @@ import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { dampAngle } from '../core/math';
 import { Relay } from './relay';
-import { gunDef } from '../game/guns';
+import { decodeGunMods, encodeGunMods, gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, type RemoteTarget } from '../game/combat';
 import { buildCar, carDef, sanitizeMods } from '../world/vehicles';
@@ -125,6 +125,8 @@ interface Remote {
   out: boolean;
   /** Gun in their hand and how many shots they've fired (a change means a muzzle flash). */
   gun: string | null;
+  /** Their gun's skin and attachments (encodeGunMods). */
+  gm: string;
   shots: number;
   held: THREE.Group | null;
   label: HTMLElement;
@@ -314,7 +316,7 @@ export class Net {
         const label = h('div', { class: 'net-label' }, nameEl, hpEl);
         this.labelRoot.appendChild(label);
         r = {
-          key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, shots: 0, held: null, label, visible: false,
+          key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, gm: '', shots: 0, held: null, label, visible: false,
           bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, wl: 0,
         };
         this.remotes.set(p.peer, r);
@@ -340,13 +342,16 @@ export class Net {
       r.moving = pr.mv === 1;
       r.out = pr.out === 1 || (pr.out === undefined && r.tz >= FACADE_Z + 0.2);
       const gun = typeof pr.gun === 'string' && gunDef(pr.gun) ? pr.gun : null;
-      if (gun !== r.gun) {
+      // Their skin and attachments come along as a short code.
+      const gm = gun && typeof pr.gm === 'string' ? pr.gm.slice(0, 24) : '';
+      if (gun !== r.gun || gm !== r.gm) {
         r.held?.removeFromParent();
         r.held = null;
         r.gun = gun;
+        r.gm = gm;
         const d = gunDef(gun);
         if (d) {
-          const held = buildGun(d).group;
+          const held = buildGun(d, decodeGunMods(d, gm), true).group;
           r.held = held;
           r.model.hand.add(held);
         }
@@ -752,6 +757,7 @@ export class Net {
       mv: p.moving ? 1 : 0,
       out: g.inside ? 0 : 1,
       gun: g.gunplay.drawn ? g.guns.equipped : null,
+      gm: g.gunplay.drawn && g.gunplay.def ? encodeGunMods(g.gunplay.def.mods) : undefined,
       sh: g.gunplay.shots,
       hp: Math.round(g.combat.hp),
       ko: g.combat.ko > 0 ? 1 : 0,

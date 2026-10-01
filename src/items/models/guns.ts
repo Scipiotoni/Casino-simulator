@@ -8,7 +8,21 @@ import { box, cyl, sph } from './common';
  * A gun model built along +z (barrel forward), grip down (-y), origin at the grip. Returns the
  * group and the muzzle point (in the group's frame).
  */
-export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): { group: THREE.Group; muzzle: THREE.Vector3; spin?: THREE.Object3D } {
+/** What you look through when aiming: none (iron sights), a red dot, a holographic sight or a scope. */
+export type Optic = 'iron' | 'reddot' | 'holo' | 'scope';
+
+export interface BuiltGun {
+  group: THREE.Group;
+  muzzle: THREE.Vector3;
+  spin?: THREE.Object3D;
+  /** The optic on the gun, and the point your eye lines up with when aiming (group frame). */
+  optic: Optic;
+  sight?: THREE.Vector3;
+  /** A scope's rear lens (shows the magnified view). */
+  lens?: THREE.Mesh;
+}
+
+export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): BuiltGun {
   const g = new THREE.Group();
   const body = def.kind === 'cannon' ? gold() : mat(def.color, { rough: 0.32, metal: 0.65 });
   const dark = mat(0x17151f, { rough: 0.42, metal: 0.55 });
@@ -20,6 +34,7 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): { gr
   const brass = gold();
   let muzzle = new THREE.Vector3(0, 0.05, 0.3);
   let spin: THREE.Object3D | undefined;
+  const optics: { optic: Optic; sight?: THREE.Vector3; lens?: THREE.Mesh } = { optic: 'iron' };
   const B = (m: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, rx = 0) => {
     const b = box(g, w, h, d, m, x, y, z);
     b.rotation.x = rx;
@@ -72,6 +87,7 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): { gr
       bell.rotation.x = Math.PI / 2 * (sz > 0 ? 1 : -1);
       const lens = cyl(g, r * 1.2, r * 1.2, 0.004, mat(0x2fe6ff, { rough: 0.05, metal: 0.9, emissive: 0x0b3a44, emissiveIntensity: 1 }), 0, y, z + sz * (len / 2 + 0.036), 14);
       lens.rotation.x = Math.PI / 2;
+      if (sz < 0) Object.assign(optics, { optic: 'scope', sight: new THREE.Vector3(0, y, z + sz * (len / 2 + 0.036)), lens });
     }
     const turret = cyl(g, 0.012, 0.012, 0.025, black, 0, y + r + 0.01, z, 10);
     void turret;
@@ -177,6 +193,7 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): { gr
         B(black, 0.03, 0.035, 0.05, 0, 0.098, 0.05);
         const lens = B(mat(0xff3b4d, { emissive: 0xff2a3a, emissiveIntensity: 1.2, rough: 0.1 }), 0.024, 0.024, 0.004, 0, 0.1, 0.077);
         void lens;
+        Object.assign(optics, { optic: 'reddot', sight: new THREE.Vector3(0, 0.1, 0.077) });
         B(black, 0.008, 0.035, 0.012, 0, 0.096, 0.42); // front sight
       }
       B(black, 0.028, 0.15, 0.045, 0, -0.085, 0.14, -0.22); // magazine
@@ -340,13 +357,13 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): { gr
   }
   if (mods) {
     applySkin(g, mods.skin, new Set<THREE.Material>([body, polymer, wood]), new Set<THREE.Material>([dark, woodDark]));
-    muzzle = addAttachments(g, def, mods, muzzle, beam);
+    muzzle = addAttachments(g, def, mods, muzzle, beam, optics);
   }
   g.traverse((o) => {
     const m = o as THREE.Mesh;
     if (m.isMesh) m.castShadow = false;
   });
-  return { group: g, muzzle, spin };
+  return { group: g, muzzle, spin, ...optics };
 }
 
 // ------------------------------------------------------------------ skins and attachments
@@ -448,7 +465,7 @@ function applySkin(g: THREE.Group, skin: string, mainSet: Set<THREE.Material>, a
 }
 
 /** Sights, muzzle devices, magazines, a laser and a charm, placed from the gun's own shape. */
-function addAttachments(g: THREE.Group, def: GunDef, mods: GunMods, muzzle: THREE.Vector3, beam: boolean): THREE.Vector3 {
+function addAttachments(g: THREE.Group, def: GunDef, mods: GunMods, muzzle: THREE.Vector3, beam: boolean, optics: { optic: Optic; sight?: THREE.Vector3; lens?: THREE.Mesh }): THREE.Vector3 {
   const takes = gunTakes(def);
   g.updateMatrixWorld(true);
   const bb = new THREE.Box3().setFromObject(g);
@@ -470,18 +487,21 @@ function addAttachments(g: THREE.Group, def: GunDef, mods: GunMods, muzzle: THRE
       void hood;
       const lens = tube(0.012, 0.002, mat(0xff3b3b, { emissive: 0xff2020, emissiveIntensity: 1.6, transparent: true, opacity: 0.7 }), 0, top + 0.024, z + 0.012, 12);
       void lens;
+      Object.assign(optics, { optic: 'reddot', sight: new THREE.Vector3(0, top + 0.024, z), lens: undefined });
     } else if (mods.sight === 'holo') {
       box(g, 0.03, 0.01, 0.06, black, 0, top + 0.005, z);
       for (const sx of [-1, 1]) box(g, 0.005, 0.04, 0.05, black, sx * 0.018, top + 0.03, z);
       box(g, 0.04, 0.005, 0.05, black, 0, top + 0.05, z);
       box(g, 0.03, 0.03, 0.002, mat(0x2fe6ff, { emissive: 0x2fe6ff, emissiveIntensity: 0.9, transparent: true, opacity: 0.45 }), 0, top + 0.03, z + 0.02);
+      Object.assign(optics, { optic: 'holo', sight: new THREE.Vector3(0, top + 0.03, z), lens: undefined });
     } else {
       const sl = Math.min(0.22, len * 0.55);
       for (const sz of [-0.3, 0.3]) box(g, 0.02, 0.022, 0.018, black, 0, top + 0.011, z + sz * sl);
       tube(0.02, sl, black, 0, top + 0.04, z, 14);
       for (const sz of [-1, 1]) {
         tube(0.027, 0.04, black, 0, top + 0.04, z + sz * (sl / 2 + 0.015), 14);
-        tube(0.024, 0.003, mat(0x2fe6ff, { rough: 0.05, metal: 0.9, emissive: 0x0b3a44, emissiveIntensity: 1 }), 0, top + 0.04, z + sz * (sl / 2 + 0.036), 14);
+        const lens = tube(0.024, 0.003, mat(0x2fe6ff, { rough: 0.05, metal: 0.9, emissive: 0x0b3a44, emissiveIntensity: 1 }), 0, top + 0.04, z + sz * (sl / 2 + 0.036), 14);
+        if (sz < 0) Object.assign(optics, { optic: 'scope', sight: new THREE.Vector3(0, top + 0.04, z + sz * (sl / 2 + 0.036)), lens });
       }
       cyl(g, 0.01, 0.01, 0.02, black, 0, top + 0.068, z, 10);
     }

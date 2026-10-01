@@ -20,6 +20,8 @@ export class CombatHud {
   private koEl = h('div', { class: 'ko-screen', hidden: true });
   private koKey = '';
   private scope = h('div', { class: 'scope', hidden: true });
+  /** Red dot or holographic ring while aiming through an optic. */
+  private optic = h('div', { class: 'optic-dot', hidden: true });
   private lockHint = h('button', { class: 'lock-hint', hidden: true });
   private markT = -1;
   private wanted = h('div', { class: 'wanted', hidden: true, 'aria-label': 'Wanted level' });
@@ -33,7 +35,7 @@ export class CombatHud {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp);
     this.wp.addEventListener('click', () => game.clearWaypoint());
   }
 
@@ -45,7 +47,10 @@ export class CombatHud {
     const fp = playing && g.cam.mode === 'first';
     const armed = playing && gp.drawn;
     // Crosshair: first person always; other views only with a gun out.
-    const showCross = fp && !gp.scoped && c.ko <= 0;
+    const optic = fp ? gp.opticSight : null;
+    const showCross = fp && !gp.scoped && !optic && c.ko <= 0;
+    this.optic.hidden = !(optic === 'reddot' || optic === 'holo');
+    this.optic.classList.toggle('holo', optic === 'holo');
     this.cross.hidden = !showCross;
     // Mouse free: the crosshair rides on the cursor (which is hidden over the game).
     const ndc = fp ? g.cam.aimNdc : null;

@@ -5136,3 +5136,23 @@ p.small {
 .perf-hint b {
   color: var(--gold);
 }
+
+/* Red dot / holographic sight while aiming */
+.optic-dot {
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px;
+  border-radius: 50%;
+  background: #ff3030;
+  box-shadow: 0 0 6px 1px rgba(255, 48, 48, 0.9);
+}
+.optic-dot.holo {
+  width: 26px;
+  height: 26px;
+  margin: -13px;
+  background: radial-gradient(circle, #2fe6ff 0 2px, transparent 3px);
+  border: 2px solid rgba(47, 230, 255, 0.85);
+  box-shadow: 0 0 8px rgba(47, 230, 255, 0.7);
+}

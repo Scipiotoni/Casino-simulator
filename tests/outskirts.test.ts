@@ -94,3 +94,19 @@ describe('gun customization', () => {
     expect(st.mods.rifle).toBeUndefined();
   });
 });
+
+import { decodeGunMods, encodeGunMods } from '../src/game/guns';
+
+describe('gun mods over the network', () => {
+  it('round-trip in a few characters, and junk decodes to stock', () => {
+    const rifle = gd('rifle')!;
+    const m = { skin: 'galaxy', sight: 'holo', muzzle: 'compensator', mag: 'extended', laser: true, charm: 'cherry' } as const;
+    const code = encodeGunMods({ ...m });
+    expect(code.length).toBeLessThan(16);
+    expect(decodeGunMods(rifle, code)).toEqual(m);
+    expect(decodeGunMods(rifle, 'x.y')).toEqual(decodeGunMods(rifle, ''));
+    expect(decodeGunMods(rifle, 42).skin).toBe('stock');
+    // A bat can't carry a scope even if a peer says so.
+    expect(decodeGunMods(gd('bat')!, code).sight).toBe('iron');
+  });
+});

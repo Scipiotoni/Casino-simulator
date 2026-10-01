@@ -280,3 +280,20 @@ export function sanitizeGuns(raw: unknown): GunState {
   }
   return { owned, equipped: eq, slots, mods };
 }
+
+/** Mods in a few characters for the multiplayer presence ("skin.sight.muzzle.mag.laser.charm" as indexes). */
+export function encodeGunMods(m: GunMods): string {
+  const i = <T,>(list: { id: T }[], v: T) => Math.max(0, list.findIndex((o) => o.id === v));
+  return [i(GUN_SKINS, m.skin), i(SIGHTS, m.sight), i(MUZZLES, m.muzzle), i(MAGS, m.mag), m.laser ? 1 : 0, i(CHARMS, m.charm)].join('.');
+}
+
+/** The other way round (anything unknown falls back to stock, and what the weapon can't take is dropped). */
+export function decodeGunMods(def: GunDef, code: unknown): GunMods {
+  if (typeof code !== 'string' || code.length > 24) return defaultGunMods();
+  const n = code.split('.').map((x) => Number.parseInt(x, 10));
+  const at = <T,>(list: { id: T }[], k: number, d: T): T => (Number.isFinite(n[k]) && list[n[k]] ? list[n[k]].id : d);
+  return sanitizeGunMods(def, {
+    skin: at(GUN_SKINS, 0, 'stock'), sight: at(SIGHTS, 1, 'iron'), muzzle: at(MUZZLES, 2, 'none'), mag: at(MAGS, 3, 'standard'),
+    laser: n[4] === 1, charm: at(CHARMS, 5, 'none'),
+  });
+}

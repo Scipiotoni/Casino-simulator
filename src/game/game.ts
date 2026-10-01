@@ -3913,6 +3913,7 @@ export class Game implements World, ItemHost {
     if (!render) return;
     const { w, h } = this.renderer.size;
     this.floaters.update(dt, this.renderer.camera, w, h);
+    this.gunplay.renderScope();
     this.renderer.render();
     input.endFrame();
   }
