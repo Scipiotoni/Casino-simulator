@@ -23,6 +23,8 @@ export interface CarDef {
   blurb: string;
   /** Only found at the military base: steal it (and keep it by parking it in your garage). */
   military?: boolean;
+  /** Not for sale anywhere: only got by stealing it (a police cruiser). */
+  stealOnly?: boolean;
   /** Durability (default by body type, see `carHp`). */
   hp?: number;
   /** Share of bullet damage that gets through (armoured vehicles shrug off small arms). */
@@ -57,6 +59,8 @@ export const CARS: CarDef[] = [
   { id: 'interceptor', name: 'Interceptor', kind: 'interceptor', price: 160_000, unlock: 6, top: 38, accel: 14, grip: 1.15, hp: 170, colors: [0x17151f, 0xf4f1ea, 0x1d2a5a], blurb: 'An ex-police pursuit car: reinforced, fast, with the light bar still fitted.' },
   { id: 'gt', name: 'Le Mans GT', kind: 'gt', price: 450_000, unlock: 9, top: 47, accel: 18, grip: 1.4, colors: [0x1f4fbf, 0xf4f1ea, 0xff8a1f, 0x17151f], blurb: 'An endurance racer with plates. Glued to the road.' },
   { id: 'hyper', name: 'Golden Hypercar', kind: 'hyper', price: 1_000_000, unlock: 10, top: 50, accel: 20, grip: 1.35, colors: [0xf2b632], blurb: 'Solid gold. The fastest thing in the city.' },
+  // Steal it from the police (walk up to a cruiser that's stopped).
+  { id: 'police', value: 60_000, stealOnly: true, name: 'Police Cruiser', kind: 'interceptor', price: 0, unlock: 1, top: 37, accel: 13, grip: 1.15, hp: 190, colors: [0xf4f4f6], blurb: 'Taken from the city police: light bar, siren (C) and a push bar.' },
   // Military base only: you can't buy these, you have to take them.
   { id: 'jeep', value: 120000, name: 'Army Patrol Jeep', kind: 'jeep', price: 0, unlock: 1, top: 33, accel: 13, grip: 1.25, hp: 320, armor: 0.6, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Armoured patrol 4x4 with a roll bar. Shrugs off small arms.' },
   { id: 'apc', value: 350000, name: 'Armoured APC', kind: 'apc', price: 0, unlock: 1, top: 27, accel: 9, grip: 0.95, hp: 900, armor: 0.3, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Eight tonnes of steel on six wheels. Traffic gets out of its way.' },
@@ -65,7 +69,7 @@ export const CARS: CarDef[] = [
 ];
 
 /** The cars on sale at Velocity Motors (military vehicles aren't). */
-export const DEALER_CARS: CarDef[] = CARS.filter((c) => !c.military).sort((a, b) => a.price - b.price);
+export const DEALER_CARS: CarDef[] = CARS.filter((c) => !c.military && !c.stealOnly).sort((a, b) => a.price - b.price);
 /** Vehicles parked at the military base. */
 export const MILITARY_CARS: CarDef[] = CARS.filter((c) => c.military);
 
@@ -293,6 +297,8 @@ export interface CarModel {
   /** A tank's turret and the end of its barrel (the shell comes out here). */
   turret?: THREE.Object3D;
   muzzle?: THREE.Object3D;
+  /** Red and blue roof lights (they flash with the siren on). */
+  beacons?: THREE.Mesh[];
 }
 
 interface Shape {
@@ -710,11 +716,27 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
   // Fifties cruiser: tail fins
   if (k === 'classic') for (const sx of [-1, 1]) box(paint, 0.08, 0.32, 1.0, sx * (W / 2 - 0.1), s.tail + 0.14, -L / 2 + 0.6, 0.18, 0, 0);
   // Interceptor: light bar and a push bar
+  const beacons: THREE.Mesh[] = [];
   if (k === 'interceptor') {
     const rz = (s.cabR + s.rakeR + s.cabF - s.rakeF) / 2;
     box(black, 1.2, 0.08, 0.3, 0, s.roof + 0.08, rz);
-    box(glow(0xff2a3a, 2.2), 0.5, 0.12, 0.26, -0.32, s.roof + 0.17, rz);
-    box(glow(0x2a6bff, 2.2), 0.5, 0.12, 0.26, 0.32, s.roof + 0.17, rz);
+    beacons.push(box(glow(0xff2a3a, 2.2), 0.5, 0.12, 0.26, -0.32, s.roof + 0.17, rz));
+    beacons.push(box(glow(0x2a6bff, 2.2), 0.5, 0.12, 0.26, 0.32, s.roof + 0.17, rz));
+    // The real thing: navy doors and POLICE down the sides.
+    if (def.id === 'police') {
+      const navy = new THREE.MeshStandardMaterial({ color: 0x1d2a5a, roughness: 0.35, metalness: 0.4 });
+      for (const sx of [-1, 1]) box(navy, 0.02, (belt - ride) * 0.62, 2.1, sx * (W / 2 + 0.008), ride + (belt - ride) * 0.48, (s.cabR + s.cabF) / 2 + 0.1);
+      const tex = policeTexture();
+      if (tex) {
+        const pm = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3 });
+        for (const sx of [-1, 1]) {
+          const pl = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.32), pm);
+          pl.position.set(sx * (W / 2 + 0.02), ride + (belt - ride) * 0.5, (s.cabR + s.cabF) / 2 + 0.1);
+          pl.rotation.y = sx * Math.PI / 2;
+          g.add(pl);
+        }
+      }
+    }
     box(black, W * 0.7, 0.32, 0.08, 0, ride + 0.3, L / 2 + 0.12);
     for (const sx of [-0.25, 0.25]) box(black, 0.08, 0.5, 0.08, sx * W, ride + 0.32, L / 2 + 0.1);
   }
@@ -874,7 +896,26 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
     const mesh = o as THREE.Mesh;
     if (mesh.isMesh) mesh.receiveShadow = false;
   });
-  return { root: g, wheels, front, seat: new THREE.Vector3(-0.38, belt - 0.3, (s.cabR + s.cabF) / 2 + 0.2), length: L, open: !!s.open, flames, brakeLights };
+  return { root: g, wheels, front, seat: new THREE.Vector3(-0.38, belt - 0.3, (s.cabR + s.cabF) / 2 + 0.2), length: L, open: !!s.open, flames, brakeLights, beacons };
+}
+
+let policeTex: THREE.Texture | null = null;
+/** "POLICE" lettering for the doors. */
+function policeTexture(): THREE.Texture | null {
+  if (policeTex || typeof document === 'undefined') return policeTex;
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 96;
+  const x = c.getContext('2d');
+  if (!x) return null;
+  x.fillStyle = '#f4f4f6';
+  x.font = '900 72px Arial, sans-serif';
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.fillText('POLICE', 256, 52);
+  policeTex = new THREE.CanvasTexture(c);
+  policeTex.colorSpace = THREE.SRGBColorSpace;
+  return policeTex;
 }
 
 /** The white star on army vehicles. */

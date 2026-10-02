@@ -108,11 +108,20 @@ interface EngineVoice {
   out: GainNode;
   /** Combustion engines: a low-rev and a high-rev loop, cross-faded with the revs. */
   lo?: AudioBufferSourceNode;
+  mid?: AudioBufferSourceNode;
   hi?: AudioBufferSourceNode;
   loGain?: GainNode;
+  midGain?: GainNode;
   hiGain?: GainNode;
   loBase: number;
+  midBase: number;
   hiBase: number;
+  /** Wind rushing past and the tyres' roar on the road (they grow with speed). */
+  wind: GainNode;
+  windFilter: BiquadFilterNode;
+  road: GainNode;
+  /** Takes the edge off the top end at high revs. */
+  tame: BiquadFilterNode;
   shaper?: WaveShaperNode;
   lp: BiquadFilterNode;
   /** Electric motors: a pair of soft tones. */
@@ -663,14 +672,17 @@ class AudioEngine {
   private engStop = 0;
   private engBuffers = new Map<string, AudioBuffer>();
 
-  private loopBuffer(profile: Exclude<EngineProfile, 'electric'>, which: 'lo' | 'hi'): { buf: AudioBuffer; base: number } {
+  private loopBuffer(profile: Exclude<EngineProfile, 'electric'>, which: 'lo' | 'mid' | 'hi'): { buf: AudioBuffer; base: number } {
     const ctx = this.ctx!;
     const spec = ENGINE_SPEC[profile];
-    const base = which === 'lo' ? spec.idle * 1.3 : spec.idle + spec.span * 0.55;
+    // Recorded (synthesized) at three engine speeds, so no loop is ever stretched far.
+    const base = which === 'lo' ? spec.idle * 1.3 : which === 'mid' ? spec.idle + spec.span * 0.4 : spec.idle + spec.span * 0.85;
     const key = `${profile}:${which}`;
     let buf = this.engBuffers.get(key);
     if (!buf) {
-      const data = engineLoop(spec, base, ctx.sampleRate, which === 'lo' ? 3 : 7);
+      // At high revs the pulses blur into a smoother, tighter note (shorter ringing, less crack).
+      const hiSpec = which === 'hi' ? { ...spec, decay: spec.decay * 0.6, crack: spec.crack * 0.6, jitter: spec.jitter * 0.5 } : which === 'mid' ? { ...spec, decay: spec.decay * 0.8 } : spec;
+      const data = engineLoop(hiSpec, base, ctx.sampleRate, which === 'lo' ? 3 : which === 'mid' ? 5 : 7);
       buf = ctx.createBuffer(1, data.length, ctx.sampleRate);
       buf.getChannelData(0).set(data);
       this.engBuffers.set(key, buf);
@@ -689,8 +701,13 @@ class AudioEngine {
     lp.type = 'lowpass';
     lp.Q.value = 0.7;
     lp.frequency.value = 900;
-    lp.connect(out);
-    const e: EngineVoice = { profile, out, lp, loBase: 1, hiBase: 1 } as EngineVoice;
+    const tame = ctx.createBiquadFilter();
+    tame.type = 'highshelf';
+    tame.frequency.value = 2500;
+    tame.gain.value = 0;
+    lp.connect(tame);
+    tame.connect(out);
+    const e: EngineVoice = { profile, out, lp, tame, loBase: 1, midBase: 1, hiBase: 1 } as EngineVoice;
     if (profile === 'electric') {
       // An EV: a soft motor hum and inverter whine, nothing else.
       const whineGain = ctx.createGain();
@@ -735,9 +752,11 @@ class AudioEngine {
         src.start(0, Math.random() * b.duration);
         return { src, g };
       };
+      const mid = this.loopBuffer(profile, 'mid');
       const L = mk(lo.buf);
+      const M = mk(mid.buf);
       const H = mk(hi.buf);
-      Object.assign(e, { lo: L.src, hi: H.src, loGain: L.g, hiGain: H.g, loBase: lo.base, hiBase: hi.base, shaper });
+      Object.assign(e, { lo: L.src, mid: M.src, hi: H.src, loGain: L.g, midGain: M.g, hiGain: H.g, loBase: lo.base, midBase: mid.base, hiBase: hi.base, shaper });
       (e as EngineVoice & { pre: GainNode }).pre = pre;
     }
     // Intake roar (air rushing in under throttle) and the tyres' squeal share one noise source.
@@ -762,8 +781,26 @@ class AudioEngine {
     noise.connect(skidFilter);
     skidFilter.connect(skid);
     skid.connect(this.sfxBus);
+    // Wind noise (a broad hiss that rises in pitch and level with speed) and road roar (low rumble).
+    const windFilter = ctx.createBiquadFilter();
+    windFilter.type = 'bandpass';
+    windFilter.Q.value = 0.5;
+    windFilter.frequency.value = 600;
+    const wind = ctx.createGain();
+    wind.gain.value = 0;
+    noise.connect(windFilter);
+    windFilter.connect(wind);
+    wind.connect(this.sfxBus);
+    const roadFilter = ctx.createBiquadFilter();
+    roadFilter.type = 'lowpass';
+    roadFilter.frequency.value = 180;
+    const road = ctx.createGain();
+    road.gain.value = 0;
+    noise.connect(roadFilter);
+    roadFilter.connect(road);
+    road.connect(this.sfxBus);
     noise.start(0, Math.random());
-    Object.assign(e, { noise, intake, intakeFilter, skid, skidFilter });
+    Object.assign(e, { noise, intake, intakeFilter, skid, skidFilter, wind, windFilter, road });
     return e;
   }
 
@@ -773,10 +810,14 @@ class AudioEngine {
     const t = ctx.currentTime;
     e.out.gain.setTargetAtTime(0, t, 0.15);
     e.skid.gain.setTargetAtTime(0, t, 0.1);
+    e.wind.gain.setTargetAtTime(0, t, 0.15);
+    e.road.gain.setTargetAtTime(0, t, 0.15);
     window.setTimeout(() => {
-      for (const o of [e.lo, e.hi, e.whine, e.whine2, e.noise]) o?.stop();
+      for (const o of [e.lo, e.mid, e.hi, e.whine, e.whine2, e.noise]) o?.stop();
       e.out.disconnect();
       e.skid.disconnect();
+      e.wind.disconnect();
+      e.road.disconnect();
     }, 1200);
   }
 
@@ -784,7 +825,7 @@ class AudioEngine {
    * The engine of the car you're driving, every frame: revs (0..1 of the limiter), how hard
    * you're on the gas (0..1), and tyre skid (0..1). Pass null when you get out.
    */
-  engine(s: { profile: EngineProfile; rpm: number; throttle: number; skid: number; damage?: number } | null): void {
+  engine(s: { profile: EngineProfile; rpm: number; throttle: number; skid: number; damage?: number; speed?: number } | null): void {
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running') return;
     if (!s) {
@@ -811,6 +852,11 @@ class AudioEngine {
     const k = 0.05;
     e.skid.gain.setTargetAtTime(clamp(s.skid, 0, 1) * 0.16, t, 0.05);
     e.skidFilter.frequency.setTargetAtTime(900 + s.skid * 500, t, 0.1);
+    // Speed: wind and road noise fill in under the engine as you go faster.
+    const v = clamp((s.speed ?? 0) / 50, 0, 1.2);
+    e.wind.gain.setTargetAtTime(v * v * 0.07, t, 0.2);
+    e.windFilter.frequency.setTargetAtTime(400 + v * 1400, t, 0.2);
+    e.road.gain.setTargetAtTime(Math.min(1, v * 1.5) * 0.12, t, 0.2);
     if (s.profile === 'electric') {
       const f = 90 + rpm * 900;
       e.whine!.frequency.setTargetAtTime(f, t, k);
@@ -827,14 +873,29 @@ class AudioEngine {
     const miss = (s.damage ?? 0) > 0.6 && Math.random() < 0.08 ? 0.85 : 1;
     const firing = (spec.idle + rpm * spec.span) * miss;
     e.lo!.playbackRate.setTargetAtTime(firing / e.loBase, t, k);
+    e.mid!.playbackRate.setTargetAtTime(firing / e.midBase, t, k);
     e.hi!.playbackRate.setTargetAtTime(firing / e.hiBase, t, k);
-    // Cross-fade the low- and high-rev loops (equal power).
-    const mixT = clamp((firing - e.loBase) / (e.hiBase - e.loBase), 0, 1);
-    e.loGain!.gain.setTargetAtTime(Math.cos(mixT * Math.PI / 2), t, k);
-    e.hiGain!.gain.setTargetAtTime(Math.sin(mixT * Math.PI / 2), t, k);
-    // Under load: louder, brighter and grittier. Off throttle: a muffled burble.
-    (e as EngineVoice & { pre: GainNode }).pre.gain.setTargetAtTime(0.55 + thr * 0.9, t, k);
-    e.lp.frequency.setTargetAtTime((350 + rpm * 1400 + thr * (900 + rpm * 2600)) * spec.cut, t, k);
+    // Cross-fade low → mid → high loops (equal power), so each plays close to its own speed.
+    let gl = 0;
+    let gm = 0;
+    let gh = 0;
+    if (firing <= e.midBase) {
+      const u = clamp((firing - e.loBase) / (e.midBase - e.loBase), 0, 1);
+      gl = Math.cos(u * Math.PI / 2);
+      gm = Math.sin(u * Math.PI / 2);
+    } else {
+      const u = clamp((firing - e.midBase) / (e.hiBase - e.midBase), 0, 1);
+      gm = Math.cos(u * Math.PI / 2);
+      gh = Math.sin(u * Math.PI / 2);
+    }
+    e.loGain!.gain.setTargetAtTime(gl, t, k);
+    e.midGain!.gain.setTargetAtTime(gm, t, k);
+    e.hiGain!.gain.setTargetAtTime(gh, t, k);
+    // Under load: louder, brighter and grittier. Off throttle: a muffled burble. High in the
+    // revs the distortion backs off and the very top is rounded, so it sings instead of buzzing.
+    (e as EngineVoice & { pre: GainNode }).pre.gain.setTargetAtTime((0.55 + thr * 0.9) * (1 - 0.45 * rpm), t, k);
+    e.lp.frequency.setTargetAtTime(Math.min(4800, 350 + rpm * 1300 + thr * (900 + rpm * 1600)) * spec.cut, t, k);
+    e.tame.gain.setTargetAtTime(-9 * rpm, t, k);
     e.intakeFilter.frequency.setTargetAtTime(500 + rpm * 1800, t, k);
     e.intake.gain.setTargetAtTime(thr * (0.02 + rpm * 0.05), t, 0.08);
     e.out.gain.setTargetAtTime((0.2 + thr * 0.16 + rpm * 0.12) * spec.gain, t, 0.06);

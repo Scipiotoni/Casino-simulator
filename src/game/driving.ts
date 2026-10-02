@@ -52,6 +52,8 @@ export interface Vehicle {
   turret?: THREE.Object3D;
   muzzle?: THREE.Object3D;
   cannonT?: number;
+  /** Roof lights that flash with the siren. */
+  beacons?: THREE.Mesh[];
   /** Parked at the military base (taking it sets off the alarm). */
   base?: boolean;
 }
@@ -256,7 +258,7 @@ export class Driving {
     const v: Vehicle = {
       uid: nextUid++, def, name: def.name, color, root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat,
       x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : carWidth(def), owned, stolen, mods, flames: m.flames, brakeLights: m.brakeLights,
-      hp: carHp(def), maxHp: carHp(def), armor: def.armor ?? 1, wreck: -1, burnT: 0, turret: m.turret, muzzle: m.muzzle, cannonT: 0,
+      hp: carHp(def), maxHp: carHp(def), armor: def.armor ?? 1, wreck: -1, burnT: 0, turret: m.turret, muzzle: m.muzzle, cannonT: 0, beacons: m.beacons,
     };
     // Your own cars keep their damage until you pay to have them fixed.
     if (owned) v.hp = Math.max(1, Math.round(v.maxHp * conditionOf(this.g.garage, def.id)));
@@ -286,6 +288,29 @@ export class Driving {
     g.notify('You stole a car! The police are on their way.', 'bad');
     this.enter(v);
   }
+
+  /** Jump into a police cruiser that's stopped and take it (that's a lot of heat). */
+  stealCruiser(c: Car): void {
+    const g = this.g;
+    const pol = g.street.police;
+    const def = carDef('police');
+    if (!def || !pol.dropCruiser(c)) return;
+    const x = c.root.position.x;
+    const z = c.root.position.z;
+    const yaw = c.root.rotation.y;
+    c.root.removeFromParent();
+    const v = this.addVehicle(def, buildCar(def), def.colors[0], x, z, yaw, false, true);
+    pol.crime(HEAT.copCar);
+    g.stats.carsStolen = (g.stats.carsStolen ?? 0) + 1;
+    audio.play('siren');
+    g.notify('You stole a police cruiser! C works the siren. Hide it in your garage to keep it.', 'bad');
+    this.enter(v);
+    this.siren = true;
+  }
+
+  /** Siren on (police cruiser you took). */
+  siren = false;
+  private sirenT = 0;
 
   enter(v: Vehicle): void {
     const g = this.g;
@@ -317,6 +342,8 @@ export class Driving {
     this.driving = null;
     v.speed = 0;
     audio.engine(null);
+    this.siren = false;
+    v.beacons?.forEach((b) => (b.visible = true));
     g.player.seat = null;
     g.player.emote = null;
     const fx = Math.sin(v.yaw);
@@ -358,9 +385,11 @@ export class Driving {
   }
 
   /** The nearest car you could get into or steal (global), within reach. */
-  nearest(): { v?: Vehicle; traffic?: Car; d: number } | null {
+  nearest(): { v?: Vehicle; traffic?: Car; cruiser?: Car; d: number } | null {
     const pg = this.playerGlobal();
-    let best: { v?: Vehicle; traffic?: Car; d: number } | null = null;
+    let best: { v?: Vehicle; traffic?: Car; cruiser?: Car; d: number } | null = null;
+    const cr = this.g.street.police.stealable(pg.x, pg.z, 1.6);
+    if (cr) best = { cruiser: cr.car, d: cr.d };
     for (const v of this.vehicles) {
       if (v.wreck >= 0) continue;
       const d = Math.hypot(v.x - pg.x, v.z - pg.z) - v.length / 2;
@@ -455,15 +484,15 @@ export class Driving {
       }
     }
     const gearTopNow = this.gear > 0 ? gearTop(top * boost, this.gear) : 9;
-    this.rpm = this.gear > 0 ? Math.min(1.05, rpmOf(v.speed, top * boost, this.gear)) : Math.min(1, Math.abs(v.speed) / 9);
+    this.rpm = this.gear > 0 ? Math.min(this.gear >= GEARS ? 0.94 : 1.05, rpmOf(v.speed, top * boost, this.gear)) : Math.min(1, Math.abs(v.speed) / 9);
     if (throttle > 0) {
       if (v.speed < 0) v.speed += accel * 2.2 * throttle * dt;
       else if (this.shiftT <= 0) {
         // Pull from the gear you're in (×1.15 keeps the average close to the old single-speed feel).
         const pull = drive(v.speed, top * boost, Math.max(1, this.gear)) * 1.15;
         v.speed += accel * pull * (nitroOn ? boost * 1.6 : boost) * throttle * dt;
-        // Bouncing off the limiter
-        if (this.rpm >= 0.99) {
+        // Bouncing off the limiter (not in top gear: there it's the air holding you back)
+        if (this.rpm >= 0.99 && this.gear < GEARS) {
           this.limiterT -= dt;
           if (this.limiterT <= 0) {
             this.limiterT = 0.14;
@@ -585,7 +614,7 @@ export class Driving {
       const w = g.street.globalToWorld(v.x - Math.sin(v.yaw) * v.length * 0.4, v.z - Math.cos(v.yaw) * v.length * 0.4);
       g.effects.dust(w.x, w.z, 0.4);
     }
-    audio.engine({ profile, rpm: this.gear === 0 ? Math.min(0.6, speedAbs / 9) : this.rpm, throttle: Math.max(0, throttle) * (this.shiftT > 0 ? 0.3 : 1), skid: this.skid, damage: 1 - health });
+    audio.engine({ profile, rpm: this.gear === 0 ? Math.min(0.6, speedAbs / 9) : this.rpm, throttle: Math.max(0, throttle) * (this.shiftT > 0 ? 0.3 : 1), skid: this.skid, damage: 1 - health, speed: speedAbs });
     // Shifting up at speed: the turbo's blow-off and a crackle from the exhaust.
     if (this.gear !== this.lastGear) {
       if (this.gear > this.lastGear && this.gear > 1) {
@@ -600,7 +629,23 @@ export class Driving {
     }
     this.prevThrottle = throttle;
     void this.engineT;
-    if (input.hit('KeyC')) audio.play('honk', { pitch: v.armor < 0.5 ? 0.6 : 1 });
+    // A police cruiser: C works the siren (lights flash while it's on); everything else honks.
+    if (v.def?.id === 'police') {
+      if (input.hit('KeyC')) {
+        this.siren = !this.siren;
+        audio.play(this.siren ? 'siren' : 'click');
+        this.sirenT = 1.1;
+      }
+      if (this.siren) {
+        this.sirenT -= dt;
+        if (this.sirenT <= 0) {
+          this.sirenT = 1.1;
+          audio.play('siren', { volume: 0.7 });
+        }
+      }
+      const ph = Math.floor(performance.now() / 160) % 2 === 0;
+      v.beacons?.forEach((b, i) => (b.visible = !this.siren || (i % 2 === 0) === ph));
+    } else if (input.hit('KeyC')) audio.play('honk', { pitch: v.armor < 0.5 ? 0.6 : 1 });
     // Tank: click or F fires the main gun.
     if (v.def?.cannon && v.muzzle) {
       v.cannonT = Math.max(0, (v.cannonT ?? 0) - dt);
@@ -943,7 +988,7 @@ export class Driving {
     m.root.position.copy(v.root.position);
     m.root.rotation.copy(v.root.rotation);
     parent?.add(m.root);
-    Object.assign(v, { root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat, length: m.length, color: mods.color, mods, flames: m.flames, brakeLights: m.brakeLights, turret: m.turret, muzzle: m.muzzle });
+    Object.assign(v, { root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat, length: m.length, color: mods.color, mods, flames: m.flames, brakeLights: m.brakeLights, turret: m.turret, muzzle: m.muzzle, beacons: m.beacons });
   }
 
   /** Buy a car at Velocity Motors (cash from your casino). */

@@ -3029,7 +3029,7 @@ export class Game implements World, ItemHost {
       // On your driveway: drive into the garage instead of getting out.
       this.interactTarget = this.house?.garage && this.drive.atGarage(car.x, car.z)
         ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park() }
-        : { kind: `carout${car.uid}`, label: 'Get out · W/S drive · A/D steer · Shift boost · C horn', hold: false, anchor, act: () => this.drive.exit() };
+        : { kind: `carout${car.uid}`, label: `Get out · W/S drive · A/D steer · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit() };
       this.handleTarget(dt, this.interactTarget);
       return;
     }
@@ -3038,10 +3038,11 @@ export class Game implements World, ItemHost {
       if (near && near.d < 1.6) {
         const v = near.v;
         const tc = near.traffic;
+        const cr = near.cruiser;
         const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
-        const label = v ? (v.owned ? `🚗 Drive your ${v.name}` : '🚗 Get in') : '🚗 Steal this car';
+        const label = v ? (v.owned ? `🚗 Drive your ${v.name}` : '🚗 Get in') : cr ? '🚓 Steal the police car' : '🚗 Steal this car';
         bestD = near.d;
-        target = { kind: `car${v ? v.uid : 't'}`, label, hold: false, anchor, act: () => (v ? this.drive.enter(v) : tc && this.drive.steal(tc)) };
+        target = { kind: `car${v ? v.uid : cr ? 'p' : 't'}`, label, hold: false, anchor, act: () => (v ? this.drive.enter(v) : cr ? this.drive.stealCruiser(cr) : tc && this.drive.steal(tc)) };
       }
       // Your garage door
       if (!target && this.house && this.drive.playerAtGarage) {

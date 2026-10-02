@@ -434,6 +434,17 @@ export class Police {
     return this.cruisers.filter((c) => Math.hypot(c.x - x, c.z - z) < r).map((c) => c.car);
   }
 
+  /** The nearest cruiser that's stopped (parked, or boxed in), that you could jump into. */
+  stealable(x: number, z: number, reach: number): { car: Car; d: number } | null {
+    let best: { car: Car; d: number } | null = null;
+    for (const c of this.cruisers) {
+      if (Math.abs(c.speed) > 1.5) continue;
+      const d = Math.hypot(c.x - x, c.z - z) - c.car.length / 2;
+      if (d < reach && (!best || d < best.d)) best = { car: c.car, d };
+    }
+    return best;
+  }
+
   /** A cruiser was destroyed: it's out of the chase (the wreck is handed to the caller). */
   dropCruiser(car: Car): boolean {
     const i = this.cruisers.findIndex((c) => c.car === car);
