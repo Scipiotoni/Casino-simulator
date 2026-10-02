@@ -20,6 +20,8 @@ export interface BuiltGun {
   sight?: THREE.Vector3;
   /** A scope's rear lens (shows the magnified view). */
   lens?: THREE.Mesh;
+  /** Parts of the gun in the line of sight through the optic (hidden while you aim through it). */
+  blockers?: THREE.Object3D[];
 }
 
 export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): BuiltGun {
@@ -188,11 +190,11 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
       rail(0.072, -0.05, long ? 0.4 : 0.36);
       if (long) scope(0.105, 0.08, 0.26, 0.022);
       else {
-        // Red-dot sight
-        B(black, 0.03, 0.035, 0.05, 0, 0.098, 0.05);
-        const lens = B(mat(0xff3b4d, { emissive: 0xff2a3a, emissiveIntensity: 1.2, rough: 0.1 }), 0.024, 0.024, 0.004, 0, 0.1, 0.077);
-        void lens;
-        Object.assign(optics, { optic: 'reddot', sight: new THREE.Vector3(0, 0.1, 0.077) });
+        // Red-dot sight: a short open tube with clear glass.
+        B(black, 0.026, 0.012, 0.04, 0, 0.078, 0.05).userData.optic = true;
+        scopeTube(g, 0.017, 0.045, 0, 0.1, 0.05);
+        const lens = scopeGlass(g, 0.016, 0, 0.1, 0.07);
+        Object.assign(optics, { optic: 'reddot', sight: new THREE.Vector3(0, 0.1, 0.07), lens });
         B(black, 0.008, 0.035, 0.012, 0, 0.096, 0.42); // front sight
       }
       B(black, 0.028, 0.15, 0.045, 0, -0.085, 0.14, -0.22); // magazine
@@ -362,7 +364,7 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
     const m = o as THREE.Mesh;
     if (m.isMesh) m.castShadow = false;
   });
-  return { group: g, muzzle, spin, ...optics };
+  return { group: g, muzzle, spin, ...optics, blockers: optics.sight ? sightBlockers(g, optics.sight) : [] };
 }
 
 // ------------------------------------------------------------------ scopes
@@ -372,11 +374,34 @@ const scopeGlassMat = new THREE.MeshPhysicalMaterial({
   color: 0xbfe8ff, roughness: 0.02, metalness: 0, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide,
 });
 
+/**
+ * Everything (but the optic itself) the line of sight through the optic passes through:
+ * front sight posts, a second sight, rails, a scope behind a red dot… Hidden while aiming.
+ */
+function sightBlockers(g: THREE.Group, sight: THREE.Vector3): THREE.Object3D[] {
+  g.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(g.matrixWorld).invert();
+  const bb = new THREE.Box3();
+  const out: THREE.Object3D[] = [];
+  const r = 0.018;
+  g.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || m.userData.optic) return;
+    m.geometry.computeBoundingBox();
+    bb.copy(m.geometry.boundingBox!).applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld));
+    if (bb.max.z < sight.z - 0.35) return;
+    if (bb.min.x > r || bb.max.x < -r || bb.min.y > sight.y + r || bb.max.y < sight.y - r) return;
+    out.push(m);
+  });
+  return out;
+}
+
 /** An open-ended tube along z (you look down the inside of it). */
 function scopeTube(g: THREE.Object3D, r: number, len: number, x: number, y: number, z: number, rTop = r, rBot = r): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, len, 16, 1, true), scopeBody);
   m.rotation.x = Math.PI / 2;
   m.position.set(x, y, z);
+  m.userData.optic = true;
   g.add(m);
   return m;
 }
@@ -386,6 +411,7 @@ function scopeGlass(g: THREE.Object3D, r: number, x: number, y: number, z: numbe
   const m = new THREE.Mesh(new THREE.CircleGeometry(r, 24), scopeGlassMat);
   m.position.set(x, y, z);
   m.renderOrder = 2;
+  m.userData.optic = true;
   g.add(m);
   return m;
 }
@@ -506,18 +532,17 @@ function addAttachments(g: THREE.Group, def: GunDef, mods: GunMods, muzzle: THRE
   if (takes.sight && mods.sight !== 'iron') {
     const z = bb.min.z + len * 0.42;
     if (mods.sight === 'reddot') {
-      box(g, 0.026, 0.008, 0.04, black, 0, top + 0.004, z);
-      const hood = tube(0.016, 0.03, black, 0, top + 0.024, z, 12);
-      void hood;
-      const lens = tube(0.012, 0.002, mat(0xff3b3b, { emissive: 0xff2020, emissiveIntensity: 1.6, transparent: true, opacity: 0.7 }), 0, top + 0.024, z + 0.012, 12);
-      void lens;
-      Object.assign(optics, { optic: 'reddot', sight: new THREE.Vector3(0, top + 0.024, z), lens: undefined });
+      box(g, 0.026, 0.008, 0.04, black, 0, top + 0.004, z).userData.optic = true;
+      scopeTube(g, 0.016, 0.03, 0, top + 0.024, z);
+      const lens = scopeGlass(g, 0.015, 0, top + 0.024, z + 0.012);
+      Object.assign(optics, { optic: 'reddot', sight: new THREE.Vector3(0, top + 0.024, z + 0.012), lens });
     } else if (mods.sight === 'holo') {
-      box(g, 0.03, 0.01, 0.06, black, 0, top + 0.005, z);
-      for (const sx of [-1, 1]) box(g, 0.005, 0.04, 0.05, black, sx * 0.018, top + 0.03, z);
-      box(g, 0.04, 0.005, 0.05, black, 0, top + 0.05, z);
-      box(g, 0.03, 0.03, 0.002, mat(0x2fe6ff, { emissive: 0x2fe6ff, emissiveIntensity: 0.9, transparent: true, opacity: 0.45 }), 0, top + 0.03, z + 0.02);
-      Object.assign(optics, { optic: 'holo', sight: new THREE.Vector3(0, top + 0.03, z), lens: undefined });
+      // An open window frame: you look straight through it.
+      box(g, 0.03, 0.01, 0.06, black, 0, top + 0.005, z).userData.optic = true;
+      for (const sx of [-1, 1]) box(g, 0.005, 0.04, 0.05, black, sx * 0.022, top + 0.03, z).userData.optic = true;
+      box(g, 0.05, 0.005, 0.05, black, 0, top + 0.054, z).userData.optic = true;
+      const lens = scopeGlass(g, 0.015, 0, top + 0.03, z + 0.02);
+      Object.assign(optics, { optic: 'holo', sight: new THREE.Vector3(0, top + 0.03, z + 0.02), lens });
     } else {
       const sl = Math.min(0.22, len * 0.55);
       for (const sz of [-0.3, 0.3]) box(g, 0.02, 0.022, 0.018, black, 0, top + 0.011, z + sz * sl);

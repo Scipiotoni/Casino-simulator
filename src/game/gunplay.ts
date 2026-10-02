@@ -37,6 +37,8 @@ interface ViewModel {
   sight?: THREE.Vector3;
   /** A scope's rear lens, showing the magnified picture. */
   lens?: THREE.Mesh;
+  /** Bits of the gun in the line of sight through the optic (hidden while aiming through it). */
+  blockers: THREE.Object3D[];
 }
 
 /** Something a bullet can stop at. */
@@ -234,7 +236,7 @@ export class GunPlay {
     gun.scale.setScalar(scale);
     this.g.renderer.overlay.add(holder);
     // A scope's glass is clear: you see the world through it, with your crosshair etched in.
-    if (b.lens) {
+    if (b.lens && b.optic === 'scope') {
       const r = (b.lens.geometry as THREE.CircleGeometry).parameters.radius;
       const ret = new THREE.Mesh(new THREE.CircleGeometry(r, 28), new THREE.MeshBasicMaterial({ map: reticleTexture(this.g.reticle), transparent: true, depthWrite: false, side: THREE.DoubleSide }));
       ret.position.copy(b.lens.position);
@@ -242,7 +244,7 @@ export class GunPlay {
       ret.renderOrder = 3;
       b.group.add(ret);
     }
-    return { id: d.id, holder, gun, muzzle: new THREE.Vector3(b.muzzle.x, b.muzzle.y, -b.muzzle.z), spin: b.spin, scale, optic: b.optic, sight: b.sight, lens: b.lens };
+    return { id: d.id, holder, gun, muzzle: new THREE.Vector3(b.muzzle.x, b.muzzle.y, -b.muzzle.z), spin: b.spin, scale, optic: b.optic, sight: b.sight, lens: b.lens, blockers: b.blockers ?? [] };
   }
 
   /** The optic you're looking through right now (aimed in far enough), or null. */
@@ -303,6 +305,9 @@ export class GunPlay {
       vm.gun.position.y += -0.02 + arc * 0.04;
     }
     vm.holder.visible = !this.scoped;
+    // Looking through an optic: nothing of the gun may sit in front of your target.
+    const clear = this.opticSight !== null;
+    for (const o of vm.blockers) o.visible = !clear;
     if (vm.spin) vm.spin.rotation.z += this.spinV * dt;
   }
 

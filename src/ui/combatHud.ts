@@ -24,7 +24,8 @@ export class CombatHud {
   private scope = h('div', { class: 'scope', hidden: true }, this.scopeCanvas);
   private reticleKey = '';
   /** Red dot or holographic ring while aiming through an optic. */
-  private optic = h('div', { class: 'optic-dot', hidden: true });
+  private optic = h('canvas', { class: 'optic-dot', hidden: true }) as HTMLCanvasElement;
+  private opticKey = '';
   private lockHint = h('button', { class: 'lock-hint', hidden: true });
   private markT = -1;
   private wanted = h('div', { class: 'wanted', hidden: true, 'aria-label': 'Wanted level' });
@@ -52,8 +53,27 @@ export class CombatHud {
     // Crosshair: first person always; other views only with a gun out.
     const optic = fp ? gp.opticSight : null;
     const showCross = fp && !gp.scoped && !optic && c.ko <= 0;
+    // Red dot / holographic sight: your crosshair, seen through the glass in the middle.
     this.optic.hidden = !(optic === 'reddot' || optic === 'holo');
-    this.optic.classList.toggle('holo', optic === 'holo');
+    if (!this.optic.hidden) {
+      const r = g.reticle;
+      // Black would vanish in a red dot: those glow red (holo: cyan) unless you picked a colour.
+      const col = r.color === '#111111' ? (optic === 'holo' ? '#2fe6ff' : '#ff2a2a') : r.color;
+      const key = `${reticleKey(r)}|${optic}|${col}`;
+      if (key !== this.opticKey) {
+        this.opticKey = key;
+        const px = 220;
+        this.optic.width = this.optic.height = px;
+        const ctx = this.optic.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, px, px);
+          ctx.shadowColor = col;
+          ctx.shadowBlur = 6;
+          drawReticle(ctx, px, { ...r, color: col }, px * 0.42);
+        }
+        this.optic.style.setProperty('--os', `${Math.round(90 * r.size)}px`);
+      }
+    }
     this.cross.hidden = !showCross;
     // Mouse free: the crosshair rides on the cursor (which is hidden over the game).
     const ndc = fp ? g.cam.aimNdc : null;
