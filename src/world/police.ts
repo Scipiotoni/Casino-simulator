@@ -136,7 +136,11 @@ export class Police {
     if (serious && this.heat < 1) this.heat = 1;
     this.sinceCrime = 0;
     this.sinceSeen = 0;
-    if (this.stars > before) this.spawnT = Math.min(this.spawnT, 0.5);
+    // The first patrol takes a while to get there (half a minute or so); once they're on
+    // the scene, more come when the stars go up.
+    const onScene = this.officers.some((o) => o.ko <= 0 && !o.leaving);
+    if (before === 0 && this.stars > 0 && !onScene) this.spawnT = Math.max(this.spawnT, 25 + Math.random() * 15);
+    else if (this.stars > before) this.spawnT = Math.min(this.spawnT, 8);
   }
 
   /** Busted (or a new game): everyone goes home. */
@@ -285,12 +289,12 @@ export class Police {
     const active = this.officers.filter((o) => o.ko <= 0 && !o.leaving).length;
     this.spawnT -= dt;
     if (stars > 0 && v.exposed && this.spawnT <= 0 && active < OFFICERS[stars]) {
-      this.spawnT = stars >= 2 ? 4 : 6;
+      this.spawnT = stars >= 2 ? 12 : 18;
       const parked = this.cruisers.filter((c) => !c.leaving).length;
       if (stars >= 2 && parked < Math.ceil(stars / 2) && this.addCruiser(v.px, v.pz)) {
         // Officers jump out when it pulls up.
       } else {
-        const at = this.spawnSpot(v.px, v.pz, 34);
+        const at = this.spawnSpot(v.px, v.pz, 45);
         if (at) this.addOfficer(at.x, at.z, stars >= 4 && Math.random() < 0.6);
       }
     }
@@ -422,12 +426,12 @@ export class Police {
   }
 
   private fire(o: Officer, v: PoliceView, dist: number): void {
-    o.cool = o.swat ? 0.35 + Math.random() * 0.3 : 0.9 + Math.random() * 0.7;
+    o.cool = o.swat ? 0.6 + Math.random() * 0.4 : 1.4 + Math.random() * 0.9;
     o.model.recoil = o.swat ? 0.5 : 0.7;
     // Harder to hit you far away or on the run.
-    const chance = Math.max(0.12, Math.min(0.7, 0.72 - dist * 0.018 - v.speed * 0.05));
+    const chance = Math.max(0.08, Math.min(0.45, 0.5 - dist * 0.018 - v.speed * 0.05));
     const hit = Math.random() < chance;
-    const dmg = o.swat ? 9 : 7;
+    const dmg = o.swat ? 4 : 3;
     const ay = 1.25;
     const fx = o.x + Math.sin(o.model.root.rotation.y) * 0.7;
     const fz = o.z + Math.cos(o.model.root.rotation.y) * 0.7;

@@ -380,7 +380,13 @@ export class GunPlay {
     const moving = Math.min(1, g.player.speed / 4);
     this.spreadK = Math.max(moving * 0.6, this.spreadK - dt * 2.2);
     if (g.cam.mode === 'first' && d) {
-      g.cam.fovTarget = this.aiming ? d.adsFov : 72;
+      // Scopes zoom with the mouse wheel (or + / -) while you look through them.
+      const scope = this.vm?.optic === 'scope' || d.kind === 'sniper';
+      if (this.aiming && scope && !blocked) {
+        const w = g.input.wheel + (g.input.hit('Equal') || g.input.hit('NumpadAdd') ? -120 : 0) + (g.input.hit('Minus') || g.input.hit('NumpadSubtract') ? 120 : 0);
+        if (w) this.scopeZoom = Math.max(0.35, Math.min(2.2, this.scopeZoom * Math.exp(w * 0.0012)));
+      }
+      g.cam.fovTarget = this.aiming ? (scope ? Math.max(3, Math.min(60, d.adsFov * this.scopeZoom)) : d.adsFov) : 72;
     } else if (g.cam.mode === 'first') g.cam.fovTarget = 72;
     if (d && !blocked && input.hit('KeyR')) this.reload();
     this.updateViewModel(dt);
@@ -448,6 +454,14 @@ export class GunPlay {
   }
 
   private lastActive = '';
+  /** Scope zoom: multiplies the scope's field of view (wheel up = closer). */
+  scopeZoom = 1;
+
+  /** How many times closer than the naked eye the scope shows right now. */
+  get magnification(): number {
+    return 72 / this.g.cam.fovTarget;
+  }
+
   /** A trigger pull waiting for the cooldown to end (seconds left). */
   private queued = 0;
 
@@ -490,14 +504,6 @@ export class GunPlay {
     const sfx: SfxName = d.kind === 'laser' ? 'laser' : d.kind === 'paint' ? 'paintball' : d.kind === 'confetti' ? 'confettiGun' : d.kind === 'shotgun' ? 'shotgun'
       : d.kind === 'smg' || d.kind === 'minigun' || d.kind === 'rifle' ? 'smg' : d.kind === 'cannon' || d.kind === 'sniper' || d.kind === 'revolver' ? 'gunHeavy' : 'gunshot';
     audio.play(sfx, d.quiet ? { pitch: 1.5 + Math.random() * 0.1, volume: 0.3 } : { pitch: 0.94 + Math.random() * 0.12 });
-    if (fp) {
-      // Recoil: the view kicks up (aimed shots kick less), the gun punches back.
-      const kick = (heavy ? 0.055 : d.auto ? 0.014 : 0.03) * (this.aiming ? 0.6 : 1) * d.kickMul;
-      g.cam.kick += kick;
-      g.cam.kickYaw += (Math.random() - 0.5) * kick * 0.6;
-      this.vmKick = Math.min(1, this.vmKick + (heavy ? 1 : 0.5));
-      g.cam.shake(heavy ? 0.05 : 0.012);
-    } else g.cam.shake(d.kind === 'cannon' ? 0.1 : d.kind === 'shotgun' || d.kind === 'sniper' ? 0.07 : 0.025);
     // Where the bullets start and which way they go.
     const origin = fp ? g.renderer.camera.position.clone() : muzzle.clone();
     let base = fp ? g.cam.lookDir(new THREE.Vector3()) : new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
@@ -509,8 +515,18 @@ export class GunPlay {
       ray.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), g.renderer.camera);
       base = ray.ray.direction.clone().normalize();
     }
+    if (fp) {
+      // Recoil: the view kicks up (aimed shots kick less), the gun punches back.
+      const kick = (heavy ? 0.055 : d.auto ? 0.014 : 0.03) * (this.aiming ? 0.6 : 1) * d.kickMul;
+      g.cam.kick += kick;
+      g.cam.kickYaw += (Math.random() - 0.5) * kick * 0.6;
+      this.vmKick = Math.min(1, this.vmKick + (heavy ? 1 : 0.5));
+      g.cam.shake(heavy ? 0.05 : 0.012);
+    } else g.cam.shake(d.kind === 'cannon' ? 0.1 : d.kind === 'shotgun' || d.kind === 'sniper' ? 0.07 : 0.025);
     // Accuracy: aimed shots are tight, running and spraying open it up.
-    const acc = (fp ? (this.aiming ? 0.25 * d.adsAcc : 0.85 * d.hipAcc) * (1 + this.spreadK * 1.2) : d.hipAcc);
+    // Through a sight the bullet goes where the crosshair is (shotgun pellets still spread).
+    const sighted = fp && this.opticSight !== null && d.pellets === 1;
+    const acc = sighted ? 0.04 : (fp ? (this.aiming ? 0.25 * d.adsAcc : 0.85 * d.hipAcc) * (1 + this.spreadK * 1.2) : d.hipAcc);
     for (let i = 0; i < d.pellets; i++) {
       const dir = base.clone();
       const sp = d.pellets > 1 ? d.spread * Math.max(0.7, acc) : d.spread * acc;
@@ -657,7 +673,7 @@ export class GunPlay {
         break;
       }
       case 'ped': {
-        const dmg = d.dmg * (best.head ? 2 : 1);
+        const dmg = hitDamage(d, best.head);
         if (flat) hit.y = 1.2;
         if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
         if (dmg <= 0) break;
@@ -670,7 +686,7 @@ export class GunPlay {
         break;
       }
       case 'player': {
-        const dmg = d.dmg * (best.head ? 2 : 1);
+        const dmg = hitDamage(d, best.head);
         if (flat) hit.y = 1.2;
         if (dmg <= 0) break;
         fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
@@ -681,7 +697,7 @@ export class GunPlay {
         break;
       }
       case 'cop': {
-        const dmg = d.dmg * (best.head ? 2 : 1);
+        const dmg = hitDamage(d, best.head);
         if (flat) hit.y = 1.2;
         if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
         if (dmg <= 0) break;
@@ -897,4 +913,10 @@ function reticleTexture(o: ReticleOpts): THREE.CanvasTexture {
   t.colorSpace = THREE.SRGBColorSpace;
   reticleTex.set(key, t);
   return t;
+}
+
+/** Damage of one bullet: headshots do double, and a sniper round to the head always knocks out. */
+export function hitDamage(d: GunDef, head: boolean): number {
+  if (head && d.kind === 'sniper') return 999;
+  return d.dmg * (head ? 2 : 1);
 }

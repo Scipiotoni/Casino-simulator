@@ -6,6 +6,7 @@ import { h } from '../dom';
 import { formatMoney } from '../../core/math';
 import { audio } from '../../core/audio';
 import { RANKS, SUITS, isRed } from '../../items/cards';
+import { lessonFor, openLesson } from './lessons';
 
 export interface GameCtx {
   game: Game;
@@ -50,14 +51,18 @@ export class Session {
         audio.play('chips');
       },
     });
+    const kind = ctx.item.def.kind;
+    const learn = lessonFor(kind)
+      ? h('button', { class: 'btn small tg-learn', text: '📖 How to play', onClick: () => openLesson(ctx.modals, kind) })
+      : null;
     this.head = ctx.practice
       ? h('div', { class: 'tg-head practice' },
         h('span', { class: 'tg-where', text: '🎲 Practice play: pretend chips, no real money' }),
-        h('span', {}, 'Chips ', this.bankEl, ' ', this.netEl, ' ', refill),
+        h('span', {}, 'Chips ', this.bankEl, ' ', this.netEl, ' ', refill, ' ', learn),
       )
       : h('div', { class: 'tg-head' },
         h('span', { class: 'tg-where', text: `${ctx.game.hereName} · min ${formatMoney(this.min)} · no max bet` }),
-        h('span', {}, 'Bank ', this.bankEl, ' ', this.netEl),
+        h('span', {}, 'Bank ', this.bankEl, ' ', this.netEl, ' ', learn),
       );
     const off1 = ctx.game.events.on('money', () => this.refresh());
     const off2 = ctx.game.events.on('chips', () => this.refresh());

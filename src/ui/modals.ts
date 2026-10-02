@@ -7,6 +7,7 @@ import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
 import { openDealer } from './cars';
 import { openGarage } from './homeGarage';
+import { openSchool } from './games/lessons';
 import { RETICLE_COLORS, RETICLE_STYLES, drawReticle } from './reticle';
 import { h, clear, icon, swatch, stars } from './dom';
 import { formatMoney, formatNumber } from '../core/math';
@@ -739,6 +740,7 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
       h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
       h('button', { class: 'btn', text: '🚗 My cars', onClick: () => { this.close(); openDealer(g, this, true); } }),
+      h('button', { class: 'btn', text: '📖 Casino school', onClick: () => { this.close(); openSchool(g, this); } }),
       h('button', { class: 'btn', text: '👥 Players & blacklist', onClick: () => (this.openPlayers ? this.openPlayers() : g.notify('Multiplayer isn’t connected here.', 'bad')) }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));

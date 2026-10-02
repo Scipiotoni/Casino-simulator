@@ -21,7 +21,8 @@ export class CombatHud {
   private koEl = h('div', { class: 'ko-screen', hidden: true });
   private koKey = '';
   private scopeCanvas = h('canvas') as HTMLCanvasElement;
-  private scope = h('div', { class: 'scope', hidden: true }, this.scopeCanvas);
+  private zoomEl = h('div', { class: 'scope-zoom' });
+  private scope = h('div', { class: 'scope', hidden: true }, this.scopeCanvas, this.zoomEl);
   private reticleKey = '';
   /** Red dot or holographic ring while aiming through an optic. */
   private optic = h('canvas', { class: 'optic-dot', hidden: true }) as HTMLCanvasElement;
@@ -152,6 +153,10 @@ export class CombatHud {
       this.wanted.innerHTML = `<span class="w-label">${pol.spotted ? 'WANTED' : 'HIDING'}</span><span class="w-stars">${'<b>★</b>'.repeat(stars)}${'<i>★</i>'.repeat(5 - stars)}</span>`;
     }
     this.scope.hidden = !(fp && gp.scoped);
+    if (!this.scope.hidden) {
+      const z = `${gp.magnification.toFixed(1)}×  ·  wheel to zoom`;
+      if (this.zoomEl.textContent !== z) this.zoomEl.textContent = z;
+    }
     // Your crosshair: full-screen scope reticle and the on-screen crosshair's colour and size.
     const ret = g.reticle;
     const rk = `${reticleKey(ret)}|${window.innerWidth}x${window.innerHeight}`;

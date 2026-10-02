@@ -151,3 +151,26 @@ describe('square heads only in Ult', () => {
     expect(count(m)).toBe(crude);
   });
 });
+
+import { hitDamage } from '../src/game/gunplay';
+import { LESSONS } from '../src/ui/games/lessons';
+
+describe('shotgun, sniper and lessons', () => {
+  it('the sniper is exact and one headshot knocks anyone out; the shotgun hits harder and wider', () => {
+    const sn = gd('sniper')!;
+    const sg = gd('shotgun')!;
+    expect(sn.spread).toBe(0);
+    expect(hitDamage(sn, true)).toBeGreaterThanOrEqual(999);
+    expect(hitDamage(sn, false)).toBe(sn.dmg);
+    expect(sg.pellets * sg.dmg).toBeGreaterThanOrEqual(200);
+    expect(sg.spread).toBeGreaterThanOrEqual(0.2);
+    expect(hitDamage(gd('pistol')!, true)).toBe(gd('pistol')!.dmg * 2);
+  });
+
+  it('every casino game has a lesson', () => {
+    for (const k of ['slot', 'blackjack', 'poker', 'roulette', 'craps', 'wheel', 'baccarat', 'videopoker', 'threecard', 'sicbo', 'keno']) {
+      expect(LESSONS[k]?.steps.length).toBeGreaterThan(1);
+      expect(LESSONS[k]?.pays.length).toBeGreaterThan(0);
+    }
+  });
+});
