@@ -9,6 +9,7 @@ import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ 
 import { HEAT } from '../world/police';
 import { audio } from '../core/audio';
 import { clamp, damp, formatMoney } from '../core/math';
+import { GEARS, autoGear, drive, gearTop, rpmOf } from './gearbox';
 
 /** A car on the street you can get into (yours, or one you took). Global frame. */
 export interface Vehicle {
@@ -94,6 +95,15 @@ export class Driving {
   /** Nitro tank (0..1). */
   nitro = 1;
   private engineT = 0;
+  /** Gear you're in (1–5); 0 while reversing. */
+  gear = 1;
+  /** Shifting yourself (Q/E) instead of the automatic. */
+  manual = false;
+  /** Engine revs, 0..1 of the limiter (for the dial and the engine note). */
+  rpm = 0;
+  /** Seconds left in a gear change (no drive meanwhile). */
+  private shiftT = 0;
+  private limiterT = 0;
 
   constructor(private g: Game) {}
 
@@ -221,6 +231,7 @@ export class Driving {
     if (g.build.active) g.build.cancel();
     this.driving = v;
     v.speed = 0;
+    this.gear = 1;
     if (!this.prevCam) this.prevCam = { mode: g.cam.mode, dist: g.cam.distTarget };
     g.setCameraMode('third', false);
     g.cam.setThirdDist(v.length > 6 ? 11 : 8.5);
@@ -319,9 +330,58 @@ export class Driving {
     }
     for (const b of v.brakeLights) b.scale.y = throttle < 0 && v.speed > 0.5 ? 1.6 : 1;
     if (nitroOn && Math.random() < dt * 6) audio.play('whoosh', { volume: 0.3, pitch: 0.6 });
-    if (throttle > 0) v.speed += (v.speed < 0 ? accel * 2.2 : accel * (nitroOn ? boost * 1.6 : boost)) * throttle * dt;
-    else if (throttle < 0) v.speed += (v.speed > 0 ? accel * 2.4 * spec.brake : accel * 0.6) * throttle * dt;
+    // Gearbox: Q/E shift yourself (switches to manual), Z goes back to automatic.
+    if (!g.modalOpen) {
+      const up = input.hit('KeyE');
+      const down = input.hit('KeyQ');
+      if ((up || down) && !this.manual) {
+        this.manual = true;
+        g.notify('Manual gearbox: E shifts up, Q shifts down. Z for automatic.', 'info');
+      }
+      if (input.hit('KeyZ')) {
+        this.manual = !this.manual;
+        g.notify(this.manual ? 'Manual gearbox: E shifts up, Q shifts down.' : 'Automatic gearbox.', 'info');
+      }
+      if (this.manual && (up || down) && v.speed >= -0.5) {
+        const next = clamp(this.gear + (up ? 1 : -1), 1, GEARS);
+        if (next !== this.gear) {
+          this.gear = next;
+          this.shiftT = 0.18;
+          audio.play('click', { pitch: up ? 1.1 : 0.85, volume: 0.5 });
+        }
+      }
+    }
+    this.shiftT = Math.max(0, this.shiftT - dt);
+    if (v.speed < -0.3) this.gear = 0;
+    else if (this.gear === 0) this.gear = 1;
+    if (!this.manual && this.gear > 0) {
+      const next = autoGear(this.gear, v.speed, top * boost);
+      if (next !== this.gear) {
+        this.gear = next;
+        this.shiftT = 0.12;
+      }
+    }
+    const gearTopNow = this.gear > 0 ? gearTop(top * boost, this.gear) : 9;
+    this.rpm = this.gear > 0 ? Math.min(1.05, rpmOf(v.speed, top * boost, this.gear)) : Math.min(1, Math.abs(v.speed) / 9);
+    if (throttle > 0) {
+      if (v.speed < 0) v.speed += accel * 2.2 * throttle * dt;
+      else if (this.shiftT <= 0) {
+        // Pull from the gear you're in (×1.15 keeps the average close to the old single-speed feel).
+        const pull = drive(v.speed, top * boost, Math.max(1, this.gear)) * 1.15;
+        v.speed += accel * pull * (nitroOn ? boost * 1.6 : boost) * throttle * dt;
+        // Bouncing off the limiter
+        if (this.rpm >= 0.99) {
+          this.limiterT -= dt;
+          if (this.limiterT <= 0) {
+            this.limiterT = 0.14;
+            audio.play('drumhit', { volume: 0.12, pitch: 1.7 });
+          }
+        }
+      }
+    } else if (throttle < 0) v.speed += (v.speed > 0 ? accel * 2.4 * spec.brake : accel * 0.6) * throttle * dt;
     else v.speed = damp(v.speed, 0, 0.8, dt);
+    // Too fast for the gear (a manual downshift): engine braking pulls the speed down.
+    if (this.gear > 0 && v.speed > gearTopNow) v.speed = Math.max(gearTopNow, v.speed - 7 * dt);
     v.speed = clamp(v.speed, -9, top * boost);
     v.steer = damp(v.steer, steer, 8, dt);
     // Sharper turns at low speed, gentler at high speed.
@@ -400,11 +460,26 @@ export class Driving {
     g.cam.followYaw = yawW;
     // Engine note
     this.engineT -= dt;
-    if (this.engineT <= 0 && Math.abs(v.speed) > 1) {
-      this.engineT = 0.5 - Math.min(0.35, Math.abs(v.speed) / 120);
-      audio.play('drumhit', { volume: 0.12 + Math.min(0.2, Math.abs(v.speed) / 150), pitch: 0.5 + Math.abs(v.speed) / 40 });
+    if (this.engineT <= 0 && (Math.abs(v.speed) > 1 || throttle > 0)) {
+      // The note follows the revs (it drops when you change up).
+      this.engineT = 0.42 - this.rpm * 0.3;
+      audio.play('drumhit', { volume: 0.1 + this.rpm * 0.14, pitch: 0.45 + this.rpm * 1.1 });
     }
     if (input.hit('KeyC')) audio.play('honk');
+  }
+
+  /** A police cruiser rammed you: shoved sideways and slowed down. */
+  rammed(dx: number, dz: number, speedMul: number): void {
+    const v = this.driving;
+    if (!v) return;
+    if (this.fits(v.x + dx, v.z + dz, v.yaw, v.length * 0.92, v.width * 0.9)) {
+      v.x += dx;
+      v.z += dz;
+    }
+    v.speed *= speedMul;
+    v.yaw += (Math.random() - 0.5) * 0.25;
+    this.g.cam.shake(0.18);
+    audio.play('glass', { volume: 0.3 });
   }
 
   private crash(v: Vehicle, speed: number): void {

@@ -48,6 +48,21 @@ interface Cruiser {
   leaving: boolean;
   sirenT: number;
   t: number;
+  /** In pursuit of your car (free driving). */
+  chase: boolean;
+  yaw: number;
+  stuckT: number;
+  ramT: number;
+  /** Seconds it has had you boxed in. */
+  closeT: number;
+}
+
+/** Your car, when you're driving (global frame). */
+export interface PoliceCarView {
+  x: number;
+  z: number;
+  yaw: number;
+  speed: number;
 }
 
 /** Things the police need to know about you each frame (global frame). */
@@ -66,6 +81,10 @@ export interface PoliceView {
   onShot: (hit: boolean, dmg: number, fromGx: number, fromGz: number) => void;
   /** A shot from an officer, for tracers and flashes (global frame). */
   onTracer: (ax: number, ay: number, az: number, bx: number, by: number, bz: number) => void;
+  /** You're behind the wheel (cruisers give chase), or null on foot. */
+  car?: PoliceCarView | null;
+  /** A cruiser rammed your car: shove it by (dx, dz) and scale its speed. */
+  onRam?: (dx: number, dz: number, speedMul: number) => void;
 }
 
 function copLook(swat: boolean): Appearance {
@@ -106,6 +125,11 @@ export class Police {
   /** Seconds since your last crime. */
   sinceCrime = 99;
   private spawnT = 0;
+  /**
+   * Seconds the police have had eyes on you in this chase. The longer they keep you in
+   * sight, the hotter it gets: the stars climb and more units join.
+   */
+  seenTime = 0;
   private flash: THREE.Sprite | null = null;
   private flashT = 0;
   cols = 12;
@@ -146,6 +170,7 @@ export class Police {
   /** Busted (or a new game): everyone goes home. */
   clear(): void {
     this.heat = 0;
+    this.seenTime = 0;
     for (const o of this.officers) if (o.ko <= 0) o.leaving = Math.max(o.leaving, 0.01);
     for (const c of this.cruisers) c.leaving = true;
   }
@@ -153,6 +178,7 @@ export class Police {
   /** Remove everybody at once. */
   reset(): void {
     this.heat = 0;
+    this.seenTime = 0;
     for (const o of this.officers) o.model.dispose();
     for (const c of this.cruisers) c.car.root.removeFromParent();
     this.officers = [];
@@ -239,8 +265,128 @@ export class Police {
     car.root.position.set(x, 0, z);
     car.root.rotation.y = best.axis === 'x' ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : dir > 0 ? 0 : Math.PI;
     this.group.add(car.root);
-    this.cruisers.push({ car, bar, red, blue, x, z, axis: best.axis, dir, stopAt: along - dir * (7 + Math.random() * 5), speed: 18, parked: false, leaving: false, sirenT: 0, t: 0 });
+    this.cruisers.push({
+      car, bar, red, blue, x, z, axis: best.axis, dir, stopAt: along - dir * (7 + Math.random() * 5), speed: 18, parked: false, leaving: false, sirenT: 0, t: 0,
+      chase: false, yaw: car.root.rotation.y, stuckT: 0, ramT: 0, closeT: 0,
+    });
     return true;
+  }
+
+  /** A police car: white with navy doors and a light bar. */
+  private cruiserModel(): { car: Car; bar: THREE.Group; red: THREE.Mesh; blue: THREE.Mesh } {
+    const car = new Car(0, 0xf4f4f6);
+    const navy = new THREE.MeshStandardMaterial({ color: 0x1d2a5a, roughness: 0.35, metalness: 0.4 });
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.84, 0.42, 2.0), navy);
+    door.position.set(0, 0.62, 0.1);
+    const bar = new THREE.Group();
+    const red = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.28), new THREE.MeshBasicMaterial({ color: 0xff2a3a, toneMapped: false }));
+    const blue = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.28), new THREE.MeshBasicMaterial({ color: 0x2a6bff, toneMapped: false }));
+    red.position.x = -0.32;
+    blue.position.x = 0.32;
+    bar.add(red, blue);
+    bar.position.set(0, 1.72, -0.2);
+    car.root.add(door, bar);
+    return { car, bar, red, blue };
+  }
+
+  /** A cruiser joins the pursuit of your car from somewhere out of sight down the road. */
+  private addPursuer(car: PoliceCarView): boolean {
+    let at: { x: number; z: number } | null = null;
+    for (let k = 0; k < 30 && !at; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 55 + Math.random() * 25;
+      const x = car.x + Math.cos(a) * r;
+      const z = car.z + Math.sin(a) * r;
+      if (this.out(x, z) && this.out(x + 2, z) && this.out(x - 2, z) && this.out(x, z + 2) && this.out(x, z - 2)) at = { x, z };
+    }
+    if (!at) return false;
+    const m = this.cruiserModel();
+    const yaw = Math.atan2(car.x - at.x, car.z - at.z);
+    m.car.root.position.set(at.x, 0, at.z);
+    m.car.root.rotation.y = yaw;
+    this.group.add(m.car.root);
+    this.cruisers.push({
+      ...m, x: at.x, z: at.z, axis: 'x', dir: 1, stopAt: 0, speed: 10, parked: false, leaving: false, sirenT: 0, t: 0,
+      chase: true, yaw, stuckT: 0, ramT: 0, closeT: 0,
+    });
+    return true;
+  }
+
+  /** Free driving after your car: lead the target, steer round buildings, ram, box you in. */
+  private chaseCar(c: Cruiser, dt: number, v: PoliceView, car: PoliceCarView, stars: number): void {
+    const lead = Math.min(1.2, Math.hypot(car.x - c.x, car.z - c.z) / 30);
+    const tx = car.x + Math.sin(car.yaw) * car.speed * lead;
+    const tz = car.z + Math.cos(car.yaw) * car.speed * lead;
+    const dist = Math.hypot(car.x - c.x, car.z - c.z);
+    const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+    const clear = (yaw: number, d: number) => this.out(c.x + Math.sin(yaw) * d, c.z + Math.cos(yaw) * d) && this.out(c.x + Math.sin(yaw) * d * 0.5, c.z + Math.cos(yaw) * d * 0.5);
+    let want = wrap(Math.atan2(tx - c.x, tz - c.z) - c.yaw);
+    const look = Math.max(5, Math.abs(c.speed) * 0.5);
+    if (c.speed >= 0 && !clear(c.yaw + Math.max(-0.7, Math.min(0.7, want)), look)) {
+      // Something in the way: pick the clearest turn, preferring the side of the target.
+      const tries = [0.5, -0.5, 1, -1, 1.6, -1.6].sort((a, b) => Math.abs(a - want) - Math.abs(b - want));
+      const ok = tries.find((t) => clear(c.yaw + t, look));
+      want = ok ?? want;
+    }
+    const turnRate = 2.1;
+    if (c.speed > -0.5) c.yaw += Math.max(-turnRate * dt, Math.min(turnRate * dt, want)) * Math.min(1, Math.abs(c.speed) / 4 + 0.3);
+    else c.yaw -= Math.max(-turnRate * dt, Math.min(turnRate * dt, want)) * 0.6;
+    // Speed: flat out at a distance, matching yours close up.
+    const top = 33 + stars * 1.2;
+    let target = dist > 22 ? top : Math.max(Math.abs(car.speed) + 2, Math.min(top, dist * 1.3));
+    if (Math.abs(want) > 1.4) target = Math.min(target, 10);
+    if (c.stuckT > 1.4) target = -6;
+    c.speed += Math.max(-26 * dt, Math.min(14 * dt, target - c.speed));
+    const nx = c.x + Math.sin(c.yaw) * c.speed * dt;
+    const nz = c.z + Math.cos(c.yaw) * c.speed * dt;
+    if (this.out(nx, nz)) {
+      c.x = nx;
+      c.z = nz;
+      if (Math.abs(c.speed) > 2) c.stuckT = Math.max(0, c.stuckT - dt * 2);
+    } else {
+      c.speed *= -0.25;
+      c.stuckT += dt * 3;
+    }
+    if (Math.abs(c.speed) < 1 && dist > 8) c.stuckT += dt;
+    if (c.stuckT > 2.6) c.stuckT = 0;
+    // Ramming
+    c.ramT = Math.max(0, c.ramT - dt);
+    if (dist < 3.6 && c.ramT <= 0 && Math.abs(c.speed) > 3) {
+      c.ramT = 1.2;
+      const ax = (car.x - c.x) / Math.max(0.1, dist);
+      const az = (car.z - c.z) / Math.max(0.1, dist);
+      v.onRam?.(ax * 0.9, az * 0.9, 0.55);
+      c.speed *= 0.4;
+      const w = v.toWorld(c.x, c.z);
+      audio.playAt('thud', w.x, w.z, 0.9);
+    }
+    // Boxed in: you've (nearly) stopped with a cruiser on you. Officers jump out.
+    if (dist < 9 && Math.abs(car.speed) < 2) c.closeT += dt;
+    else c.closeT = Math.max(0, c.closeT - dt);
+    if (c.closeT > 2.2) {
+      c.chase = false;
+      c.parked = true;
+      c.speed = 0;
+      this.dropOfficers(c, stars);
+    }
+    if (dist < 70 && this.lineOfSight(c.x, c.z, car.x, car.z)) this.sinceSeen = 0;
+    c.car.root.rotation.y = c.yaw;
+  }
+
+  /** Two officers get out (one SWAT from four stars). */
+  private dropOfficers(c: Cruiser, stars: number): void {
+    const rx = Math.cos(c.yaw);
+    const rz = -Math.sin(c.yaw);
+    for (let k = 0; k < 2; k++) {
+      const s = k ? 1.6 : -1.6;
+      let ox = c.x + rx * s;
+      let oz = c.z + rz * s;
+      if (!this.out(ox, oz)) {
+        ox = c.x - rx * s;
+        oz = c.z - rz * s;
+      }
+      this.addOfficer(ox, oz, stars >= 4 && k === 0);
+    }
   }
 
   /** Officers standing in a bullet's way (global frame, unit direction), nearest first. */
@@ -285,10 +431,24 @@ export class Police {
       this.heat = Math.max(0, this.heat - dt * (v.exposed ? 0.12 : 0.3));
       if (this.heat === 0) this.clear();
     }
+    // Kept in sight, the chase heats up: stars climb and more units join.
+    if (stars > 0 && this.sinceSeen < 1.5) {
+      this.seenTime += dt;
+      this.heat = Math.min(MAX_HEAT, this.heat + dt * 0.022);
+    } else if (this.sinceSeen > 10) this.seenTime = Math.max(0, this.seenTime - dt * 2);
+    const extra = Math.floor(this.seenTime / 15);
     // Reinforcements
     const active = this.officers.filter((o) => o.ko <= 0 && !o.leaving).length;
     this.spawnT -= dt;
-    if (stars > 0 && v.exposed && this.spawnT <= 0 && active < OFFICERS[stars]) {
+    const car = v.car ?? null;
+    if (car && stars > 0 && this.spawnT <= 0) {
+      // Behind the wheel: cruisers give chase (more the longer they've kept you in sight).
+      const pursuers = this.cruisers.filter((c) => c.chase && !c.leaving).length;
+      if (pursuers < Math.min(7, Math.ceil(stars / 2) + Math.floor(this.seenTime / 20))) {
+        this.spawnT = 9;
+        this.addPursuer(car);
+      }
+    } else if (stars > 0 && v.exposed && this.spawnT <= 0 && active < Math.min(14, OFFICERS[stars] + extra)) {
       this.spawnT = stars >= 2 ? 12 : 18;
       const parked = this.cruisers.filter((c) => !c.leaving).length;
       if (stars >= 2 && parked < Math.ceil(stars / 2) && this.addCruiser(v.px, v.pz)) {
@@ -310,6 +470,43 @@ export class Police {
       const ph = Math.floor(c.t * 6) % 2 === 0;
       c.red.visible = ph || c.leaving;
       c.blue.visible = !ph || c.leaving;
+      // Cruisers already on the road switch to pursuit when you drive off.
+      if (v.car && !c.leaving && !c.chase && !c.parked && stars > 0) {
+        c.chase = true;
+        c.yaw = c.car.root.rotation.y;
+      }
+      if (c.chase) {
+        if (c.leaving || !v.car || stars === 0) {
+          // You got out (or the chase is over): pull up here and get out after you.
+          c.chase = false;
+          c.speed = 0;
+          if (!c.leaving && stars > 0) {
+            c.parked = true;
+            this.dropOfficers(c, stars);
+          } else {
+            c.leaving = true;
+            c.axis = Math.abs(Math.sin(c.yaw)) > 0.7 ? 'x' : 'z';
+            c.dir = (c.axis === 'x' ? Math.sin(c.yaw) : Math.cos(c.yaw)) >= 0 ? 1 : -1;
+            c.car.root.rotation.y = c.axis === 'x' ? (c.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : c.dir > 0 ? 0 : Math.PI;
+          }
+        } else {
+          // Lost far behind: drop out (a fresh unit will be sent from closer).
+          if (Math.hypot(c.x - v.car.x, c.z - v.car.z) > 170) {
+            c.car.root.removeFromParent();
+            this.cruisers.splice(i, 1);
+            continue;
+          }
+          this.chaseCar(c, dt, v, v.car, stars);
+          c.car.root.position.set(c.x, 0, c.z);
+          c.sirenT -= dt;
+          if (c.sirenT <= 0) {
+            c.sirenT = 1.1;
+            const w = v.toWorld(c.x, c.z);
+            audio.playAt('siren', w.x, w.z, 0.9);
+          }
+          continue;
+        }
+      }
       const pos = c.axis === 'x' ? c.x : c.z;
       if (c.leaving) {
         c.speed = Math.min(14, c.speed + dt * 6);

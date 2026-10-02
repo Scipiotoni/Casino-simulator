@@ -174,3 +174,48 @@ describe('shotgun, sniper and lessons', () => {
     }
   });
 });
+
+import { GEARS, autoGear, drive, gearTop, rpmOf } from '../src/game/gearbox';
+import { Police } from '../src/world/police';
+import { streetZ } from '../src/world/city';
+
+describe('gearbox', () => {
+  it('low gears pull harder but top out early; the automatic shifts up and down', () => {
+    const top = 40;
+    expect(GEARS).toBe(5);
+    expect(gearTop(top, 1)).toBeLessThan(gearTop(top, 5));
+    expect(gearTop(top, 5)).toBe(top);
+    expect(drive(5, top, 1)).toBeGreaterThan(drive(5, top, 4));
+    expect(drive(gearTop(top, 2), top, 2)).toBe(0); // limiter
+    expect(rpmOf(gearTop(top, 3), top, 3)).toBeCloseTo(1);
+    expect(autoGear(1, gearTop(top, 1) * 0.97, top)).toBe(2);
+    expect(autoGear(4, 3, top)).toBe(3);
+    expect(autoGear(5, top * 0.9, top)).toBe(5);
+  });
+});
+
+describe('police pursuit', () => {
+  it('cruisers chase your car, and the stars climb the longer they see you', () => {
+    const pol = new Police();
+    pol.cols = 20;
+    pol.heat = 1.2;
+    const car = { x: 200, z: streetZ(0), yaw: Math.PI / 2, speed: 12 };
+    const view = {
+      px: car.x, pz: car.z, exposed: true, speed: 12, height: 1.7,
+      toWorld: (x: number, z: number) => ({ x, z }), onShot: () => undefined, onTracer: () => undefined,
+      car, onRam: () => undefined,
+    };
+    let closest = Infinity;
+    for (let i = 0; i < 1800; i++) {
+      car.x += Math.sin(car.yaw) * car.speed / 30;
+      if (car.x > 700) car.yaw = -Math.PI / 2;
+      if (car.x < 100) car.yaw = Math.PI / 2;
+      view.px = car.x;
+      pol.update(1 / 30, view, true);
+      for (const d of pol.dots) if (d.car) closest = Math.min(closest, Math.hypot(d.x - car.x, d.z - car.z));
+    }
+    expect(closest).toBeLessThan(25);
+    expect(pol.seenTime).toBeGreaterThan(5);
+    expect(pol.stars).toBeGreaterThanOrEqual(2);
+  });
+});

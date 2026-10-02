@@ -178,11 +178,13 @@ export class CombatHud {
     // Speedometer behind the wheel
     const car = playing ? g.drive.driving : null;
     const nitro = car?.mods?.nitro ? Math.round(g.drive.nitro * 20) : -1;
-    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}|${nitro}` : '';
+    const dr = g.drive;
+    const gearLabel = car ? (dr.gear === 0 ? 'R' : String(dr.gear)) : '';
+    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}|${nitro}|${gearLabel}|${dr.manual}|${Math.round(dr.rpm * 20)}` : '';
     if (skey !== this.speedoKey) {
       this.speedoKey = skey;
       this.speedo.hidden = !car;
-      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
+      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/E' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
     }
     // Waypoint: what it is, how far, and which way (relative to where the camera looks).
     const wpt = playing ? g.waypoint : null;

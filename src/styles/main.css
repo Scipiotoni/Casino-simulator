@@ -5241,3 +5241,39 @@ p.small {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+.speedo .gearbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+}
+.speedo .gearbox strong {
+  min-width: 22px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  font: 900 15px var(--font-display);
+  text-align: center;
+}
+.speedo .gearbox strong.red {
+  background: rgba(255, 59, 77, 0.55);
+}
+.speedo .rpm {
+  display: block;
+  width: 64px;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.speedo .rpm u {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #39ff88 0 60%, #ffd24a 60% 85%, #ff3b4d 85%);
+  background-size: 64px 100%;
+}
+.speedo .gearbox small {
+  font-size: 9px;
+  font-weight: 800;
+  opacity: 0.7;
+}

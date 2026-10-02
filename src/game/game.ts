@@ -2740,6 +2740,8 @@ export class Game implements World, ItemHost {
         const b = st.globalToWorld(bx, bz);
         this.gunplay.enemyTracer(new THREE.Vector3(a.x, ay, a.z), new THREE.Vector3(b.x, by, b.z));
       },
+      car: this.drive.driving ? { x: this.drive.driving.x, z: this.drive.driving.z, yaw: this.drive.driving.yaw, speed: this.drive.driving.speed } : null,
+      onRam: (dx, dz, mul) => this.drive.rammed(dx, dz, mul),
     }, true);
     if (pol.stars > (this.stats.maxWanted ?? 0)) this.stats.maxWanted = pol.stars;
     if (pol.stars !== this.lastStars) {
@@ -3776,7 +3778,7 @@ export class Game implements World, ItemHost {
     if (input.wheel && !first) this.cam.zoomBy(Math.exp(input.wheel * 0.0012));
     if (input.pinch !== 1 && !first) this.cam.zoomBy(input.pinch);
     if (playing && sim > 0) {
-      if (!third && !first) {
+      if (!third && !first && !this.drive.driving) {
         if (input.hit('KeyQ')) this.cam.rotate(-1);
         if (input.hit('KeyE')) this.cam.rotate(1);
       }
