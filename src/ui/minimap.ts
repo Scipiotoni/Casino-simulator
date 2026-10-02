@@ -219,8 +219,8 @@ export class Minimap {
       return gx >= b.x0 && gx <= b.x1 && gz >= b.z0 && gz <= b.z1;
     });
     // Your own buildings: fast travel there (only from another of your buildings).
-    if (lot && g.ownsLot(lot) && !g.travelBlock(lot)) {
-      g.teleportToLot(lot);
+    if (lot && g.ownsLot(lot)) {
+      g.fastTravel(lot.kind === 'me' ? 'casino' : lot.id === 'house' ? 'house' : 'hotel');
       return;
     }
     // Anywhere else: mark a waypoint (a building's is at its door).

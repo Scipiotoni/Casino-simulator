@@ -5,7 +5,8 @@ import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { carDef } from '../world/vehicles';
 import { carThumb } from './preview';
-import { modsOf } from '../game/driving';
+import { conditionOf, modsOf } from '../game/driving';
+import { repairRow } from './cars';
 import { GARAGE_TIERS, garageTier } from '../game/house';
 import { openCustomize } from './carGarage';
 
@@ -65,6 +66,7 @@ export function openGarage(game: Game, modals: Modals): void {
         img,
         h('div', { class: 'car-name', text: def ? def.name : 'Kept car' }),
         h('div', { class: 'muted small', text: def ? def.blurb : 'Taken off the street. Yours now.' }),
+        def && conditionOf(g.garage, def.id) < 1 ? repairRow(g, def.id, render) : null,
         h('div', { class: 'btn-row' },
           h('button', {
             class: 'btn small gold', text: '🚗 Drive it out', disabled: !here,

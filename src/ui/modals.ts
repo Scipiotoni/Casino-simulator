@@ -17,7 +17,7 @@ import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
 import { MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
 import { HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, vaultTier } from '../game/house';
-import { FACADE_Z, SIDEWALK_Z0, CENTER_X } from '../world/grid';
+import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
 import { CharacterCreator } from './creator';
@@ -371,23 +371,14 @@ export class Modals {
         row.appendChild(h('button', {
           class: 'btn gold', html: `${icon('home', 16)} Go home`,
           onClick: () => {
-            const lot = g.street.get('house');
-            if (!lot) return;
-            if (g.travelBlock(lot)) {
-              // Not at one of your buildings: point the way instead.
-              const d = g.street.toGlobal('house', CENTER_X + 0.1, SIDEWALK_Z0 + 1.6);
-              g.setWaypoint(d.x, d.z, 'your house');
-              g.notify('Waypoint set to your house. Fast travel only works from your casino or hotel.', 'info');
-              this.close();
-            } else if (g.teleportToLot(lot)) this.close();
+            if (g.fastTravel('house')) this.close();
           },
         }));
       } else {
         row.appendChild(h('button', {
           class: 'btn gold', html: `${icon('casino', 16)} Back to the casino`,
           onClick: () => {
-            const me = g.street.get('me');
-            if (me && g.enterLot(me)) this.close();
+            if (g.fastTravel('casino')) this.close();
           },
         }));
       }
@@ -722,6 +713,28 @@ export class Modals {
 
   // ------------------------------------------------------------------ menu & settings
 
+  /** Fast travel: straight inside your casino, hotel or house, from anywhere. */
+  openTravel(): void {
+    const g = this.game;
+    const body = h('div', { class: 'stack' });
+    body.appendChild(h('p', { class: 'muted small', text: 'Teleport straight inside one of your buildings from anywhere in the city. If you’re driving, your car stays where you left it. You can’t teleport for a few seconds after getting hurt.' }));
+    const row = h('div', { class: 'travel-grid' });
+    const here = g.travelHere;
+    for (const [dest, emoji, name] of [['casino', '🎰', 'Casino'], ['hotel', '🏨', 'Hotel'], ['house', '🏠', 'Home']] as const) {
+      const lot = g.travelLot(dest);
+      const sub = !lot ? (dest === 'hotel' ? 'No hotel yet' : 'No house yet') : here === dest ? 'You’re here' : dest === 'casino' ? g.building.look.name : dest === 'hotel' ? 'Your hotel' : 'Your house';
+      row.appendChild(h('button', {
+        class: `travel-btn${here === dest ? ' here' : ''}`, disabled: !lot || here === dest,
+        html: `<span class="travel-emoji">${emoji}</span><b>${name}</b><small>${sub.replace(/</g, '&lt;')}</small>`,
+        onClick: () => {
+          if (g.fastTravel(dest)) this.closeAll();
+        },
+      }));
+    }
+    body.appendChild(row);
+    this.open('Fast travel', body, { cls: 'small' });
+  }
+
   openMenu(): void {
     const g = this.game;
     const st = g.settings;
@@ -739,6 +752,7 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('help', 16)} How to play`, onClick: () => this.openHelp() }),
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
       h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
+      h('button', { class: 'btn', text: '🧭 Fast travel', onClick: () => { this.close(); this.openTravel(); } }),
       h('button', { class: 'btn', text: '🚗 My cars', onClick: () => { this.close(); openDealer(g, this, true); } }),
       h('button', { class: 'btn', text: '📖 Casino school', onClick: () => { this.close(); openSchool(g, this); } }),
       h('button', { class: 'btn', text: '👥 Players & blacklist', onClick: () => (this.openPlayers ? this.openPlayers() : g.notify('Multiplayer isn’t connected here.', 'bad')) }),

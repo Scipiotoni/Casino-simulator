@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Game } from './game';
-import { type CarDef, type CarMods, DEALER_CARS, STOLEN_SPECS, buildCar, carDef, carHp, carWidth, defaultMods, engineOf, sanitizeMods, tunedSpecs } from '../world/vehicles';
+import { type CarDef, type CarMods, DEALER_CARS, STOLEN_SPECS, buildCar, carDef, carHp, carWidth, defaultMods, engineOf, repairCost, sanitizeMods, tunedSpecs } from '../world/vehicles';
 import { Car, rayBox } from '../world/cityView';
 import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
@@ -75,23 +75,24 @@ export function shotDamage(gunDmg: number, armor = 1): number {
   return gunDmg * 0.4 * armor;
 }
 
-/** Fee to replace one of your own cars that blew up (the military ones cost more to "find"). */
-export function insuranceFee(def: CarDef | null): number {
-  if (!def) return 0;
-  if (def.military) return 25_000;
-  return Math.max(500, Math.round(def.price * 0.05));
-}
-
 /** Cars you own (saved). */
 export interface GarageState {
   owned: string[];
   colors: Record<string, number>;
   /** Customization and tuning per car you own. */
   mods: Record<string, CarMods>;
+  /** Condition of damaged cars you own (0 = wrecked .. 1; missing = like new). */
+  hp?: Record<string, number>;
 }
 
 export function emptyGarage(): GarageState {
-  return { owned: [], colors: {}, mods: {} };
+  return { owned: [], colors: {}, mods: {}, hp: {} };
+}
+
+/** How much of a car you own is left (1 = like new, 0 = wrecked). */
+export function conditionOf(gs: GarageState, id: string): number {
+  const v = gs.hp?.[id];
+  return typeof v === 'number' ? Math.max(0, Math.min(1, v)) : 1;
 }
 
 /** A car's mods (made from its defaults the first time). */
@@ -117,7 +118,13 @@ export function sanitizeGarage(raw: unknown): GarageState {
       if (d) mods[k] = sanitizeMods(d, v);
     }
   }
-  return { owned, colors, mods };
+  const hp: Record<string, number> = {};
+  if (r.hp && typeof r.hp === 'object') {
+    for (const [k, v] of Object.entries(r.hp as Record<string, unknown>)) {
+      if (carDef(k) && typeof v === 'number' && Number.isFinite(v) && v < 1) hp[k] = Math.max(0, v);
+    }
+  }
+  return { owned, colors, mods, hp };
 }
 
 let nextUid = 1;
@@ -215,6 +222,11 @@ export class Driving {
       g.notify('Step out onto the street first: your car comes to the curb.', 'bad');
       return false;
     }
+    if (conditionOf(g.garage, id) <= 0) {
+      audio.play('error');
+      g.notify(`Your ${def.name} is wrecked. Get it repaired first (${formatMoney(repairCost(def))}, 10% of its price) from My cars.`, 'bad');
+      return false;
+    }
     if (this.driving) this.exit();
     const pg = this.playerGlobal();
     const mods = modsOf(g.garage, id);
@@ -246,6 +258,8 @@ export class Driving {
       x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : carWidth(def), owned, stolen, mods, flames: m.flames, brakeLights: m.brakeLights,
       hp: carHp(def), maxHp: carHp(def), armor: def.armor ?? 1, wreck: -1, burnT: 0, turret: m.turret, muzzle: m.muzzle, cannonT: 0,
     };
+    // Your own cars keep their damage until you pay to have them fixed.
+    if (owned) v.hp = Math.max(1, Math.round(v.maxHp * conditionOf(this.g.garage, def.id)));
     this.vehicles.push(v);
     return v;
   }
@@ -638,6 +652,7 @@ export class Driving {
     if (v.wreck >= 0 || amount <= 0 || !this.vehicles.includes(v)) return;
     const was = v.hp;
     v.hp = Math.max(0, v.hp - amount);
+    this.noteCondition(v);
     if (v === this.driving && Math.floor(was / v.maxHp * 4) !== Math.floor(v.hp / v.maxHp * 4) && v.hp > 0) {
       this.g.notify(v.hp / v.maxHp < 0.25 ? `Your ${v.name} is on fire! Get out before it blows!` : v.hp / v.maxHp < 0.5 ? `Your ${v.name} is smoking: ${Math.round((v.hp / v.maxHp) * 100)}% left.` : `Your ${v.name} took a beating.`, 'bad');
     }
@@ -712,12 +727,50 @@ export class Driving {
     g.cam.shake(Math.max(0.05, 0.45 - dist / 60));
     g.stats.carsWrecked = (g.stats.carsWrecked ?? 0) + 1;
     if (byPlayer) g.street.police.crime(HEAT.wreck);
-    if (v.owned && v.def) {
-      const fee = Math.min(g.money, insuranceFee(v.def));
-      if (fee > 0) g.spend(fee, 'upkeep');
-      g.notify(`Your ${v.def.name} blew up! Insurance replaces it for ${formatMoney(fee)}: call it again from My cars.`, 'bad');
-    }
+    this.noteCondition(v);
+    if (v.owned && v.def) g.notify(`Your ${v.def.name} blew up! Rebuilding it costs ${formatMoney(repairCost(v.def))} (10% of its price): Menu → My cars.`, 'bad');
     this.blast(v.x, v.z, 6.5 * big, 70 * big, byPlayer, v);
+  }
+
+  /** Remember how damaged one of your own cars is (saved). */
+  private noteCondition(v: Vehicle): void {
+    const g = this.g;
+    if (!v.owned || !v.def || !g.garage.owned.includes(v.def.id)) return;
+    g.garage.hp ??= {};
+    const f = v.wreck >= 0 ? 0 : v.hp / v.maxHp;
+    if (f >= 0.999) delete g.garage.hp[v.def.id];
+    else g.garage.hp[v.def.id] = Math.round(f * 1000) / 1000;
+    g.requestSave();
+  }
+
+  /** Pay to have one of your cars fixed after a crash: 10% of what it cost, good as new. */
+  repair(id: string): boolean {
+    const g = this.g;
+    const def = carDef(id);
+    if (!def || !g.garage.owned.includes(id)) return false;
+    if (conditionOf(g.garage, id) >= 1) {
+      g.notify(`Your ${def.name} doesn't need fixing.`, 'info');
+      return false;
+    }
+    const cost = repairCost(def);
+    if (g.money < cost) {
+      audio.play('error');
+      g.notify(`Fixing your ${def.name} costs ${formatMoney(cost)} (10% of its price).`, 'bad');
+      return false;
+    }
+    g.spend(cost, 'upkeep');
+    delete g.garage.hp?.[id];
+    // Out on the street (and not a burnt-out shell): fixed where it stands.
+    const v = this.vehicles.find((o) => o.owned && o.def?.id === id && o.wreck < 0);
+    if (v) {
+      v.hp = v.maxHp;
+      v.burnT = 0;
+    }
+    audio.play('repair');
+    g.notify(`Your ${def.name} is fixed, good as new (${formatMoney(cost)}).`, 'good');
+    g.events.emit('combat', undefined);
+    g.requestSave();
+    return true;
   }
 
   /** An explosion at a point (global frame): hurts cars, people, the police and you. */
@@ -1064,6 +1117,8 @@ export class Driving {
     if (taken && v.def) {
       g.garage.owned.push(v.def.id);
       g.garage.mods[v.def.id] = defaultMods(v.def, v.color);
+      v.owned = true;
+      this.noteCondition(v);
     }
     this.exit();
     this.remove(v);
@@ -1079,7 +1134,10 @@ export class Driving {
     }
     this.nitro = 1;
     audio.play('doorbell', { pitch: 0.7 });
-    g.notify(stolen || taken ? `You hid the ${taken ? v.name : 'car'} in your garage. It’s yours now!` : `Your ${v.name} is parked in your garage, repaired, washed and the nitro topped up.`, 'good');
+    const cond = v.def ? conditionOf(g.garage, v.def.id) : 1;
+    g.notify(stolen || taken ? `You hid the ${taken ? v.name : 'car'} in your garage. It’s yours now!`
+      : cond < 1 && v.def ? `Your ${v.name} is parked in your garage, washed and the nitro topped up. It's damaged (${Math.round(cond * 100)}%): fixing it costs ${formatMoney(repairCost(v.def))}.`
+        : `Your ${v.name} is parked in your garage, washed and the nitro topped up.`, 'good');
     g.stats.carsParked = (g.stats.carsParked ?? 0) + 1;
     g.requestSave();
     return true;
@@ -1099,6 +1157,11 @@ export class Driving {
     }
     const def = p.id ? carDef(p.id) ?? null : null;
     if (p.id && !def) return false;
+    if (def && conditionOf(g.garage, def.id) <= 0) {
+      audio.play('error');
+      g.notify(`Your ${def.name} is wrecked. Get it repaired first (${formatMoney(repairCost(def))}).`, 'bad');
+      return false;
+    }
     const mods = def ? modsOf(g.garage, def.id) : null;
     const built = def ? buildCar(def, undefined, mods!) : null;
     const len = built ? built.length : new Car(p.kind ?? 0, 0).length;

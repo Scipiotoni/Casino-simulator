@@ -17,8 +17,8 @@ vi.mock('../src/render/textures', async (orig) => {
 import { banPrice, BAN_CHOICES } from '../src/net/net';
 import { punchPay } from '../src/game/activities';
 import { Bricks, Flappy, Snake } from '../src/ui/games/arcade';
-import { CARS, DEALER_CARS, MILITARY_CARS, buildCar, carHp, engineOf } from '../src/world/vehicles';
-import { crashDamage, insuranceFee, shotDamage } from '../src/game/driving';
+import { CARS, DEALER_CARS, MILITARY_CARS, buildCar, carHp, engineOf, repairCost } from '../src/world/vehicles';
+import { conditionOf, crashDamage, sanitizeGarage, shotDamage } from '../src/game/driving';
 import { BASE_HD, BASE_HW, MilitaryBase, baseSite, inBaseArea, type BaseHost } from '../src/world/militaryBase';
 import { MIN_COLS, cityX, inWilds } from '../src/world/city';
 
@@ -107,8 +107,16 @@ describe('durability', () => {
     expect(shotsHatch).toBeGreaterThanOrEqual(8);
     expect(shotsHatch).toBeLessThanOrEqual(15);
     expect(shotsTank).toBeGreaterThan(500);
-    expect(insuranceFee(hatch)).toBeGreaterThanOrEqual(500);
-    expect(insuranceFee(tank)).toBe(25_000);
+    // Fixing a car costs 10% of what it cost (military ones by their value).
+    expect(repairCost(hatch)).toBe(800);
+    expect(repairCost(CARS.find((c) => c.id === 'hyper')!)).toBe(100_000);
+    expect(repairCost(tank)).toBe(90_000);
+    // Damage is remembered (saved) until it's repaired.
+    const gs = sanitizeGarage({ owned: ['hatch', 'super'], hp: { hatch: 0.4, super: 0, bogus: 0.2, ev: 2 } });
+    expect(conditionOf(gs, 'hatch')).toBe(0.4);
+    expect(conditionOf(gs, 'super')).toBe(0);
+    expect(conditionOf(gs, 'muscle')).toBe(1);
+    expect(gs.hp?.bogus).toBeUndefined();
   });
 });
 

@@ -29,6 +29,8 @@ export interface CarDef {
   armor?: number;
   /** A main gun: click (or F) fires a shell that explodes where it lands. */
   cannon?: boolean;
+  /** What it's worth when it can't be bought (military vehicles), for repairs. */
+  value?: number;
 }
 
 export const CARS: CarDef[] = [
@@ -56,16 +58,27 @@ export const CARS: CarDef[] = [
   { id: 'gt', name: 'Le Mans GT', kind: 'gt', price: 450_000, unlock: 9, top: 47, accel: 18, grip: 1.4, colors: [0x1f4fbf, 0xf4f1ea, 0xff8a1f, 0x17151f], blurb: 'An endurance racer with plates. Glued to the road.' },
   { id: 'hyper', name: 'Golden Hypercar', kind: 'hyper', price: 1_000_000, unlock: 10, top: 50, accel: 20, grip: 1.35, colors: [0xf2b632], blurb: 'Solid gold. The fastest thing in the city.' },
   // Military base only: you can't buy these, you have to take them.
-  { id: 'jeep', name: 'Army Patrol Jeep', kind: 'jeep', price: 0, unlock: 1, top: 33, accel: 13, grip: 1.25, hp: 320, armor: 0.6, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Armoured patrol 4x4 with a roll bar. Shrugs off small arms.' },
-  { id: 'apc', name: 'Armoured APC', kind: 'apc', price: 0, unlock: 1, top: 27, accel: 9, grip: 0.95, hp: 900, armor: 0.3, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Eight tonnes of steel on six wheels. Traffic gets out of its way.' },
-  { id: 'tank', name: 'Rhino Tank', kind: 'tank', price: 0, unlock: 1, top: 15, accel: 6, grip: 1.5, hp: 2500, armor: 0.12, cannon: true, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Tracks, armour and a 120 mm cannon (click or F to fire). Slow, unstoppable.' },
-  { id: 'stealth', name: 'Prototype X-1', kind: 'stealth', price: 0, unlock: 1, top: 56, accel: 23, grip: 1.45, hp: 180, armor: 0.8, military: true, colors: [0x17151f, 0x2c2f26, 0x8c9099], blurb: 'A classified stealth racer. The fastest thing on wheels, anywhere.' },
+  { id: 'jeep', value: 120000, name: 'Army Patrol Jeep', kind: 'jeep', price: 0, unlock: 1, top: 33, accel: 13, grip: 1.25, hp: 320, armor: 0.6, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Armoured patrol 4x4 with a roll bar. Shrugs off small arms.' },
+  { id: 'apc', value: 350000, name: 'Armoured APC', kind: 'apc', price: 0, unlock: 1, top: 27, accel: 9, grip: 0.95, hp: 900, armor: 0.3, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Eight tonnes of steel on six wheels. Traffic gets out of its way.' },
+  { id: 'tank', value: 900000, name: 'Rhino Tank', kind: 'tank', price: 0, unlock: 1, top: 15, accel: 6, grip: 1.5, hp: 2500, armor: 0.12, cannon: true, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Tracks, armour and a 120 mm cannon (click or F to fire). Slow, unstoppable.' },
+  { id: 'stealth', value: 1500000, name: 'Prototype X-1', kind: 'stealth', price: 0, unlock: 1, top: 56, accel: 23, grip: 1.45, hp: 180, armor: 0.8, military: true, colors: [0x17151f, 0x2c2f26, 0x8c9099], blurb: 'A classified stealth racer. The fastest thing on wheels, anywhere.' },
 ];
 
 /** The cars on sale at Velocity Motors (military vehicles aren't). */
 export const DEALER_CARS: CarDef[] = CARS.filter((c) => !c.military).sort((a, b) => a.price - b.price);
 /** Vehicles parked at the military base. */
 export const MILITARY_CARS: CarDef[] = CARS.filter((c) => c.military);
+
+/** What a car is worth: its price, or its value for vehicles nobody sells. */
+export function carValue(def: CarDef): number {
+  return def.price || def.value || 20_000;
+}
+
+/** Fixing a car after a crash: 10% of what it cost. */
+export const REPAIR_SHARE = 0.1;
+export function repairCost(def: CarDef): number {
+  return Math.round(carValue(def) * REPAIR_SHARE);
+}
 
 /** How much punishment a vehicle takes before it blows up. */
 export function carHp(def: CarDef | null): number {

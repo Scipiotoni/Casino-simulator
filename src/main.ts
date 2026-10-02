@@ -191,6 +191,7 @@ async function start(hotData: unknown): Promise<void> {
       if (e.code === 'Escape') hud.togglePhoto(false);
     }
     else if (e.code === 'KeyB') hud.shop.toggle();
+    else if (e.code === 'KeyJ') hud.modals.openTravel();
     else if (e.code === 'KeyP') hud.setSpeed(0);
   });
 

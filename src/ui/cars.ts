@@ -3,9 +3,9 @@ import type { Modals } from './modals';
 import { h, clear } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
-import { CARS, DEALER_CARS, tunedSpecs } from '../world/vehicles';
+import { CARS, DEALER_CARS, repairCost, tunedSpecs } from '../world/vehicles';
 import { carThumb } from './preview';
-import { modsOf } from '../game/driving';
+import { conditionOf, modsOf } from '../game/driving';
 import { modsSummary, openCustomize } from './carGarage';
 import { openGarage } from './homeGarage';
 
@@ -56,9 +56,10 @@ export function openDealer(game: Game, modals: Modals, mine = false): void {
         h('div', { class: 'car-stats', text: stats }),
         swatches,
         owned && mods && modsSummary(mods) ? h('div', { class: 'car-stats pos', text: modsSummary(mods) }) : null,
+        owned && conditionOf(g.garage, d.id) < 1 ? repairRow(g, d.id, render) : null,
         owned
           ? h('div', { class: 'btn-row' },
-            h('button', { class: 'btn small gold', text: '🚗 Bring it here', onClick: () => { if (g.drive.bring(d.id)) modals.closeAll(); } }),
+            h('button', { class: 'btn small gold', text: '🚗 Bring it here', disabled: conditionOf(g.garage, d.id) <= 0, onClick: () => { if (g.drive.bring(d.id)) modals.closeAll(); } }),
             h('button', { class: 'btn small', text: '🔧 Customize', onClick: () => { modals.close(); openCustomize(g, modals, d.id); } }))
           : h('button', {
             class: 'btn small gold', disabled: locked,
@@ -81,4 +82,19 @@ export function openDealer(game: Game, modals: Modals, mine = false): void {
   const off = g.events.on('money', () => render());
   audio.play('doorbell', { pitch: 1.2 });
   modals.open(mine ? 'My cars' : 'Velocity Motors', body, { wide: true, onClose: off });
+}
+
+/** A damaged car: how bad it is and a button to pay for the repair (10% of its price). */
+export function repairRow(g: Game, id: string, after: () => void): HTMLElement {
+  const def = CARS.find((c) => c.id === id)!;
+  const c = conditionOf(g.garage, id);
+  const cost = repairCost(def);
+  return h('div', { class: 'repair-row' },
+    h('span', { class: `chip ${c <= 0 ? 'bad' : 'warn'}`, text: c <= 0 ? '💥 Wrecked' : `🛠 ${Math.round(c * 100)}% condition` }),
+    h('button', {
+      class: 'btn small', html: `🔧 Repair <b>${formatMoney(cost)}</b>`, disabled: g.money < cost, title: 'Fixing a car costs 10% of its price',
+      onClick: () => {
+        if (g.drive.repair(id)) after();
+      },
+    }));
 }

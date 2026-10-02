@@ -159,12 +159,13 @@ export class Hud {
     this.joyEl = h('div', { class: 'joystick', hidden: true }, this.knobEl);
     const camBtns = h('div', { class: 'cam-btns' },
       (this.camBtn = h('button', { class: 'cam-btn cam-mode', html: icon('you', 18), 'aria-label': 'Switch camera (V)', title: 'Switch camera: top-down, third person, first person (V)', onClick: () => { g.setCameraMode(g.cam.mode === 'top' ? 'third' : g.cam.mode === 'third' ? 'first' : 'top'); audio.play('click'); } }) as HTMLButtonElement),
+      h('button', { class: 'cam-btn travel', text: '🧭', 'aria-label': 'Fast travel (J)', title: 'Fast travel to your casino, hotel or house (J)', onClick: () => { if (!this.modals.isOpen) this.modals.openTravel(); } }),
       h('button', { class: 'cam-btn', html: icon('camera', 18), 'aria-label': 'Photo mode (H)', title: 'Photo mode (H)', onClick: () => this.togglePhoto(true) }),
       h('button', { class: 'cam-btn', html: icon('rotate', 18), 'aria-label': 'Rotate camera', onClick: () => g.cam.rotate(1) }),
       h('button', { class: 'cam-btn', html: icon('zoomIn', 18), 'aria-label': 'Zoom in', onClick: () => g.cam.zoomBy(0.8) }),
       h('button', { class: 'cam-btn', html: icon('zoomOut', 18), 'aria-label': 'Zoom out', onClick: () => g.cam.zoomBy(1.25) }),
     );
-    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-5</b> weapons · <b>6-9</b> emotes · <b>Enter</b> chat · <b>V</b> camera · <b>H</b> photo' });
+    const hint = h('div', { class: 'keyhint', html: '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> act · <b>Q/E</b> turn · <b>Wheel</b> zoom · <b>1-5</b> weapons · <b>6-9</b> emotes · <b>Enter</b> chat · <b>V</b> camera · <b>H</b> photo · <b>J</b> travel' });
     this.fpsEl = h('div', { class: 'fps', hidden: true });
 
     // Visiting another casino

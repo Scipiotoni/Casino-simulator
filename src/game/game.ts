@@ -2701,8 +2701,69 @@ export class Game implements World, ItemHost {
   /** Why you can't fast-travel to this building right now (null = go ahead). */
   travelBlock(lot: StreetLot): string | null {
     if (!this.ownsLot(lot)) return 'You can only teleport to your own buildings. Mark a waypoint and walk or drive there.';
-    if (!this.atOwnBuilding) return 'Fast travel only works between your own buildings: get to your casino, hotel or house first.';
     return null;
+  }
+
+  /** Your building of each kind (null if you don't have one yet). */
+  travelLot(dest: 'casino' | 'hotel' | 'house'): StreetLot | null {
+    if (dest === 'casino') return this.street.get('me') ?? null;
+    if (dest === 'house') return this.house ? this.street.get('house') ?? null : null;
+    return this.hotel ? this.street.lots.find((l) => l.hotelOf === 'me') ?? null : null;
+  }
+
+  /** Where you are now, as a fast-travel destination. */
+  get travelHere(): 'casino' | 'hotel' | 'house' | null {
+    if (!this.inside) return null;
+    if (this.inHouse) return 'house';
+    if (this.inHotel) return 'hotel';
+    return this.visit ? null : 'casino';
+  }
+
+  /**
+   * Fast travel straight inside your casino, your hotel or your house, from anywhere (get out
+   * of the car first; not right after you've been hurt).
+   */
+  fastTravel(dest: 'casino' | 'hotel' | 'house'): boolean {
+    if (this.state !== 'playing' || this.photoMode) return false;
+    const lot = this.travelLot(dest);
+    const fail = (text: string) => {
+      audio.play('error');
+      this.notify(text, 'bad');
+      return false;
+    };
+    if (!lot) return fail(dest === 'hotel' ? 'You don’t have a hotel yet: buy one from the Hotel tab.' : 'You don’t have a house yet: buy one from the Home tab.');
+    if (this.travelHere === dest) return fail('You’re already here.');
+    const lock = this.combat.teleportLock;
+    if (lock > 0) return fail(`You were just hurt: no teleporting for ${Math.ceil(lock)} more seconds.`);
+    if (this.combat.ko > 0) return false;
+    // Your car stays parked where you left it.
+    if (this.drive.driving) {
+      this.drive.driving.speed = 0;
+      this.drive.exit();
+    }
+    this.stopActivity(false);
+    this.standUp();
+    if (this.build.active) this.build.cancel();
+    this.select(null);
+    let ok: boolean;
+    if (lot.id === this.street.activeId) {
+      // Out on the street in front of it: step straight inside.
+      const wasUp = this.player.floor;
+      this.player.floor = 0;
+      this.player.x = CENTER_X;
+      this.player.z = FACADE_Z - 1.5;
+      this.player.halt();
+      this.cam.snap(this.player.x, this.player.z);
+      if (wasUp) this.events.emit('floor', 0);
+      ok = true;
+    } else ok = this.enterLot(lot);
+    if (ok) {
+      this.player.yaw = Math.PI;
+      this.doorCooldown = 1;
+      this.transitionT = 0.3;
+      audio.play('whoosh');
+    }
+    return ok;
   }
 
   /** Fast travel to the sidewalk outside one of your own buildings (from another one). */
