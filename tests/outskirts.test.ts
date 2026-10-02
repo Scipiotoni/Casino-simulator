@@ -199,6 +199,7 @@ describe('police pursuit', () => {
     const pol = new Police();
     pol.cols = 20;
     pol.heat = 1.2;
+    pol.sinceCrime = 0;
     const car = { x: 200, z: streetZ(0), yaw: Math.PI / 2, speed: 12 };
     const view = {
       px: car.x, pz: car.z, exposed: true, speed: 12, height: 1.7,
@@ -217,5 +218,27 @@ describe('police pursuit', () => {
     expect(closest).toBeLessThan(25);
     expect(pol.seenTime).toBeGreaterThan(5);
     expect(pol.stars).toBeGreaterThanOrEqual(2);
+  });
+});
+
+import { CARS, buildCar } from '../src/world/vehicles';
+import { carsTouch } from '../src/game/driving';
+
+describe('more cars, smaller hitboxes', () => {
+  it('every car on sale builds, with a unique id', () => {
+    expect(CARS.length).toBeGreaterThanOrEqual(17);
+    expect(new Set(CARS.map((c) => c.id)).size).toBe(CARS.length);
+    for (const c of CARS) {
+      const m = buildCar(c);
+      expect(m.wheels.length).toBe(4);
+      expect(m.length).toBeGreaterThan(3);
+    }
+  });
+
+  it('cars in the next lane pass; bumpers touch', () => {
+    const v = { x: 0, z: 0, yaw: Math.PI / 2, length: 4.5, width: 1.95 };
+    expect(carsTouch(v, 0, 3, 4.5)).toBe(false); // side by side, one lane over
+    expect(carsTouch(v, 3.5, 0, 4.5)).toBe(true); // nose to tail
+    expect(carsTouch(v, 4.6, 0, 4.5)).toBe(false); // a car length ahead
   });
 });

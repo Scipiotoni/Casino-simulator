@@ -55,6 +55,9 @@ interface Cruiser {
   ramT: number;
   /** Seconds it has had you boxed in. */
   closeT: number;
+  /** Closest it has got to you, and how long since it last got closer (stuck → replaced). */
+  best?: number;
+  noProg?: number;
 }
 
 /** Your car, when you're driving (global frame). */
@@ -130,6 +133,8 @@ export class Police {
    * sight, the hotter it gets: the stars climb and more units join.
    */
   seenTime = 0;
+  /** Where your car has been (newest last), so cruisers can follow your route round corners. */
+  private trail: { x: number; z: number }[] = [];
   private flash: THREE.Sprite | null = null;
   private flashT = 0;
   cols = 12;
@@ -292,11 +297,19 @@ export class Police {
   /** A cruiser joins the pursuit of your car from somewhere out of sight down the road. */
   private addPursuer(car: PoliceCarView): boolean {
     let at: { x: number; z: number } | null = null;
-    for (let k = 0; k < 30 && !at; k++) {
+    // Behind you on the road you came along, if there's enough of a trail.
+    for (let i = this.trail.length - 1; i >= 0 && !at; i--) {
+      const p = this.trail[i];
+      const d = Math.hypot(p.x - car.x, p.z - car.z);
+      if (d > 45 && d < 90 && this.out(p.x, p.z)) at = { x: p.x, z: p.z };
+    }
+    for (let k = 0; k < 40 && !at; k++) {
       const a = Math.random() * Math.PI * 2;
       const r = 55 + Math.random() * 25;
       const x = car.x + Math.cos(a) * r;
       const z = car.z + Math.sin(a) * r;
+      // Prefer a spot on a road with a clear run at you.
+      if (k < 30 && !this.lineOfSight(x, z, car.x, car.z)) continue;
       if (this.out(x, z) && this.out(x + 2, z) && this.out(x - 2, z) && this.out(x, z + 2) && this.out(x, z - 2)) at = { x, z };
     }
     if (!at) return false;
@@ -314,10 +327,27 @@ export class Police {
 
   /** Free driving after your car: lead the target, steer round buildings, ram, box you in. */
   private chaseCar(c: Cruiser, dt: number, v: PoliceView, car: PoliceCarView, stars: number): void {
-    const lead = Math.min(1.2, Math.hypot(car.x - c.x, car.z - c.z) / 30);
-    const tx = car.x + Math.sin(car.yaw) * car.speed * lead;
-    const tz = car.z + Math.cos(car.yaw) * car.speed * lead;
     const dist = Math.hypot(car.x - c.x, car.z - c.z);
+    let tx: number;
+    let tz: number;
+    if (this.lineOfSight(c.x, c.z, car.x, car.z)) {
+      // In view: cut you off (aim a little ahead of you).
+      const lead = Math.min(1.2, dist / 30);
+      tx = car.x + Math.sin(car.yaw) * car.speed * lead;
+      tz = car.z + Math.cos(car.yaw) * car.speed * lead;
+    } else {
+      // Out of view: follow the route you took (the newest point of your trail it can see).
+      let p: { x: number; z: number } | null = null;
+      for (let i = this.trail.length - 1; i >= 0; i--) {
+        const q = this.trail[i];
+        if (Math.hypot(q.x - c.x, q.z - c.z) < 90 && this.lineOfSight(c.x, c.z, q.x, q.z)) {
+          p = q;
+          break;
+        }
+      }
+      tx = p ? p.x : car.x;
+      tz = p ? p.z : car.z;
+    }
     const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
     const clear = (yaw: number, d: number) => this.out(c.x + Math.sin(yaw) * d, c.z + Math.cos(yaw) * d) && this.out(c.x + Math.sin(yaw) * d * 0.5, c.z + Math.cos(yaw) * d * 0.5);
     let want = wrap(Math.atan2(tx - c.x, tz - c.z) - c.yaw);
@@ -351,7 +381,7 @@ export class Police {
     if (c.stuckT > 2.6) c.stuckT = 0;
     // Ramming
     c.ramT = Math.max(0, c.ramT - dt);
-    if (dist < 3.6 && c.ramT <= 0 && Math.abs(c.speed) > 3) {
+    if (dist < 3 && c.ramT <= 0 && Math.abs(c.speed) > 3) {
       c.ramT = 1.2;
       const ax = (car.x - c.x) / Math.max(0.1, dist);
       const az = (car.z - c.z) / Math.max(0.1, dist);
@@ -427,7 +457,8 @@ export class Police {
     if (this.flash) this.flash.visible = this.flashT > 0;
     const stars = this.stars;
     // Out of sight long enough and the heat cools off (faster while you hide indoors).
-    if (this.heat > 0 && this.sinceSeen > 10 && this.sinceCrime > 10) {
+    // (Not before the first patrol has had time to get there and look for you.)
+    if (this.heat > 0 && this.sinceSeen > 10 && this.sinceCrime > 50) {
       this.heat = Math.max(0, this.heat - dt * (v.exposed ? 0.12 : 0.3));
       if (this.heat === 0) this.clear();
     }
@@ -441,6 +472,14 @@ export class Police {
     const active = this.officers.filter((o) => o.ko <= 0 && !o.leaving).length;
     this.spawnT -= dt;
     const car = v.car ?? null;
+    // Your route, for cruisers that lose sight of you round a corner.
+    if (car) {
+      const last = this.trail[this.trail.length - 1];
+      if (!last || Math.hypot(last.x - car.x, last.z - car.z) > 3) {
+        this.trail.push({ x: car.x, z: car.z });
+        if (this.trail.length > 80) this.trail.shift();
+      }
+    } else if (this.trail.length) this.trail = [];
     if (car && stars > 0 && this.spawnT <= 0) {
       // Behind the wheel: cruisers give chase (more the longer they've kept you in sight).
       const pursuers = this.cruisers.filter((c) => c.chase && !c.leaving).length;
@@ -494,6 +533,18 @@ export class Police {
           if (Math.hypot(c.x - v.car.x, c.z - v.car.z) > 170) {
             c.car.root.removeFromParent();
             this.cruisers.splice(i, 1);
+            continue;
+          }
+          // Stuck somewhere, not getting any closer: replaced by a fresh unit.
+          const dNow = Math.hypot(c.x - v.car.x, c.z - v.car.z);
+          if (c.best === undefined || dNow < c.best - 1) {
+            c.best = dNow;
+            c.noProg = 0;
+          } else c.noProg = (c.noProg ?? 0) + dt;
+          if ((c.noProg ?? 0) > 12 && dNow > 30) {
+            c.car.root.removeFromParent();
+            this.cruisers.splice(i, 1);
+            this.spawnT = Math.min(this.spawnT, 1);
             continue;
           }
           this.chaseCar(c, dt, v, v.car, stars);

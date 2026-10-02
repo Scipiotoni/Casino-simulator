@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Game } from './game';
-import { type CarDef, type CarMods, CARS, STOLEN_SPECS, buildCar, carDef, defaultMods, sanitizeMods, tunedSpecs } from '../world/vehicles';
+import { type CarDef, type CarMods, CARS, STOLEN_SPECS, buildCar, carDef, carWidth, defaultMods, sanitizeMods, tunedSpecs } from '../world/vehicles';
 import { Car } from '../world/cityView';
 import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
@@ -195,7 +195,7 @@ export class Driving {
     this.group.add(m.root);
     const v: Vehicle = {
       uid: nextUid++, def, name: def.name, color, root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat,
-      x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : 1.95, owned, stolen, mods, flames: m.flames, brakeLights: m.brakeLights,
+      x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : carWidth(def), owned, stolen, mods, flames: m.flames, brakeLights: m.brakeLights,
     };
     this.vehicles.push(v);
     return v;
@@ -389,7 +389,8 @@ export class Driving {
     v.yaw += turn * dt;
     const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
     const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
-    if (this.fits(nx, nz, v.yaw, v.length * 0.92, v.width * 0.9)) {
+    // Hitbox a little inside the body, so you can squeeze past corners and lamp posts.
+    if (this.fits(nx, nz, v.yaw, v.length * 0.8, v.width * 0.72)) {
       v.x = nx;
       v.z = nz;
     } else {
@@ -401,7 +402,7 @@ export class Driving {
     for (const c of city.traffic) {
       if (!c.root.visible) continue;
       const d = Math.hypot(c.x - v.x, c.z - v.z);
-      if (d < (c.length + v.length) * 0.42 && Math.abs(v.speed) > 0.5) {
+      if (d < c.length + v.length && carsTouch(v, c.x, c.z, c.length) && Math.abs(v.speed) > 0.5) {
         const away = Math.atan2(v.x - c.x, v.z - c.z);
         v.x += Math.sin(away) * 0.4;
         v.z += Math.cos(away) * 0.4;
@@ -413,7 +414,7 @@ export class Driving {
     // Other parked cars
     for (const o of this.vehicles) {
       if (o === v) continue;
-      if (Math.hypot(o.x - v.x, o.z - v.z) < (o.length + v.length) * 0.42 && Math.abs(v.speed) > 0.5) {
+      if (carsTouch(v, o.x, o.z, o.length) && Math.abs(v.speed) > 0.5) {
         const away = Math.atan2(v.x - o.x, v.z - o.z);
         v.x += Math.sin(away) * 0.4;
         v.z += Math.cos(away) * 0.4;
@@ -472,7 +473,7 @@ export class Driving {
   rammed(dx: number, dz: number, speedMul: number): void {
     const v = this.driving;
     if (!v) return;
-    if (this.fits(v.x + dx, v.z + dz, v.yaw, v.length * 0.92, v.width * 0.9)) {
+    if (this.fits(v.x + dx, v.z + dz, v.yaw, v.length * 0.8, v.width * 0.72)) {
       v.x += dx;
       v.z += dz;
     }
@@ -774,4 +775,16 @@ export class Driving {
   get catalog(): CarDef[] {
     return CARS;
   }
+}
+
+/**
+ * Does another car (centre, length) touch yours? Checked along and across your car, so cars
+ * side by side in neighbouring lanes pass each other; a bit smaller than the bodies.
+ */
+export function carsTouch(v: { x: number; z: number; yaw: number; length: number; width: number }, ox: number, oz: number, olen: number): boolean {
+  const dx = ox - v.x;
+  const dz = oz - v.z;
+  const along = Math.abs(dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw));
+  const across = Math.abs(dx * Math.cos(v.yaw) - dz * Math.sin(v.yaw));
+  return along < v.length * 0.45 + olen * 0.4 && across < v.width * 0.4 + 0.75;
 }

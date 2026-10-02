@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { glow, chrome } from '../render/materials';
 
-export type CarModelKind = 'hatch' | 'coupe' | 'muscle' | 'limo' | 'truck' | 'super' | 'ev' | 'hyper' | 'cabrio';
+export type CarModelKind = 'hatch' | 'coupe' | 'muscle' | 'limo' | 'truck' | 'super' | 'ev' | 'hyper' | 'cabrio'
+  | 'taxi' | 'van' | 'buggy' | 'rally' | 'pickup' | 'suv' | 'classic' | 'roadster';
 
 /** A car from Velocity Motors. */
 export interface CarDef {
@@ -21,15 +22,28 @@ export interface CarDef {
 
 export const CARS: CarDef[] = [
   { id: 'hatch', name: 'City Hatch', kind: 'hatch', price: 8_000, unlock: 1, top: 20, accel: 7, grip: 1.15, colors: [0x39ff88, 0xffc53d, 0x2fe6ff, 0xff6fb5, 0xf4f1ea], blurb: 'Small, cheap, cheerful. Parks anywhere.' },
+  { id: 'taxi', name: 'Yellow Cab', kind: 'taxi', price: 15_000, unlock: 1, top: 22, accel: 8, grip: 1.1, colors: [0xffc21a, 0x17151f, 0xf4f1ea], blurb: 'A checkered city classic with a glowing roof sign.' },
+  { id: 'van', name: 'Party Van', kind: 'van', price: 32_000, unlock: 2, top: 22, accel: 7, grip: 0.9, colors: [0x6a2cc2, 0xff6fb5, 0x2fb8c9, 0xf4f1ea], blurb: 'Room for the whole crew, underglow included.' },
+  { id: 'buggy', name: 'Dune Buggy', kind: 'buggy', price: 40_000, unlock: 2, top: 28, accel: 13, grip: 1.25, colors: [0xff8a1f, 0x39ff88, 0xffc53d, 0xc8102e], blurb: 'Roll cage, fat tyres and no doors. Made for the desert.' },
   { id: 'cabrio', name: 'Riviera Convertible', kind: 'cabrio', price: 28_000, unlock: 2, top: 25, accel: 8, grip: 1.1, colors: [0xc8102e, 0xf4f1ea, 0x2fb8c9, 0xffc53d], blurb: 'Top down, sunglasses on. You can see who’s driving.' },
   { id: 'coupe', name: 'Strip Coupe', kind: 'coupe', price: 45_000, unlock: 3, top: 29, accel: 10, grip: 1.2, colors: [0x1f4fbf, 0xc8102e, 0x17151f, 0xf4f1ea], blurb: 'A sleek two-door with a little spoiler.' },
+  { id: 'rally', name: 'Rally Hatch', kind: 'rally', price: 55_000, unlock: 3, top: 31, accel: 13, grip: 1.45, colors: [0x1f4fbf, 0xf4f1ea, 0xc8102e, 0x39ff88], blurb: 'Big wing, race number, corners like it’s on rails.' },
+  { id: 'pickup', name: 'Desert Pickup', kind: 'pickup', price: 60_000, unlock: 3, top: 27, accel: 10, grip: 1.05, colors: [0xc8102e, 0x6b4a2a, 0xf4f1ea, 0x17151f], blurb: 'Open bed, high ride, happy on and off the road.' },
   { id: 'muscle', name: 'Muscle Car', kind: 'muscle', price: 70_000, unlock: 4, top: 32, accel: 12, grip: 0.95, colors: [0xff8a1f, 0x17151f, 0xc8102e, 0x2a6bff], blurb: 'Racing stripes, a big engine and a bigger rumble.' },
+  { id: 'suv', name: 'Highroller SUV', kind: 'suv', price: 85_000, unlock: 4, top: 30, accel: 11, grip: 1, colors: [0x17151f, 0xf4f1ea, 0x5a5d66, 0x1d2a5a], blurb: 'Tinted windows, roof rails and presence.' },
+  { id: 'classic', name: 'Fifties Cruiser', kind: 'classic', price: 95_000, unlock: 5, top: 27, accel: 8, grip: 0.9, colors: [0x7fd6d0, 0xff6fb5, 0xc8102e, 0xf4f1ea], blurb: 'Long, low and dripping with chrome.' },
   { id: 'limo', name: 'Stretch Limo', kind: 'limo', price: 110_000, unlock: 5, top: 24, accel: 6, grip: 0.8, colors: [0x0b0b0e, 0xf4f1ea, 0xff6fb5], blurb: 'Arrive like a high roller. Turns like a boat.' },
   { id: 'truck', name: 'Monster Truck', kind: 'truck', price: 140_000, unlock: 6, top: 26, accel: 9, grip: 1, colors: [0x39ff88, 0xc8102e, 0x1f4fbf, 0xffc53d], blurb: 'Huge wheels, huge fun, huge fuel bill.' },
   { id: 'ev', name: 'Neon EV', kind: 'ev', price: 190_000, unlock: 7, top: 36, accel: 16, grip: 1.25, colors: [0xf4f1ea, 0x17151f, 0x6a2cc2], blurb: 'Silent, instant torque and glowing underlights.' },
+  { id: 'roadster', name: 'Neon Roadster', kind: 'roadster', price: 240_000, unlock: 8, top: 40, accel: 16, grip: 1.3, colors: [0xff3fa4, 0x2fe6ff, 0x17151f, 0xffc53d], blurb: 'Open top, low slung, built for the Strip at night.' },
   { id: 'super', name: 'Viper Supercar', kind: 'super', price: 320_000, unlock: 8, top: 42, accel: 17, grip: 1.3, colors: [0xff2a2a, 0xffc53d, 0x39ff88, 0x2fe6ff], blurb: 'Scissor-door looks, a wing on the back and silly speed.' },
   { id: 'hyper', name: 'Golden Hypercar', kind: 'hyper', price: 1_000_000, unlock: 10, top: 50, accel: 20, grip: 1.35, colors: [0xf2b632], blurb: 'Solid gold. The fastest thing in the city.' },
 ];
+
+/** Body width of a car (metres). */
+export function carWidth(def: CarDef): number {
+  return shapeOf(def.kind).W;
+}
 
 export function carDef(id: string | null | undefined): CarDef | null {
   return CARS.find((c) => c.id === id) ?? null;
@@ -123,9 +137,14 @@ export const TUNING: { id: 'engine' | 'turbo' | 'tires' | 'brakes' | 'nitro'; na
 
 export function defaultMods(def: CarDef, color?: number): CarMods {
   return {
-    color: color ?? def.colors[0], finish: def.kind === 'hyper' ? 'gold' : 'gloss', rims: def.kind === 'super' || def.kind === 'hyper' ? 'turbine' : 'classic',
-    rimColor: def.kind === 'hyper' ? 0xf2b632 : 0xd8dde3, glow: def.kind === 'ev' ? 0x2fe6ff : 0, tint: def.kind === 'limo' ? 'limo' : 'smoke',
-    spoiler: def.kind === 'super' ? 'wing' : def.kind === 'coupe' ? 'lip' : 'none', decal: def.kind === 'muscle' ? 'stripes' : 'none', decalColor: 0xf4f1ea,
+    color: color ?? def.colors[0], finish: def.kind === 'hyper' ? 'gold' : def.kind === 'classic' ? 'pearl' : 'gloss',
+    rims: def.kind === 'super' || def.kind === 'hyper' || def.kind === 'roadster' ? 'turbine' : def.kind === 'classic' ? 'dish' : def.kind === 'rally' || def.kind === 'buggy' ? 'mesh' : 'classic',
+    rimColor: def.kind === 'hyper' ? 0xf2b632 : 0xd8dde3,
+    glow: def.kind === 'ev' ? 0x2fe6ff : def.kind === 'van' ? 0xff3fa4 : def.kind === 'roadster' ? 0xff3fa4 : 0,
+    tint: def.kind === 'limo' || def.kind === 'suv' ? 'limo' : 'smoke',
+    spoiler: def.kind === 'super' || def.kind === 'rally' ? 'wing' : def.kind === 'coupe' ? 'lip' : 'none',
+    decal: def.kind === 'muscle' ? 'stripes' : def.kind === 'taxi' ? 'checker' : def.kind === 'rally' ? 'number' : def.kind === 'classic' ? 'side' : 'none',
+    decalColor: def.kind === 'taxi' ? 0x17151f : 0xf4f1ea,
     plate: 'JACKPOT', engine: 0, turbo: 0, tires: 0, brakes: 0, nitro: 0,
   };
 }
@@ -216,6 +235,22 @@ function shapeOf(k: CarModelKind): Shape {
     case 'super':
     case 'hyper':
       return { L: 4.6, W: 2.02, ride: 0.18, belt: 0.74, nose: 0.46, tail: 0.8, cabR: -1.05, cabF: 0.6, roof: 1.14, rakeR: 1.05, rakeF: 0.95, R: 0.36, wf: 1.45, wr: -1.4 };
+    case 'taxi':
+      return { L: 4.7, W: 1.88, ride: 0.3, belt: 0.92, nose: 0.82, tail: 0.92, cabR: -1.3, cabF: 0.72, roof: 1.46, rakeR: 0.45, rakeF: 0.6, R: 0.34, wf: 1.48, wr: -1.48 };
+    case 'van':
+      return { L: 5, W: 2.04, ride: 0.34, belt: 1.05, nose: 0.98, tail: 1.05, cabR: -2.35, cabF: 1.05, roof: 2.1, rakeR: 0.04, rakeF: 0.55, R: 0.38, wf: 1.75, wr: -1.7 };
+    case 'buggy':
+      return { L: 3.7, W: 1.95, ride: 0.55, belt: 0.95, nose: 0.85, tail: 0.98, cabR: -0.95, cabF: 0.45, roof: 1.5, rakeR: 0.15, rakeF: 0.3, R: 0.5, wf: 1.2, wr: -1.2, open: true };
+    case 'rally':
+      return { L: 4, W: 1.86, ride: 0.26, belt: 0.92, nose: 0.76, tail: 0.95, cabR: -1.6, cabF: 0.45, roof: 1.42, rakeR: 0.18, rakeF: 0.62, R: 0.34, wf: 1.28, wr: -1.3 };
+    case 'pickup':
+      return { L: 5.3, W: 2.02, ride: 0.45, belt: 1.1, nose: 1.05, tail: 1.08, cabR: -0.55, cabF: 0.85, roof: 1.86, rakeR: 0.06, rakeF: 0.5, R: 0.44, wf: 1.75, wr: -1.6 };
+    case 'suv':
+      return { L: 4.85, W: 2.02, ride: 0.42, belt: 1.15, nose: 1.05, tail: 1.12, cabR: -1.95, cabF: 0.78, roof: 1.86, rakeR: 0.14, rakeF: 0.55, R: 0.44, wf: 1.55, wr: -1.55 };
+    case 'classic':
+      return { L: 5.4, W: 2, ride: 0.3, belt: 0.95, nose: 0.9, tail: 1, cabR: -1.2, cabF: 0.6, roof: 1.42, rakeR: 0.55, rakeF: 0.5, R: 0.38, wf: 1.75, wr: -1.75 };
+    case 'roadster':
+      return { L: 4.2, W: 1.96, ride: 0.2, belt: 0.78, nose: 0.52, tail: 0.82, cabR: -0.75, cabF: 0.4, roof: 1.05, rakeR: 0.3, rakeF: 0.4, R: 0.35, wf: 1.35, wr: -1.3, open: true };
   }
 }
 
@@ -524,6 +559,35 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
     for (let i = 0; i < 4; i++) box(glow(0xfff2c8, 2.4), 0.25, 0.1, 0.12, -0.45 + i * 0.3, s.roof + 0.12, s.cabF - s.rakeF - 0.1);
     box(black, W * 0.9, 0.12, 0.25, 0, ride - 0.15, 0); // axle beam
   }
+  // Pickup: an open bed behind the cab
+  if (k === 'pickup') {
+    const bz0 = -L / 2 + 0.2;
+    const bz1 = s.cabR - 0.08;
+    box(black, W * 0.84, 0.05, bz1 - bz0, 0, belt - 0.32, (bz0 + bz1) / 2);
+    box(trim, W * 0.9, 0.04, 0.06, 0, belt + 0.02, -L / 2 + 0.06);
+  }
+  // Taxi: a glowing sign on the roof
+  if (k === 'taxi') {
+    box(glow(0xffe08a, 1.8), 0.7, 0.2, 0.22, 0, s.roof + 0.16, (s.cabR + s.rakeR + s.cabF - s.rakeF) / 2);
+    box(black, 0.74, 0.04, 0.26, 0, s.roof + 0.05, (s.cabR + s.rakeR + s.cabF - s.rakeF) / 2);
+  }
+  // SUV: roof rails
+  if (k === 'suv') for (const sx of [-1, 1]) box(trim, 0.05, 0.05, (s.cabF - s.rakeF) - (s.cabR + s.rakeR) - 0.2, sx * W * 0.38, s.roof + 0.09, (s.cabR + s.rakeR + s.cabF - s.rakeF) / 2);
+  // Van: a sliding door line and round porthole
+  if (k === 'van') for (const sx of [-1, 1]) box(black, 0.01, (s.roof - ride) * 0.7, 0.015, sx * (W / 2 + 0.005), (s.roof + ride) / 2, -0.4);
+  // Dune buggy: roll cage and a spare wheel
+  if (k === 'buggy') {
+    const cage = black;
+    for (const sx of [-1, 1]) {
+      box(cage, 0.07, 0.75, 0.07, sx * 0.75, belt + 0.37, s.cabR + 0.15);
+      box(cage, 0.07, 0.07, 1.25, sx * 0.75, belt + 0.75, (s.cabR + s.cabF) / 2 + 0.1, 0.12, 0, 0);
+      box(cage, 0.07, 0.7, 0.07, sx * 0.72, belt + 0.33, s.cabF + 0.1, -0.35, 0, 0);
+    }
+    box(cage, 1.55, 0.07, 0.07, 0, belt + 0.75, s.cabR + 0.15);
+    box(cage, 1.5, 0.07, 0.07, 0, belt + 0.68, s.cabF - 0.05);
+  }
+  // Fifties cruiser: tail fins
+  if (k === 'classic') for (const sx of [-1, 1]) box(paint, 0.08, 0.32, 1.0, sx * (W / 2 - 0.1), s.tail + 0.14, -L / 2 + 0.6, 0.18, 0, 0);
   // Muscle hood scoop
   if (k === 'muscle') box(black, 0.55, 0.14, 0.7, 0, s.nose + 0.07, s.cabF + 0.8);
   // Side mirrors
@@ -620,13 +684,13 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
     for (const sx of [-1, 1]) box(glow(m.glow, 2.4), 0.03, 0.03, L * 0.7, sx * W * 0.42, ride - 0.02, 0);
   }
   // Wheels
-  const tyreW = k === 'truck' ? 0.6 : k === 'super' || k === 'hyper' ? 0.34 : 0.28;
+  const tyreW = k === 'truck' ? 0.6 : k === 'buggy' ? 0.42 : k === 'pickup' || k === 'suv' ? 0.32 : k === 'super' || k === 'hyper' || k === 'roadster' ? 0.34 : 0.28;
   const wheels: THREE.Object3D[] = [];
   const front: THREE.Object3D[] = [];
   for (const zc of [s.wf, s.wr]) {
     for (const sx of [-1, 1]) {
       const pivot = new THREE.Group();
-      pivot.position.set(sx * (W / 2 - tyreW / 2 + (k === 'truck' ? 0.3 : 0.04)), R, zc);
+      pivot.position.set(sx * (W / 2 - tyreW / 2 + (k === 'truck' ? 0.3 : k === 'buggy' ? 0.22 : 0.04)), R, zc);
       const w = buildWheel(R, tyreW, m.rims, m.rimColor, m.brakes > 0);
       pivot.add(w.wheel);
       g.add(pivot);
