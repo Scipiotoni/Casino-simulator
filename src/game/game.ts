@@ -16,6 +16,7 @@ import { MAX_DEPTH_STEPS } from '../world/city';
 import { Sky } from '../world/sky';
 import { CharacterModel } from '../entities/characterModel';
 import { WaypointBeacon } from '../world/waypoint';
+import { type ReticleOpts, sanitizeReticle } from '../ui/reticle';
 import { WALL_CUT, syncWallCut } from '../world/walls';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
@@ -152,6 +153,8 @@ export interface Settings {
   camera?: CamMode;
   /** First-person mouse / drag look speed (1 = normal). */
   lookSens?: number;
+  /** Your crosshair (screen, scope glass and full-screen scope). */
+  reticle?: ReticleOpts;
 }
 
 const DAY_SECONDS = 300;
@@ -3971,7 +3974,6 @@ export class Game implements World, ItemHost {
     if (!render) return;
     const { w, h } = this.renderer.size;
     this.floaters.update(dt, this.renderer.camera, w, h);
-    this.gunplay.renderScope();
     this.renderer.render();
     input.endFrame();
   }
@@ -4221,6 +4223,11 @@ export class Game implements World, ItemHost {
     this.events.emit('look', undefined);
     this.events.emit('staff', undefined);
     this.events.emit('visit', undefined);
+  }
+
+  /** Your crosshair settings (checked). */
+  get reticle(): ReticleOpts {
+    return (this.settings.reticle = sanitizeReticle(this.settings.reticle));
   }
 
   setQuality(q: Quality): void {

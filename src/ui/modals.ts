@@ -7,6 +7,7 @@ import { COSMETICS } from '../cosmetics/catalog';
 import type { Hud } from './hud';
 import { openDealer } from './cars';
 import { openGarage } from './homeGarage';
+import { RETICLE_COLORS, RETICLE_STYLES, drawReticle } from './reticle';
 import { h, clear, icon, swatch, stars } from './dom';
 import { formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
@@ -777,6 +778,61 @@ export class Modals {
       this.onSettingsChanged?.();
     });
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'First-person look speed' }), sens));
+    // Crosshair: style, colour, size and thickness (screen, scope glass and full-screen scope).
+    const ret = g.reticle;
+    const prev = h('canvas', { class: 'reticle-preview' }) as HTMLCanvasElement;
+    prev.width = prev.height = 192;
+    const drawPrev = () => {
+      const ctx = prev.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, 192, 192);
+      drawReticle(ctx, 192, ret);
+    };
+    const changed = () => {
+      drawPrev();
+      g.gunplay.refreshModels();
+      this.onSettingsChanged?.();
+    };
+    const styles = h('div', { class: 'seg wrap' });
+    for (const st2 of RETICLE_STYLES) {
+      styles.appendChild(h('button', {
+        class: `seg-btn${ret.style === st2.id ? ' on' : ''}`, text: st2.name,
+        onClick: (e: Event) => {
+          ret.style = st2.id;
+          styles.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b === e.currentTarget));
+          changed();
+        },
+      }));
+    }
+    const colors = h('div', { class: 'cg-colors' });
+    for (const c of RETICLE_COLORS) {
+      colors.appendChild(h('button', {
+        class: `car-sw${ret.color === c ? ' on' : ''}`, style: `background:${c}`, 'aria-label': `Crosshair colour ${c}`,
+        onClick: (e: Event) => {
+          ret.color = c;
+          colors.querySelectorAll('.car-sw').forEach((b) => b.classList.toggle('on', b === e.currentTarget));
+          changed();
+        },
+      }));
+    }
+    const range = (label: string, min: number, max: number, step: number, get: () => number, set: (v: number) => void) => {
+      const r = h('input', { type: 'range', 'aria-label': label }) as HTMLInputElement;
+      r.min = String(min);
+      r.max = String(max);
+      r.step = String(step);
+      r.value = String(get());
+      r.addEventListener('input', () => {
+        set(Number(r.value));
+        changed();
+      });
+      return h('div', { class: 'field row' }, h('span', { class: 'field-label', text: label }), r);
+    };
+    body.appendChild(h('div', { class: 'field' },
+      h('span', { class: 'field-label', text: 'Crosshair (screen and scopes)' }),
+      h('div', { class: 'reticle-edit' }, prev, h('div', { class: 'stack' }, styles, colors)),
+      range('Crosshair size', 0.5, 2, 0.1, () => ret.size, (v) => (ret.size = v)),
+      range('Line thickness', 1, 4, 1, () => ret.thick, (v) => (ret.thick = v))));
+    drawPrev();
     if (this.netStatus) body.appendChild(h('div', { class: 'net-status' }, h('span', { class: 'field-label', text: 'Multiplayer' }), h('p', { class: 'muted small', text: this.netStatus() })));
     body.appendChild(h('div', { class: 'btn-row wrap sep' },
       h('button', { class: 'btn', html: `${icon('home', 16)} Title screen`, onClick: () => { g.saveNow(); this.closeAll(); this.onMainMenu?.(); } }),

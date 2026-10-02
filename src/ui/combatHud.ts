@@ -2,6 +2,7 @@ import type { Game } from '../game/game';
 import { h } from './dom';
 import { formatMoney } from '../core/math';
 import { MAX_HP } from '../game/combat';
+import { drawReticle, reticleKey } from './reticle';
 
 /**
  * Everything on screen for street fights and first person: the crosshair (it opens up as you
@@ -19,7 +20,9 @@ export class CombatHud {
   private arrow = h('div', { class: 'hurt-arrow' });
   private koEl = h('div', { class: 'ko-screen', hidden: true });
   private koKey = '';
-  private scope = h('div', { class: 'scope', hidden: true });
+  private scopeCanvas = h('canvas') as HTMLCanvasElement;
+  private scope = h('div', { class: 'scope', hidden: true }, this.scopeCanvas);
+  private reticleKey = '';
   /** Red dot or holographic ring while aiming through an optic. */
   private optic = h('div', { class: 'optic-dot', hidden: true });
   private lockHint = h('button', { class: 'lock-hint', hidden: true });
@@ -129,6 +132,24 @@ export class CombatHud {
       this.wanted.innerHTML = `<span class="w-label">${pol.spotted ? 'WANTED' : 'HIDING'}</span><span class="w-stars">${'<b>★</b>'.repeat(stars)}${'<i>★</i>'.repeat(5 - stars)}</span>`;
     }
     this.scope.hidden = !(fp && gp.scoped);
+    // Your crosshair: full-screen scope reticle and the on-screen crosshair's colour and size.
+    const ret = g.reticle;
+    const rk = `${reticleKey(ret)}|${window.innerWidth}x${window.innerHeight}`;
+    if (rk !== this.reticleKey) {
+      this.reticleKey = rk;
+      const px = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.72 * Math.min(2, window.devicePixelRatio || 1));
+      this.scopeCanvas.width = this.scopeCanvas.height = Math.max(64, px);
+      const ctx = this.scopeCanvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, px, px);
+        drawReticle(ctx, px, ret);
+      }
+      // On screen a black crosshair would vanish against the night: default black means white there.
+      this.cross.style.setProperty('--xh-color', ret.color === '#111111' ? '#ffffff' : ret.color);
+      this.cross.style.setProperty('--xh-len', `${Math.round(8 * ret.size)}px`);
+      this.cross.style.setProperty('--xh-w', `${ret.thick}px`);
+      this.cross.classList.toggle('dot-only', ret.style === 'dot');
+    }
     // Speedometer behind the wheel
     const car = playing ? g.drive.driving : null;
     const nitro = car?.mods?.nitro ? Math.round(g.drive.nitro * 20) : -1;

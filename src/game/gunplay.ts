@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Game } from './game';
 import { type GunDef, type TunedGun, gunDef, gunModsOf, tunedGun } from './guns';
 import { type Optic, buildGun } from '../items/models/guns';
+import { type ReticleOpts, drawReticle, reticleKey } from '../ui/reticle';
 import { audio, type SfxName } from '../core/audio';
 import { softDotTexture } from '../render/textures';
 import type { Ped } from '../world/crowd';
@@ -232,52 +233,16 @@ export class GunPlay {
     const scale = long > 0.6 ? 0.42 : 0.5;
     gun.scale.setScalar(scale);
     this.g.renderer.overlay.add(holder);
-    // A scope shows a live, magnified picture of the world (with a reticle) in its rear lens.
+    // A scope's glass is clear: you see the world through it, with your crosshair etched in.
     if (b.lens) {
-      this.scopeRT ??= new THREE.WebGLRenderTarget(320, 320, { type: THREE.HalfFloatType });
-      const lensGeo = b.lens.geometry as THREE.CylinderGeometry;
-      const r = lensGeo.parameters.radiusTop;
-      b.lens.material = new THREE.MeshBasicMaterial({ color: 0x000000 });
-      const pic = new THREE.Mesh(new THREE.CircleGeometry(r, 28), new THREE.MeshBasicMaterial({ map: this.scopeRT.texture }));
-      const ret = new THREE.Mesh(new THREE.CircleGeometry(r, 28), new THREE.MeshBasicMaterial({ map: reticleTexture(), transparent: true, depthWrite: false }));
-      // The rear lens faces back toward your eye (-z in the gun's frame).
-      for (const [m, dz] of [[pic, -0.0025], [ret, -0.0032]] as const) {
-        m.position.copy(b.lens.position);
-        m.position.z += dz;
-        m.rotation.y = Math.PI;
-        b.group.add(m);
-      }
+      const r = (b.lens.geometry as THREE.CircleGeometry).parameters.radius;
+      const ret = new THREE.Mesh(new THREE.CircleGeometry(r, 28), new THREE.MeshBasicMaterial({ map: reticleTexture(this.g.reticle), transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+      ret.position.copy(b.lens.position);
+      ret.position.z -= 0.001;
+      ret.renderOrder = 3;
+      b.group.add(ret);
     }
     return { id: d.id, holder, gun, muzzle: new THREE.Vector3(b.muzzle.x, b.muzzle.y, -b.muzzle.z), spin: b.spin, scale, optic: b.optic, sight: b.sight, lens: b.lens };
-  }
-
-  private scopeRT: THREE.WebGLRenderTarget | null = null;
-  private scopeCam = new THREE.PerspectiveCamera(10, 1, 0.12, 2600);
-  private scopeFrame = 0;
-
-  /**
-   * Draw the magnified view into the scope's lens (call right before the frame is drawn).
-   * Every frame while aiming, every third frame otherwise; not when the scope fills the screen.
-   */
-  renderScope(): void {
-    const vm = this.vm;
-    const d = this.def;
-    if (!vm?.lens || !this.scopeRT || !d || this.scoped || !vm.holder.visible) return;
-    if (!this.aiming && this.scopeFrame++ % 3 !== 0) return;
-    const R = this.g.renderer;
-    const cam = this.scopeCam;
-    cam.position.copy(R.camera.position);
-    cam.quaternion.copy(R.camera.quaternion);
-    if (cam.fov !== d.adsFov) {
-      cam.fov = d.adsFov;
-      cam.updateProjectionMatrix();
-    }
-    cam.updateMatrixWorld();
-    const r = R.renderer;
-    const prev = r.getRenderTarget();
-    r.setRenderTarget(this.scopeRT);
-    r.render(R.scene, cam);
-    r.setRenderTarget(prev);
   }
 
   /** The optic you're looking through right now (aimed in far enough), or null. */
@@ -910,38 +875,21 @@ export class GunPlay {
   }
 }
 
-let reticleTex: THREE.CanvasTexture | null = null;
-/** Crosshair etched into a scope's lens, with a dark ring round the edge. */
-function reticleTexture(): THREE.CanvasTexture {
-  if (reticleTex) return reticleTex;
+const reticleTex = new Map<string, THREE.CanvasTexture>();
+/** Your crosshair etched into a scope's glass (clear everywhere else). */
+function reticleTexture(o: ReticleOpts): THREE.CanvasTexture {
+  const key = reticleKey(o);
+  const hit = reticleTex.get(key);
+  if (hit) return hit;
   const c = document.createElement('canvas');
   c.width = c.height = 256;
   const x = c.getContext('2d')!;
-  const g = x.createRadialGradient(128, 128, 90, 128, 128, 128);
-  g.addColorStop(0, 'rgba(0,0,0,0)');
-  g.addColorStop(1, 'rgba(0,0,0,0.95)');
-  x.fillStyle = g;
-  x.fillRect(0, 0, 256, 256);
-  x.strokeStyle = 'rgba(0,0,0,0.9)';
-  x.lineWidth = 2;
   x.beginPath();
-  x.moveTo(128, 8);
-  x.lineTo(128, 248);
-  x.moveTo(8, 128);
-  x.lineTo(248, 128);
-  x.stroke();
-  x.lineWidth = 6;
-  for (const [a, b, cc, d] of [[128, 8, 128, 96], [128, 160, 128, 248], [8, 128, 96, 128], [160, 128, 248, 128]]) {
-    x.beginPath();
-    x.moveTo(a, b);
-    x.lineTo(cc, d);
-    x.stroke();
-  }
-  x.fillStyle = '#ff2a2a';
-  x.beginPath();
-  x.arc(128, 128, 4, 0, Math.PI * 2);
-  x.fill();
-  reticleTex = new THREE.CanvasTexture(c);
-  reticleTex.colorSpace = THREE.SRGBColorSpace;
-  return reticleTex;
+  x.arc(128, 128, 126, 0, Math.PI * 2);
+  x.clip();
+  drawReticle(x, 256, { ...o, thick: Math.max(1, o.thick) }, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  reticleTex.set(key, t);
+  return t;
 }

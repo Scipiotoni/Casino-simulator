@@ -4226,30 +4226,34 @@ p.small {
   width: 0;
   height: 0;
   --gap: 6px;
+  --xh-color: #fff;
+  --xh-len: 8px;
+  --xh-w: 2px;
 }
 .xhair i {
   position: absolute;
-  background: #fff;
+  background: var(--xh-color);
   box-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
   border-radius: 1px;
   transition: transform 0.06s linear;
 }
 .xhair .xh-t,
 .xhair .xh-b {
-  width: 2px;
-  height: 8px;
-  left: -1px;
+  width: var(--xh-w);
+  height: var(--xh-len);
+  left: calc(var(--xh-w) / -2);
 }
 .xhair .xh-l,
 .xhair .xh-r {
-  width: 8px;
-  height: 2px;
-  top: -1px;
+  width: var(--xh-len);
+  height: var(--xh-w);
+  top: calc(var(--xh-w) / -2);
 }
-.xhair .xh-t { top: calc(-8px - var(--gap)); }
+.xhair .xh-t { top: calc(0px - var(--xh-len) - var(--gap)); }
 .xhair .xh-b { top: var(--gap); }
-.xhair .xh-l { left: calc(-8px - var(--gap)); }
+.xhair .xh-l { left: calc(0px - var(--xh-len) - var(--gap)); }
 .xhair .xh-r { left: var(--gap); }
+.xhair.dot-only i { display: none; }
 .xhair .xh-dot {
   position: absolute;
   width: 3px;
@@ -4257,7 +4261,7 @@ p.small {
   left: -1.5px;
   top: -1.5px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--xh-color);
   box-shadow: 0 0 2px #000;
 }
 .xhair:not(.armed) i {
@@ -4406,22 +4410,22 @@ p.small {
 }
 .scope {
   inset: 0;
-  background:
-    linear-gradient(transparent calc(50% - 0.5px), rgba(0, 0, 0, 0.9) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
-    linear-gradient(90deg, transparent calc(50% - 0.5px), rgba(0, 0, 0, 0.9) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
-    radial-gradient(circle at center, transparent min(36vh, 36vw), #000 calc(min(36vh, 36vw) + 2px));
+  background: radial-gradient(circle at center, transparent min(36vh, 36vw), rgba(0, 0, 0, 0.55) calc(min(36vh, 36vw) + 1px), #000 calc(min(36vh, 36vw) + 10px));
 }
-.scope::after {
-  content: '';
+.scope canvas {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 6px;
-  height: 6px;
-  margin: -3px;
+  width: min(72vh, 72vw);
+  height: min(72vh, 72vw);
+  transform: translate(-50%, -50%);
+}
+.reticle-preview {
+  width: 96px;
+  height: 96px;
   border-radius: 50%;
-  background: var(--red);
-  box-shadow: 0 0 6px var(--red);
+  background: radial-gradient(circle, #9fc3d8, #4a6a7a);
+  border: 3px solid #111;
 }
 .lock-hint {
   left: 50%;
@@ -5155,4 +5159,12 @@ p.small {
   background: radial-gradient(circle, #2fe6ff 0 2px, transparent 3px);
   border: 2px solid rgba(47, 230, 255, 0.85);
   box-shadow: 0 0 8px rgba(47, 230, 255, 0.7);
+}
+.reticle-edit {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.seg.wrap {
+  flex-wrap: wrap;
 }

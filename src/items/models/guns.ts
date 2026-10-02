@@ -80,14 +80,13 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
   };
   /** A scope with glass at both ends. */
   const scope = (y: number, z: number, len: number, r: number) => {
-    const tube = cyl(g, r, r, len, black, 0, y, z, 14);
-    tube.rotation.x = Math.PI / 2;
+    // A hollow tube with clear glass at both ends: you really see through it.
+    scopeTube(g, r, len, 0, y, z);
     for (const sz of [-1, 1]) {
-      const bell = cyl(g, r * 1.35, r, 0.04, black, 0, y, z + sz * (len / 2 + 0.015), 14);
+      const bell = scopeTube(g, r * 1.2, 0.04, 0, y, z + sz * (len / 2 + 0.015), r * 1.35, r);
       bell.rotation.x = Math.PI / 2 * (sz > 0 ? 1 : -1);
-      const lens = cyl(g, r * 1.2, r * 1.2, 0.004, mat(0x2fe6ff, { rough: 0.05, metal: 0.9, emissive: 0x0b3a44, emissiveIntensity: 1 }), 0, y, z + sz * (len / 2 + 0.036), 14);
-      lens.rotation.x = Math.PI / 2;
-      if (sz < 0) Object.assign(optics, { optic: 'scope', sight: new THREE.Vector3(0, y, z + sz * (len / 2 + 0.036)), lens });
+      const lens = scopeGlass(g, r * 1.15, 0, y, z + sz * (len / 2 + 0.034));
+      if (sz < 0) Object.assign(optics, { optic: 'scope', sight: new THREE.Vector3(0, y, z + sz * (len / 2 + 0.034)), lens });
     }
     const turret = cyl(g, 0.012, 0.012, 0.025, black, 0, y + r + 0.01, z, 10);
     void turret;
@@ -366,6 +365,31 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
   return { group: g, muzzle, spin, ...optics };
 }
 
+// ------------------------------------------------------------------ scopes
+
+const scopeBody = new THREE.MeshStandardMaterial({ color: 0x0c0c10, roughness: 0.5, metalness: 0.4, side: THREE.DoubleSide });
+const scopeGlassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xbfe8ff, roughness: 0.02, metalness: 0, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide,
+});
+
+/** An open-ended tube along z (you look down the inside of it). */
+function scopeTube(g: THREE.Object3D, r: number, len: number, x: number, y: number, z: number, rTop = r, rBot = r): THREE.Mesh {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBot, len, 16, 1, true), scopeBody);
+  m.rotation.x = Math.PI / 2;
+  m.position.set(x, y, z);
+  g.add(m);
+  return m;
+}
+
+/** A disc of clear glass across a scope (facing along z). */
+function scopeGlass(g: THREE.Object3D, r: number, x: number, y: number, z: number): THREE.Mesh {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 24), scopeGlassMat);
+  m.position.set(x, y, z);
+  m.renderOrder = 2;
+  g.add(m);
+  return m;
+}
+
 // ------------------------------------------------------------------ skins and attachments
 
 const patternCache = new Map<string, THREE.Texture>();
@@ -497,11 +521,11 @@ function addAttachments(g: THREE.Group, def: GunDef, mods: GunMods, muzzle: THRE
     } else {
       const sl = Math.min(0.22, len * 0.55);
       for (const sz of [-0.3, 0.3]) box(g, 0.02, 0.022, 0.018, black, 0, top + 0.011, z + sz * sl);
-      tube(0.02, sl, black, 0, top + 0.04, z, 14);
+      scopeTube(g, 0.02, sl, 0, top + 0.04, z);
       for (const sz of [-1, 1]) {
-        tube(0.027, 0.04, black, 0, top + 0.04, z + sz * (sl / 2 + 0.015), 14);
-        const lens = tube(0.024, 0.003, mat(0x2fe6ff, { rough: 0.05, metal: 0.9, emissive: 0x0b3a44, emissiveIntensity: 1 }), 0, top + 0.04, z + sz * (sl / 2 + 0.036), 14);
-        if (sz < 0) Object.assign(optics, { optic: 'scope', sight: new THREE.Vector3(0, top + 0.04, z + sz * (sl / 2 + 0.036)), lens });
+        scopeTube(g, 0.027, 0.04, 0, top + 0.04, z + sz * (sl / 2 + 0.015));
+        const lens = scopeGlass(g, 0.024, 0, top + 0.04, z + sz * (sl / 2 + 0.034));
+        if (sz < 0) Object.assign(optics, { optic: 'scope', sight: new THREE.Vector3(0, top + 0.04, z + sz * (sl / 2 + 0.034)), lens });
       }
       cyl(g, 0.01, 0.01, 0.02, black, 0, top + 0.068, z, 10);
     }
