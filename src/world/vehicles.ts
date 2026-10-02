@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { glow, chrome } from '../render/materials';
+import type { EngineProfile } from '../core/audio';
 
 export type CarModelKind = 'hatch' | 'coupe' | 'muscle' | 'limo' | 'truck' | 'super' | 'ev' | 'hyper' | 'cabrio'
-  | 'taxi' | 'van' | 'buggy' | 'rally' | 'pickup' | 'suv' | 'classic' | 'roadster';
+  | 'taxi' | 'van' | 'buggy' | 'rally' | 'pickup' | 'suv' | 'classic' | 'roadster'
+  | 'sedan' | 'wagon' | 'lowrider' | 'drift' | 'interceptor' | 'gt'
+  | 'jeep' | 'apc' | 'tank' | 'stealth';
 
 /** A car from Velocity Motors. */
 export interface CarDef {
@@ -18,6 +21,14 @@ export interface CarDef {
   grip: number;
   colors: number[];
   blurb: string;
+  /** Only found at the military base: steal it (and keep it by parking it in your garage). */
+  military?: boolean;
+  /** Durability (default by body type, see `carHp`). */
+  hp?: number;
+  /** Share of bullet damage that gets through (armoured vehicles shrug off small arms). */
+  armor?: number;
+  /** A main gun: click (or F) fires a shell that explodes where it lands. */
+  cannon?: boolean;
 }
 
 export const CARS: CarDef[] = [
@@ -37,8 +48,81 @@ export const CARS: CarDef[] = [
   { id: 'ev', name: 'Neon EV', kind: 'ev', price: 190_000, unlock: 7, top: 36, accel: 16, grip: 1.25, colors: [0xf4f1ea, 0x17151f, 0x6a2cc2], blurb: 'Silent, instant torque and glowing underlights.' },
   { id: 'roadster', name: 'Neon Roadster', kind: 'roadster', price: 240_000, unlock: 8, top: 40, accel: 16, grip: 1.3, colors: [0xff3fa4, 0x2fe6ff, 0x17151f, 0xffc53d], blurb: 'Open top, low slung, built for the Strip at night.' },
   { id: 'super', name: 'Viper Supercar', kind: 'super', price: 320_000, unlock: 8, top: 42, accel: 17, grip: 1.3, colors: [0xff2a2a, 0xffc53d, 0x39ff88, 0x2fe6ff], blurb: 'Scissor-door looks, a wing on the back and silly speed.' },
+  { id: 'sedan', name: 'Executive Sedan', kind: 'sedan', price: 22_000, unlock: 1, top: 25, accel: 8, grip: 1.1, colors: [0x1b2748, 0x17151f, 0x8c9099, 0xf4f1ea, 0x5a3a1a], blurb: 'Quiet, comfortable and very respectable.' },
+  { id: 'wagon', name: 'Family Wagon', kind: 'wagon', price: 26_000, unlock: 2, top: 24, accel: 8, grip: 1.05, colors: [0x1e7a46, 0xc8102e, 0xf4f1ea, 0x5a3a1a], blurb: 'A long roof, a big boot and fake wood optional.' },
+  { id: 'lowrider', name: 'Lowrider', kind: 'lowrider', price: 65_000, unlock: 4, top: 26, accel: 9, grip: 0.95, colors: [0x6a2cc2, 0xff6fb5, 0x2fe6ff, 0xf2b632], blurb: 'Slammed to the ground, candy paint, chrome everywhere.' },
+  { id: 'drift', name: 'Drift King', kind: 'drift', price: 130_000, unlock: 6, top: 35, accel: 14, grip: 0.85, colors: [0xf4f1ea, 0x39ff88, 0xff2a2a, 0x17151f], blurb: 'Loose rear end on purpose. Hold the slide, feel the smoke.' },
+  { id: 'interceptor', name: 'Interceptor', kind: 'interceptor', price: 160_000, unlock: 6, top: 38, accel: 14, grip: 1.15, hp: 170, colors: [0x17151f, 0xf4f1ea, 0x1d2a5a], blurb: 'An ex-police pursuit car: reinforced, fast, with the light bar still fitted.' },
+  { id: 'gt', name: 'Le Mans GT', kind: 'gt', price: 450_000, unlock: 9, top: 47, accel: 18, grip: 1.4, colors: [0x1f4fbf, 0xf4f1ea, 0xff8a1f, 0x17151f], blurb: 'An endurance racer with plates. Glued to the road.' },
   { id: 'hyper', name: 'Golden Hypercar', kind: 'hyper', price: 1_000_000, unlock: 10, top: 50, accel: 20, grip: 1.35, colors: [0xf2b632], blurb: 'Solid gold. The fastest thing in the city.' },
+  // Military base only: you can't buy these, you have to take them.
+  { id: 'jeep', name: 'Army Patrol Jeep', kind: 'jeep', price: 0, unlock: 1, top: 33, accel: 13, grip: 1.25, hp: 320, armor: 0.6, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Armoured patrol 4x4 with a roll bar. Shrugs off small arms.' },
+  { id: 'apc', name: 'Armoured APC', kind: 'apc', price: 0, unlock: 1, top: 27, accel: 9, grip: 0.95, hp: 900, armor: 0.3, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Eight tonnes of steel on six wheels. Traffic gets out of its way.' },
+  { id: 'tank', name: 'Rhino Tank', kind: 'tank', price: 0, unlock: 1, top: 15, accel: 6, grip: 1.5, hp: 2500, armor: 0.12, cannon: true, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Tracks, armour and a 120 mm cannon (click or F to fire). Slow, unstoppable.' },
+  { id: 'stealth', name: 'Prototype X-1', kind: 'stealth', price: 0, unlock: 1, top: 56, accel: 23, grip: 1.45, hp: 180, armor: 0.8, military: true, colors: [0x17151f, 0x2c2f26, 0x8c9099], blurb: 'A classified stealth racer. The fastest thing on wheels, anywhere.' },
 ];
+
+/** The cars on sale at Velocity Motors (military vehicles aren't). */
+export const DEALER_CARS: CarDef[] = CARS.filter((c) => !c.military).sort((a, b) => a.price - b.price);
+/** Vehicles parked at the military base. */
+export const MILITARY_CARS: CarDef[] = CARS.filter((c) => c.military);
+
+/** How much punishment a vehicle takes before it blows up. */
+export function carHp(def: CarDef | null): number {
+  if (!def) return 100;
+  if (def.hp) return def.hp;
+  switch (def.kind) {
+    case 'truck':
+      return 240;
+    case 'limo':
+    case 'suv':
+    case 'pickup':
+    case 'van':
+      return 160;
+    case 'buggy':
+    case 'roadster':
+    case 'cabrio':
+      return 90;
+    default:
+      return 110;
+  }
+}
+
+/** The engine note a vehicle makes. */
+export function engineOf(def: CarDef | null): EngineProfile {
+  switch (def?.kind) {
+    case 'ev':
+      return 'electric';
+    case 'muscle':
+    case 'classic':
+    case 'lowrider':
+    case 'interceptor':
+    case 'limo':
+    case 'suv':
+    case 'truck':
+    case 'pickup':
+      return 'v8';
+    case 'van':
+    case 'apc':
+      return 'diesel';
+    case 'super':
+    case 'hyper':
+    case 'roadster':
+    case 'gt':
+    case 'coupe':
+    case 'rally':
+    case 'drift':
+    case 'stealth':
+      return 'sport';
+    case 'buggy':
+    case 'jeep':
+      return 'buggy';
+    case 'tank':
+      return 'tank';
+    default:
+      return 'four';
+  }
+}
 
 /** Body width of a car (metres). */
 export function carWidth(def: CarDef): number {
@@ -137,13 +221,13 @@ export const TUNING: { id: 'engine' | 'turbo' | 'tires' | 'brakes' | 'nitro'; na
 
 export function defaultMods(def: CarDef, color?: number): CarMods {
   return {
-    color: color ?? def.colors[0], finish: def.kind === 'hyper' ? 'gold' : def.kind === 'classic' ? 'pearl' : 'gloss',
-    rims: def.kind === 'super' || def.kind === 'hyper' || def.kind === 'roadster' ? 'turbine' : def.kind === 'classic' ? 'dish' : def.kind === 'rally' || def.kind === 'buggy' ? 'mesh' : 'classic',
-    rimColor: def.kind === 'hyper' ? 0xf2b632 : 0xd8dde3,
-    glow: def.kind === 'ev' ? 0x2fe6ff : def.kind === 'van' ? 0xff3fa4 : def.kind === 'roadster' ? 0xff3fa4 : 0,
-    tint: def.kind === 'limo' || def.kind === 'suv' ? 'limo' : 'smoke',
-    spoiler: def.kind === 'super' || def.kind === 'rally' ? 'wing' : def.kind === 'coupe' ? 'lip' : 'none',
-    decal: def.kind === 'muscle' ? 'stripes' : def.kind === 'taxi' ? 'checker' : def.kind === 'rally' ? 'number' : def.kind === 'classic' ? 'side' : 'none',
+    color: color ?? def.colors[0], finish: def.kind === 'hyper' ? 'gold' : def.kind === 'classic' || def.kind === 'lowrider' ? 'pearl' : def.military ? 'matte' : 'gloss',
+    rims: def.kind === 'super' || def.kind === 'hyper' || def.kind === 'roadster' || def.kind === 'stealth' ? 'turbine' : def.kind === 'classic' || def.kind === 'drift' ? 'dish' : def.kind === 'lowrider' ? 'spinner' : def.kind === 'rally' || def.kind === 'buggy' || def.kind === 'gt' ? 'mesh' : 'classic',
+    rimColor: def.kind === 'hyper' || def.kind === 'lowrider' ? 0xf2b632 : def.military || def.kind === 'interceptor' ? 0x17151f : 0xd8dde3,
+    glow: def.kind === 'ev' ? 0x2fe6ff : def.kind === 'van' || def.kind === 'roadster' || def.kind === 'lowrider' ? 0xff3fa4 : def.kind === 'stealth' ? 0xff2a2a : 0,
+    tint: def.kind === 'limo' || def.kind === 'suv' || def.kind === 'interceptor' || def.kind === 'stealth' || def.kind === 'apc' ? 'limo' : 'smoke',
+    spoiler: def.kind === 'super' || def.kind === 'rally' ? 'wing' : def.kind === 'gt' || def.kind === 'drift' ? 'gt' : def.kind === 'coupe' ? 'lip' : 'none',
+    decal: def.kind === 'muscle' ? 'stripes' : def.kind === 'taxi' ? 'checker' : def.kind === 'rally' || def.kind === 'gt' ? 'number' : def.kind === 'classic' || def.kind === 'wagon' ? 'side' : def.kind === 'lowrider' || def.kind === 'drift' ? 'flames' : 'none',
     decalColor: def.kind === 'taxi' ? 0x17151f : 0xf4f1ea,
     plate: 'JACKPOT', engine: 0, turbo: 0, tires: 0, brakes: 0, nitro: 0,
   };
@@ -193,6 +277,9 @@ export interface CarModel {
   flames: THREE.Object3D[];
   /** Brake lights (brighter while braking). */
   brakeLights: THREE.Mesh[];
+  /** A tank's turret and the end of its barrel (the shell comes out here). */
+  turret?: THREE.Object3D;
+  muzzle?: THREE.Object3D;
 }
 
 interface Shape {
@@ -249,6 +336,26 @@ function shapeOf(k: CarModelKind): Shape {
       return { L: 4.85, W: 2.02, ride: 0.42, belt: 1.15, nose: 1.05, tail: 1.12, cabR: -1.95, cabF: 0.78, roof: 1.86, rakeR: 0.14, rakeF: 0.55, R: 0.44, wf: 1.55, wr: -1.55 };
     case 'classic':
       return { L: 5.4, W: 2, ride: 0.3, belt: 0.95, nose: 0.9, tail: 1, cabR: -1.2, cabF: 0.6, roof: 1.42, rakeR: 0.55, rakeF: 0.5, R: 0.38, wf: 1.75, wr: -1.75 };
+    case 'sedan':
+      return { L: 4.85, W: 1.9, ride: 0.28, belt: 0.92, nose: 0.8, tail: 0.94, cabR: -1.35, cabF: 0.75, roof: 1.45, rakeR: 0.5, rakeF: 0.62, R: 0.35, wf: 1.5, wr: -1.5 };
+    case 'wagon':
+      return { L: 4.9, W: 1.9, ride: 0.3, belt: 0.95, nose: 0.82, tail: 0.98, cabR: -2.2, cabF: 0.72, roof: 1.5, rakeR: 0.1, rakeF: 0.6, R: 0.35, wf: 1.55, wr: -1.55 };
+    case 'lowrider':
+      return { L: 5.5, W: 2, ride: 0.12, belt: 0.78, nose: 0.72, tail: 0.8, cabR: -1.3, cabF: 0.55, roof: 1.25, rakeR: 0.4, rakeF: 0.45, R: 0.33, wf: 1.8, wr: -1.75 };
+    case 'drift':
+      return { L: 4.4, W: 1.94, ride: 0.2, belt: 0.82, nose: 0.62, tail: 0.86, cabR: -1.35, cabF: 0.45, roof: 1.26, rakeR: 0.7, rakeF: 0.78, R: 0.35, wf: 1.42, wr: -1.38 };
+    case 'interceptor':
+      return { L: 5, W: 1.96, ride: 0.3, belt: 0.96, nose: 0.86, tail: 0.96, cabR: -1.4, cabF: 0.6, roof: 1.48, rakeR: 0.55, rakeF: 0.6, R: 0.37, wf: 1.6, wr: -1.55 };
+    case 'gt':
+      return { L: 4.9, W: 2.05, ride: 0.15, belt: 0.7, nose: 0.42, tail: 0.78, cabR: -1.1, cabF: 0.55, roof: 1.1, rakeR: 1.15, rakeF: 0.9, R: 0.36, wf: 1.6, wr: -1.5 };
+    case 'stealth':
+      return { L: 4.8, W: 2.08, ride: 0.14, belt: 0.66, nose: 0.36, tail: 0.74, cabR: -1.0, cabF: 0.7, roof: 1.04, rakeR: 1.1, rakeF: 1.05, R: 0.36, wf: 1.5, wr: -1.45 };
+    case 'jeep':
+      return { L: 4.3, W: 2.1, ride: 0.55, belt: 1.2, nose: 1.15, tail: 1.2, cabR: -1.2, cabF: 0.55, roof: 2.0, rakeR: 0.05, rakeF: 0.15, R: 0.47, wf: 1.4, wr: -1.4, open: true };
+    case 'apc':
+      return { L: 6.4, W: 2.55, ride: 0.7, belt: 1.85, nose: 1.5, tail: 1.9, cabR: -2.9, cabF: 1.6, roof: 2.6, rakeR: 0.15, rakeF: 0.9, R: 0.58, wf: 2.1, wr: -2.1 };
+    case 'tank':
+      return { L: 6.8, W: 3.3, ride: 0.35, belt: 1.25, nose: 1.1, tail: 1.25, cabR: -1.6, cabF: 1.2, roof: 2.4, rakeR: 0.2, rakeF: 0.4, R: 0.42, wf: 2.4, wr: -2.4 };
     case 'roadster':
       return { L: 4.2, W: 1.96, ride: 0.2, belt: 0.78, nose: 0.52, tail: 0.82, cabR: -0.75, cabF: 0.4, roof: 1.05, rakeR: 0.3, rakeF: 0.4, R: 0.35, wf: 1.35, wr: -1.3, open: true };
   }
@@ -501,6 +608,7 @@ function buildWheel(R: number, width: number, style: RimStyle, rimColor: number,
  * face +z and stand on y = 0.
  */
 export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel {
+  if (def.kind === 'tank') return buildTank(def, color ?? mods?.color ?? def.colors[0]);
   const m = mods ?? defaultMods(def, color);
   const paintColor = color ?? m.color;
   const g = new THREE.Group();
@@ -588,6 +696,57 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
   }
   // Fifties cruiser: tail fins
   if (k === 'classic') for (const sx of [-1, 1]) box(paint, 0.08, 0.32, 1.0, sx * (W / 2 - 0.1), s.tail + 0.14, -L / 2 + 0.6, 0.18, 0, 0);
+  // Interceptor: light bar and a push bar
+  if (k === 'interceptor') {
+    const rz = (s.cabR + s.rakeR + s.cabF - s.rakeF) / 2;
+    box(black, 1.2, 0.08, 0.3, 0, s.roof + 0.08, rz);
+    box(glow(0xff2a3a, 2.2), 0.5, 0.12, 0.26, -0.32, s.roof + 0.17, rz);
+    box(glow(0x2a6bff, 2.2), 0.5, 0.12, 0.26, 0.32, s.roof + 0.17, rz);
+    box(black, W * 0.7, 0.32, 0.08, 0, ride + 0.3, L / 2 + 0.12);
+    for (const sx of [-0.25, 0.25]) box(black, 0.08, 0.5, 0.08, sx * W, ride + 0.32, L / 2 + 0.1);
+  }
+  // Wagon: roof rails
+  if (k === 'wagon') for (const sx of [-1, 1]) box(trim, 0.05, 0.05, (s.cabF - s.rakeF) - (s.cabR + s.rakeR) - 0.2, sx * W * 0.38, s.roof + 0.09, (s.cabR + s.rakeR + s.cabF - s.rakeF) / 2);
+  // Stealth racer: twin fins and sharp side intakes
+  if (k === 'stealth') {
+    for (const sx of [-1, 1]) {
+      box(paint, 0.05, 0.38, 0.6, sx * 0.55, s.tail + 0.2, -L / 2 + 0.45, 0.35, 0, sx * 0.25);
+      box(black, 0.06, 0.18, 0.9, sx * (W / 2 + 0.01), ride + 0.38, -0.3);
+    }
+  }
+  // Army jeep: roll bar, spare wheel, a mounted gun and the white star
+  if (k === 'jeep' || k === 'apc') {
+    const star = militaryStar();
+    star.position.set(0, (k === 'jeep' ? s.nose : s.nose) + 0.02, k === 'jeep' ? s.cabF + 0.75 : s.cabF + 0.5);
+    g.add(star);
+    for (const sx of [-1, 1]) {
+      const side = militaryStar();
+      side.rotation.set(0, sx * Math.PI / 2, 0);
+      side.position.set(sx * (W / 2 + 0.02), ride + (belt - ride) * 0.55, k === 'jeep' ? -0.4 : -1.2);
+      g.add(side);
+    }
+  }
+  if (k === 'jeep') {
+    for (const sx of [-1, 1]) box(black, 0.08, 0.8, 0.08, sx * 0.85, belt + 0.4, s.cabR + 0.35);
+    box(black, 1.78, 0.08, 0.08, 0, belt + 0.8, s.cabR + 0.35);
+    box(black, 0.08, 0.6, 0.08, 0, belt + 0.5, s.cabR + 0.35);
+    // The gun on its post
+    box(black, 0.12, 0.12, 1.0, 0, belt + 0.95, s.cabR + 0.6);
+    box(black, 0.2, 0.25, 0.3, 0, belt + 0.95, s.cabR + 0.25);
+    const spare = new THREE.Mesh(new THREE.CylinderGeometry(s.R * 0.95, s.R * 0.95, 0.28, 20), new THREE.MeshStandardMaterial({ color: 0x141418, roughness: 0.9 }));
+    spare.rotation.x = Math.PI / 2;
+    spare.position.set(0, s.tail - 0.1, -L / 2 - 0.15);
+    add(spare);
+  }
+  // APC: roof hatch, a small turret, armour skirts
+  if (k === 'apc') {
+    const tur = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 0.4, 14), paint);
+    tur.position.set(0, s.roof + 0.2, -0.3);
+    add(tur);
+    box(black, 0.12, 0.12, 1.2, 0, s.roof + 0.25, 0.4);
+    box(black, 0.7, 0.06, 0.7, 0, s.roof + 0.03, -1.8);
+    for (const sx of [-1, 1]) box(paint, 0.08, 0.35, L * 0.8, sx * (W / 2 + 0.03), ride + 0.25, 0);
+  }
   // Muscle hood scoop
   if (k === 'muscle') box(black, 0.55, 0.14, 0.7, 0, s.nose + 0.07, s.cabF + 0.8);
   // Side mirrors
@@ -684,13 +843,13 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
     for (const sx of [-1, 1]) box(glow(m.glow, 2.4), 0.03, 0.03, L * 0.7, sx * W * 0.42, ride - 0.02, 0);
   }
   // Wheels
-  const tyreW = k === 'truck' ? 0.6 : k === 'buggy' ? 0.42 : k === 'pickup' || k === 'suv' ? 0.32 : k === 'super' || k === 'hyper' || k === 'roadster' ? 0.34 : 0.28;
+  const tyreW = k === 'truck' ? 0.6 : k === 'apc' ? 0.5 : k === 'jeep' ? 0.4 : k === 'buggy' ? 0.42 : k === 'pickup' || k === 'suv' ? 0.32 : k === 'super' || k === 'hyper' || k === 'roadster' ? 0.34 : 0.28;
   const wheels: THREE.Object3D[] = [];
   const front: THREE.Object3D[] = [];
-  for (const zc of [s.wf, s.wr]) {
+  for (const zc of k === 'apc' ? [s.wf, 0, s.wr] : [s.wf, s.wr]) {
     for (const sx of [-1, 1]) {
       const pivot = new THREE.Group();
-      pivot.position.set(sx * (W / 2 - tyreW / 2 + (k === 'truck' ? 0.3 : k === 'buggy' ? 0.22 : 0.04)), R, zc);
+      pivot.position.set(sx * (W / 2 - tyreW / 2 + (k === 'truck' ? 0.3 : k === 'buggy' || k === 'jeep' ? 0.22 : k === 'apc' ? 0.12 : 0.04)), R, zc);
       const w = buildWheel(R, tyreW, m.rims, m.rimColor, m.brakes > 0);
       pivot.add(w.wheel);
       g.add(pivot);
@@ -703,4 +862,112 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
     if (mesh.isMesh) mesh.receiveShadow = false;
   });
   return { root: g, wheels, front, seat: new THREE.Vector3(-0.38, belt - 0.3, (s.cabR + s.cabF) / 2 + 0.2), length: L, open: !!s.open, flames, brakeLights };
+}
+
+/** The white star on army vehicles. */
+function militaryStar(): THREE.Mesh {
+  const sh = new THREE.Shape();
+  for (let i = 0; i < 10; i++) {
+    const a = Math.PI / 2 + (i / 10) * Math.PI * 2;
+    const r = i % 2 ? 0.13 : 0.32;
+    if (i === 0) sh.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    else sh.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  sh.closePath();
+  const geo = new THREE.ShapeGeometry(sh);
+  geo.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xece6d2, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -2, side: THREE.DoubleSide }));
+  return m;
+}
+
+/**
+ * The Rhino tank: a sloped hull on two tracks with road wheels, a turret with a long gun.
+ * Faces +z like the cars; its road wheels spin as it drives.
+ */
+function buildTank(def: CarDef, color: number): CarModel {
+  const g = new THREE.Group();
+  const s = shapeOf('tank');
+  const { L, W } = s;
+  const paint = new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0.15 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1c1d1a, roughness: 0.9, metalness: 0.2 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x3a3c36, roughness: 0.6, metalness: 0.5 });
+  const add = (o: THREE.Mesh) => {
+    o.castShadow = true;
+    g.add(o);
+    return o;
+  };
+  const box = (mt: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, rx = 0) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mt);
+    m.position.set(x, y, z);
+    m.rotation.x = rx;
+    return add(m);
+  };
+  // Hull: a profile with a sloped glacis at the front.
+  const hull = new THREE.Mesh(extrudeProfile([[-L / 2, 0.45], [L / 2 - 0.9, 0.45], [L / 2, 0.85], [L / 2 - 0.5, 1.35], [-L / 2 + 0.2, 1.35], [-L / 2, 1.15]], W - 1.1, 0.06), paint);
+  add(hull);
+  // Track guards along the top of each track.
+  const trackX = W / 2 - 0.42;
+  for (const sx of [-1, 1]) {
+    box(paint, 0.9, 0.08, L + 0.1, sx * trackX, 1.0, 0);
+    // The track itself: a dark band with a rounded front and back.
+    box(dark, 0.78, 0.82, L - 0.8, sx * trackX, 0.45, 0);
+    for (const ez of [-1, 1]) {
+      const end = new THREE.Mesh(new THREE.CylinderGeometry(0.41, 0.41, 0.78, 16), dark);
+      end.rotation.z = Math.PI / 2;
+      end.position.set(sx * trackX, 0.45, ez * (L / 2 - 0.4));
+      add(end);
+    }
+    // Side skirts
+    box(paint, 0.06, 0.45, L - 0.4, sx * (trackX + 0.43), 0.75, 0);
+  }
+  // Road wheels (they spin)
+  const wheels: THREE.Object3D[] = [];
+  const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.82, 14);
+  wheelGeo.rotateZ(Math.PI / 2);
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < 6; i++) {
+      const w = new THREE.Mesh(wheelGeo, steel);
+      w.position.set(sx * trackX, 0.36, -L / 2 + 0.9 + i * ((L - 1.8) / 5));
+      g.add(w);
+      wheels.push(w);
+    }
+  }
+  // Turret
+  const turret = new THREE.Group();
+  turret.position.set(0, 1.35, -0.3);
+  g.add(turret);
+  const tb = new THREE.Mesh(extrudeProfile([[-1.4, 0], [1.1, 0], [1.6, 0.25], [1.3, 0.75], [-1.2, 0.8], [-1.5, 0.4]], 2.2, 0.05), paint);
+  tb.castShadow = true;
+  turret.add(tb);
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.14, 14), steel);
+  hatch.position.set(0.45, 0.88, -0.4);
+  turret.add(hatch);
+  const mantlet = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.35), steel);
+  mantlet.position.set(0, 0.42, 1.55);
+  turret.add(mantlet);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 3.6, 12), steel);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.45, 3.4);
+  barrel.castShadow = true;
+  turret.add(barrel);
+  const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.4, 12), dark);
+  brake.rotation.x = Math.PI / 2;
+  brake.position.set(0, 0.45, 5.1);
+  turret.add(brake);
+  const muzzle = new THREE.Object3D();
+  muzzle.position.set(0, 0.45, 5.35);
+  turret.add(muzzle);
+  // Stowage boxes and the star
+  box(dark, 2.0, 0.3, 0.5, 0, 1.55, -L / 2 + 0.6);
+  const star = militaryStar();
+  star.scale.setScalar(1.3);
+  star.rotation.set(0, Math.PI / 2, 0);
+  star.position.set(1.12, 0.45, 0);
+  turret.add(star);
+  // Tail lights
+  const brakeLights: THREE.Mesh[] = [];
+  for (const sx of [-1, 1]) brakeLights.push(box(glow(0xff2a2a, 1.4), 0.2, 0.1, 0.04, sx * 0.7, 1.1, -L / 2 - 0.01));
+  for (const sx of [-1, 1]) box(glow(0xfff6dc, 2), 0.22, 0.12, 0.04, sx * 0.75, 1.0, L / 2 - 0.35);
+  void def;
+  return { root: g, wheels, front: [], seat: new THREE.Vector3(0, 1.6, 0), length: L, open: false, flames: [], brakeLights, turret, muzzle };
 }

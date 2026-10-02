@@ -148,7 +148,8 @@ export class Combat {
       g.requestSave();
       return;
     }
-    const lost = koLoss(g.money);
+    // Explosions and the army knock you down but don't take your cash.
+    const lost = fromPid === 'world' ? 0 : koLoss(g.money);
     if (lost > 0) {
       g.spend(lost, 'robbed');
       this.onLoot?.(fromPid, lost);
@@ -160,7 +161,7 @@ export class Combat {
     g.cam.shake(0.25);
     g.notify(lost > 0
       ? `${fromName} knocked you out and took ${formatMoney(lost)}. Cash in your vault is safe.`
-      : `${fromName} knocked you out. Good thing your pockets were empty.`, 'bad');
+      : fromPid === 'world' ? `${fromName[0].toUpperCase()}${fromName.slice(1)} knocked you out.` : `${fromName} knocked you out. Good thing your pockets were empty.`, 'bad');
     g.requestSave();
   }
 

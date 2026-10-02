@@ -230,7 +230,7 @@ describe('more cars, smaller hitboxes', () => {
     expect(new Set(CARS.map((c) => c.id)).size).toBe(CARS.length);
     for (const c of CARS) {
       const m = buildCar(c);
-      expect(m.wheels.length).toBe(4);
+      expect(m.wheels.length).toBeGreaterThanOrEqual(4);
       expect(m.length).toBeGreaterThan(3);
     }
   });

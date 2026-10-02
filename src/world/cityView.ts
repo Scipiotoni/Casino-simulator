@@ -46,6 +46,9 @@ export class Car {
   decided = -999;
   /** Seconds the car stays stopped after being shot at (hazard lights on). */
   shaken = 0;
+  /** Durability: shots and crashes wear it down; at 0 it blows up. */
+  hp = 100;
+  maxHp = 100;
   honkT = 0;
   x = 0;
   z = 0;
@@ -65,6 +68,7 @@ export class Car {
     this.root.add(this.lights, new THREE.Mesh(proto.rear, glow(0xff2a2a, 1.4)), this.hazard);
     this.max = [9, 8, 7, 12, 6][kind] ?? 9;
     this.length = kind === 4 ? 8.5 : 4.2;
+    this.hp = this.maxHp = kind === 4 ? 220 : kind === 3 ? 140 : 100;
   }
 
   readonly length: number;
@@ -837,34 +841,8 @@ export class CityView {
     let best: { car: Car; t: number } | null = null;
     for (const c of this.cars) {
       if (!c.root.visible) continue;
-      // Car as a circle-ish box: test against its oriented rectangle.
-      const cx = ox - c.x;
-      const cz = oz - c.z;
-      const s = Math.sin(-c.yaw);
-      const co = Math.cos(-c.yaw);
-      const lx = cx * co + cz * s;
-      const lz = -cx * s + cz * co;
-      const ldx = dx * co + dz * s;
-      const ldz = -dx * s + dz * co;
-      const hw = 1.0;
-      const hl = c.length / 2;
-      let t0 = 0;
-      let t1 = range;
-      for (const [o, d, h] of [[lx, ldx, hw], [lz, ldz, hl]] as const) {
-        if (Math.abs(d) < 1e-6) {
-          if (Math.abs(o) > h) {
-            t0 = Infinity;
-            break;
-          }
-          continue;
-        }
-        let a = (-h - o) / d;
-        let b = (h - o) / d;
-        if (a > b) [a, b] = [b, a];
-        t0 = Math.max(t0, a);
-        t1 = Math.min(t1, b);
-      }
-      if (t0 <= t1 && t0 < range && (!best || t0 < best.t)) best = { car: c, t: t0 };
+      const t = rayBox(ox, oz, dx, dz, range, c.x, c.z, c.yaw, 1.0, c.length / 2);
+      if (t !== null && (!best || t < best.t)) best = { car: c, t };
     }
     return best;
   }
@@ -887,4 +865,33 @@ export class CityView {
     c.speed = 0;
     this.onCarHit?.(c);
   }
+}
+
+/**
+ * Where a ray (global frame, unit direction) first enters a car-shaped box (centre, heading,
+ * half width, half length), or null if it misses within `range`.
+ */
+export function rayBox(ox: number, oz: number, dx: number, dz: number, range: number, cx: number, cz: number, yaw: number, hw: number, hl: number): number | null {
+  const px = ox - cx;
+  const pz = oz - cz;
+  const s = Math.sin(-yaw);
+  const co = Math.cos(-yaw);
+  const lx = px * co + pz * s;
+  const lz = -px * s + pz * co;
+  const ldx = dx * co + dz * s;
+  const ldz = -dx * s + dz * co;
+  let t0 = 0;
+  let t1 = range;
+  for (const [o, d, h] of [[lx, ldx, hw], [lz, ldz, hl]] as const) {
+    if (Math.abs(d) < 1e-6) {
+      if (Math.abs(o) > h) return null;
+      continue;
+    }
+    let a = (-h - o) / d;
+    let b = (h - o) / d;
+    if (a > b) [a, b] = [b, a];
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, b);
+  }
+  return t0 <= t1 && t0 < range ? t0 : null;
 }

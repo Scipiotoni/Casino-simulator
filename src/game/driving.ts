@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Game } from './game';
-import { type CarDef, type CarMods, CARS, STOLEN_SPECS, buildCar, carDef, carWidth, defaultMods, sanitizeMods, tunedSpecs } from '../world/vehicles';
-import { Car } from '../world/cityView';
+import { type CarDef, type CarMods, DEALER_CARS, STOLEN_SPECS, buildCar, carDef, carHp, carWidth, defaultMods, engineOf, sanitizeMods, tunedSpecs } from '../world/vehicles';
+import { Car, rayBox } from '../world/cityView';
 import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
 import { type ParkedCar, garageTier } from './house';
@@ -39,6 +39,47 @@ export interface Vehicle {
   brakeLights: THREE.Mesh[];
   /** A traffic car you took (its body and paint), so it can be kept in your garage. */
   kept?: { kind: number; color: number };
+  /** Durability left (0 = blown up), out of `maxHp`. */
+  hp: number;
+  maxHp: number;
+  /** Share of bullet damage that gets through. */
+  armor: number;
+  /** Seconds since it blew up (-1 while it's in one piece). */
+  wreck: number;
+  /** Seconds it keeps burning (a wreck, or a car about to go up). */
+  burnT: number;
+  /** A tank's turret and muzzle, and its reload. */
+  turret?: THREE.Object3D;
+  muzzle?: THREE.Object3D;
+  cannonT?: number;
+  /** Parked at the military base (taking it sets off the alarm). */
+  base?: boolean;
+}
+
+/** What a bullet or blast can hit: a traffic car, a police cruiser or a car on the street. */
+export interface CarTarget {
+  t: number;
+  traffic?: Car;
+  cruiser?: Car;
+  v?: Vehicle;
+}
+
+/** Damage to a car from a crash at `speed` (m/s); heavy armour soaks most of it. */
+export function crashDamage(speed: number, armor = 1): number {
+  if (speed < 4) return 0;
+  return (speed - 4) * 1.8 * (armor < 0.5 ? 0.35 : 1);
+}
+
+/** How much of a gun's damage gets through to a car's bodywork. */
+export function shotDamage(gunDmg: number, armor = 1): number {
+  return gunDmg * 0.4 * armor;
+}
+
+/** Fee to replace one of your own cars that blew up (the military ones cost more to "find"). */
+export function insuranceFee(def: CarDef | null): number {
+  if (!def) return 0;
+  if (def.military) return 25_000;
+  return Math.max(500, Math.round(def.price * 0.05));
 }
 
 /** Cars you own (saved). */
@@ -104,6 +145,12 @@ export class Driving {
   /** Seconds left in a gear change (no drive meanwhile). */
   private shiftT = 0;
   private limiterT = 0;
+  private lastGear = 1;
+  private prevThrottle = 0;
+  /** Tyre squeal (0..1), smoothed for the sound. */
+  private skid = 0;
+  /** Tank shells in flight (global frame). */
+  private shells: { x: number; z: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh }[] = [];
 
   constructor(private g: Game) {}
 
@@ -189,13 +236,15 @@ export class Driving {
     return !!v;
   }
 
-  private addVehicle(def: CarDef, m: ReturnType<typeof buildCar>, color: number, x: number, z: number, yaw: number, owned: boolean, stolen: boolean, mods: CarMods | null = null): Vehicle {
+  /** Put a vehicle on the street (global frame); used by the military base too. */
+  addVehicle(def: CarDef, m: ReturnType<typeof buildCar>, color: number, x: number, z: number, yaw: number, owned: boolean, stolen: boolean, mods: CarMods | null = null): Vehicle {
     m.root.position.set(x, 0, z);
     m.root.rotation.y = yaw;
     this.group.add(m.root);
     const v: Vehicle = {
       uid: nextUid++, def, name: def.name, color, root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat,
       x, z, yaw, speed: 0, steer: 0, length: m.length, width: def.kind === 'truck' ? 2.3 : carWidth(def), owned, stolen, mods, flames: m.flames, brakeLights: m.brakeLights,
+      hp: carHp(def), maxHp: carHp(def), armor: def.armor ?? 1, wreck: -1, burnT: 0, turret: m.turret, muzzle: m.muzzle, cannonT: 0,
     };
     this.vehicles.push(v);
     return v;
@@ -214,7 +263,7 @@ export class Driving {
     const v: Vehicle = {
       uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
       x: c.x, z: c.z, yaw: c.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: true, mods: null, flames: [], brakeLights: [],
-      kept: { kind: c.kind, color: c.color },
+      kept: { kind: c.kind, color: c.color }, hp: c.hp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
     };
     this.vehicles.push(v);
     g.street.police.crime(HEAT.knockout);
@@ -226,6 +275,7 @@ export class Driving {
 
   enter(v: Vehicle): void {
     const g = this.g;
+    if (v.wreck >= 0) return;
     g.stopActivity();
     g.standUp();
     if (g.build.active) g.build.cancel();
@@ -234,8 +284,14 @@ export class Driving {
     this.gear = 1;
     if (!this.prevCam) this.prevCam = { mode: g.cam.mode, dist: g.cam.distTarget };
     g.setCameraMode('third', false);
-    g.cam.setThirdDist(v.length > 6 ? 11 : 8.5);
+    g.cam.setThirdDist(v.def?.kind === 'tank' ? 13 : v.length > 6 ? 11 : 8.5);
     audio.play('doorbell', { pitch: 0.6 });
+    audio.play('ignition', { pitch: v.def?.kind === 'tank' ? 0.6 : 1, volume: 0.8 });
+    if (v.base) {
+      g.stats.baseRaids = (g.stats.baseRaids ?? 0) + 1;
+      g.base.vehicleTaken(v.name);
+    }
+    v.base = false;
     g.events.emit('driving', undefined);
   }
 
@@ -246,6 +302,7 @@ export class Driving {
     if (!v) return;
     this.driving = null;
     v.speed = 0;
+    audio.engine(null);
     g.player.seat = null;
     g.player.emote = null;
     const fx = Math.sin(v.yaw);
@@ -278,6 +335,7 @@ export class Driving {
     const pg = this.playerGlobal();
     let best: { v?: Vehicle; traffic?: Car; d: number } | null = null;
     for (const v of this.vehicles) {
+      if (v.wreck >= 0) continue;
       const d = Math.hypot(v.x - pg.x, v.z - pg.z) - v.length / 2;
       if (d < 1.6 && (!best || d < best.d)) best = { v, d };
     }
@@ -295,9 +353,14 @@ export class Driving {
     city.obstacles = this.vehicles.map((v) => ({ x: v.x, z: v.z }));
     this.crashT = Math.max(0, this.crashT - dt);
     this.updateGarage(dt);
+    this.updateCondition(dt);
+    this.updateShells(dt);
     const v = this.driving;
     g.cam.chase = !!v;
-    if (!v) return;
+    if (!v) {
+      audio.engine(null);
+      return;
+    }
     g.cam.chaseSpeed = v.speed;
     const input = g.input;
     let throttle = 0;
@@ -315,8 +378,11 @@ export class Driving {
     throttle = clamp(throttle, -1, 1);
     steer = clamp(steer, -1, 1);
     const spec = v.def ? tunedSpecs(v.def, v.mods) : { ...STOLEN_SPECS, brake: 1, nitro: 0 };
-    const top = spec.top;
-    const accel = spec.accel;
+    // A badly damaged engine loses power.
+    const health = v.hp / v.maxHp;
+    const weak = health < 0.5 ? 0.55 + health * 0.9 : 1;
+    const top = spec.top * weak;
+    const accel = spec.accel * weak;
     const grip = spec.grip;
     // Shift: nitro if fitted (a tank that refills), otherwise a little extra push.
     const shift = input.down('ShiftLeft') || input.down('ShiftRight');
@@ -347,7 +413,7 @@ export class Driving {
         if (next !== this.gear) {
           this.gear = next;
           this.shiftT = 0.18;
-          audio.play('click', { pitch: up ? 1.1 : 0.85, volume: 0.5 });
+          audio.play('shift', { pitch: up ? 1.1 : 0.85, volume: 0.6 });
         }
       }
     }
@@ -374,7 +440,7 @@ export class Driving {
           this.limiterT -= dt;
           if (this.limiterT <= 0) {
             this.limiterT = 0.14;
-            audio.play('drumhit', { volume: 0.12, pitch: 1.7 });
+            audio.play('backfire', { volume: 0.18, pitch: 1.4 });
           }
         }
       }
@@ -398,6 +464,7 @@ export class Driving {
       this.crash(v, Math.abs(v.speed));
       v.speed *= -0.3;
     }
+    if (v.wreck >= 0) return;
     // Traffic
     for (const c of city.traffic) {
       if (!c.root.visible) continue;
@@ -406,9 +473,12 @@ export class Driving {
         const away = Math.atan2(v.x - c.x, v.z - c.z);
         v.x += Math.sin(away) * 0.4;
         v.z += Math.cos(away) * 0.4;
-        this.crash(v, Math.abs(v.speed));
+        const hitSpeed = Math.abs(v.speed);
+        this.crash(v, hitSpeed);
         city.hitCar(c);
-        v.speed *= -0.25;
+        // Heavy armour flattens whatever it hits.
+        this.hurtTraffic(c, crashDamage(hitSpeed) * (v.armor < 0.5 ? 6 : 1.2), true);
+        v.speed *= v.armor < 0.5 ? 0.7 : -0.25;
       }
     }
     // Other parked cars
@@ -418,9 +488,21 @@ export class Driving {
         const away = Math.atan2(v.x - o.x, v.z - o.z);
         v.x += Math.sin(away) * 0.4;
         v.z += Math.cos(away) * 0.4;
-        this.crash(v, Math.abs(v.speed));
+        const hitSpeed = Math.abs(v.speed);
+        const fresh = this.crashT <= 0;
+        this.crash(v, hitSpeed);
+        if (fresh) this.damage(o, crashDamage(hitSpeed) * (v.armor < 0.5 ? 6 : 1), true);
         v.speed *= -0.25;
       }
+    }
+    // Cruisers you smash into
+    for (const c of g.street.police.cruisersNear(v.x, v.z, v.length)) {
+      if (!carsTouch(v, c.root.position.x, c.root.position.z, c.length) || Math.abs(v.speed) < 4) continue;
+      const fresh = this.crashT <= 0;
+      const hitSpeed = Math.abs(v.speed);
+      this.crash(v, hitSpeed);
+      if (fresh) this.hurtCruiser(c, crashDamage(hitSpeed) * (v.armor < 0.5 ? 6 : 1.2), true);
+      if (v.armor >= 0.5) v.speed *= -0.25;
     }
     // People in the way
     if (Math.abs(v.speed) > 4) {
@@ -459,20 +541,64 @@ export class Driving {
     g.player.playEmote('sit', 999);
     g.player.yaw = yawW;
     g.cam.followYaw = yawW;
-    // Engine note
-    this.engineT -= dt;
-    if (this.engineT <= 0 && (Math.abs(v.speed) > 1 || throttle > 0)) {
-      // The note follows the revs (it drops when you change up).
-      this.engineT = 0.42 - this.rpm * 0.3;
-      audio.play('drumhit', { volume: 0.1 + this.rpm * 0.14, pitch: 0.45 + this.rpm * 1.1 });
+    if (v.turret) {
+      // The turret settles back to face forward; the barrel recoils after a shot.
+      v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - 2.2) * 0.8;
     }
-    if (input.hit('KeyC')) audio.play('honk');
+    // Engine: a running engine voice that follows the revs and how hard you're on the gas.
+    const profile = engineOf(v.def);
+    const speedAbs = Math.abs(v.speed);
+    // Tyres squeal in hard corners, under heavy braking and when the wheels spin off the line.
+    const corner = Math.abs(v.steer) * speedAbs / Math.max(10, top) * (2.2 - grip);
+    const braking = throttle < 0 && v.speed > 8 ? 0.6 : 0;
+    const launch = throttle > 0 && speedAbs < 6 && this.gear <= 1 && accel > 11 ? 0.5 : 0;
+    const want = profile === 'tank' ? 0 : clamp(Math.max(corner - 0.35, braking, launch), 0, 1);
+    this.skid = damp(this.skid, want, 10, dt);
+    if (this.skid > 0.35 && Math.random() < dt * 12) {
+      const w = g.street.globalToWorld(v.x - Math.sin(v.yaw) * v.length * 0.4, v.z - Math.cos(v.yaw) * v.length * 0.4);
+      g.effects.dust(w.x, w.z, 0.4);
+    }
+    audio.engine({ profile, rpm: this.gear === 0 ? Math.min(0.6, speedAbs / 9) : this.rpm, throttle: Math.max(0, throttle) * (this.shiftT > 0 ? 0.3 : 1), skid: this.skid, damage: 1 - health });
+    // Shifting up at speed: the turbo's blow-off and a crackle from the exhaust.
+    if (this.gear !== this.lastGear) {
+      if (this.gear > this.lastGear && this.gear > 1) {
+        audio.play('shift', { volume: 0.5 });
+        if ((v.mods?.turbo ?? 0) > 0 || profile === 'sport') audio.play('turbo', { volume: 0.7 });
+      }
+      this.lastGear = this.gear;
+    }
+    // Lift off at high revs: pops and bangs.
+    if (this.prevThrottle > 0 && throttle <= 0 && this.rpm > 0.65 && profile !== 'electric' && profile !== 'tank') {
+      for (let i = 0; i < 2 + Math.floor(Math.random() * 3); i++) window.setTimeout(() => audio.play('backfire', { volume: 0.35, pitch: 0.8 + Math.random() * 0.5 }), i * 90 + Math.random() * 60);
+    }
+    this.prevThrottle = throttle;
+    void this.engineT;
+    if (input.hit('KeyC')) audio.play('honk', { pitch: v.armor < 0.5 ? 0.6 : 1 });
+    // Tank: click or F fires the main gun.
+    if (v.def?.cannon && v.muzzle) {
+      v.cannonT = Math.max(0, (v.cannonT ?? 0) - dt);
+      const fire = !g.modalOpen && (input.hit('KeyF') || (input.mousePresses > 0 && !input.isTouch) || this.fireRequest);
+      this.fireRequest = false;
+      if (fire && v.cannonT <= 0) this.fireCannon(v);
+    }
   }
 
-  /** A police cruiser rammed you: shoved sideways and slowed down. */
-  rammed(dx: number, dz: number, speedMul: number): void {
+  /** The HUD's fire button (touch) asks the tank to fire. */
+  fireRequest = false;
+
+  /** A police cruiser rammed you: shoved sideways and slowed down (it takes a knock too). */
+  rammed(dx: number, dz: number, speedMul: number, by?: Car): void {
     const v = this.driving;
     if (!v) return;
+    this.damage(v, 9, false);
+    if (by && v.armor < 0.5) this.hurtCruiser(by, 30, true);
+    if (this.driving !== v) return;
+    if (v.armor < 0.5) {
+      // Armour doesn't get pushed around.
+      speedMul = Math.max(speedMul, 0.92);
+      dx *= 0.15;
+      dz *= 0.15;
+    }
     if (this.fits(v.x + dx, v.z + dz, v.yaw, v.length * 0.8, v.width * 0.72)) {
       v.x += dx;
       v.z += dz;
@@ -486,10 +612,258 @@ export class Driving {
   private crash(v: Vehicle, speed: number): void {
     if (this.crashT > 0 || speed < 2) return;
     this.crashT = 0.4;
-    audio.play('thud', { volume: Math.min(1, speed / 15) });
-    if (speed > 12) audio.play('glass', { volume: 0.4 });
+    audio.play(speed > 7 ? 'crash' : 'thud', { volume: Math.min(1, speed / 15), pitch: v.armor < 0.5 ? 0.6 : 0.9 + Math.random() * 0.2 });
+    if (speed > 12 && v.armor >= 0.5) audio.play('glass', { volume: 0.4 });
     this.g.cam.shake(Math.min(0.25, speed / 60));
-    void v;
+    this.damage(v, crashDamage(speed, v.armor), false);
+  }
+
+  // ------------------------------------------------------------------ durability
+
+  /** Wear a vehicle down; at 0 it blows up. `byPlayer` = you did it (the police notice). */
+  damage(v: Vehicle, amount: number, byPlayer: boolean): void {
+    if (v.wreck >= 0 || amount <= 0 || !this.vehicles.includes(v)) return;
+    const was = v.hp;
+    v.hp = Math.max(0, v.hp - amount);
+    if (v === this.driving && Math.floor(was / v.maxHp * 4) !== Math.floor(v.hp / v.maxHp * 4) && v.hp > 0) {
+      this.g.notify(v.hp / v.maxHp < 0.25 ? `Your ${v.name} is on fire! Get out before it blows!` : v.hp / v.maxHp < 0.5 ? `Your ${v.name} is smoking: ${Math.round((v.hp / v.maxHp) * 100)}% left.` : `Your ${v.name} took a beating.`, 'bad');
+    }
+    // Burning: it goes up a few seconds later unless it's already gone.
+    if (v.hp > 0 && v.hp < v.maxHp * 0.15 && v.burnT <= 0) v.burnT = 6;
+    if (v.hp <= 0) this.explode(v, byPlayer);
+    this.g.events.emit('combat', undefined);
+  }
+
+  /** A traffic car takes damage; at 0 it explodes (it's out of the traffic as a wreck). */
+  hurtTraffic(c: Car, amount: number, byPlayer: boolean): void {
+    if (amount <= 0) return;
+    c.hp = Math.max(0, c.hp - amount);
+    if (c.hp > 0) return;
+    this.g.street.city.releaseCar(c);
+    this.wreckCar(c, byPlayer);
+  }
+
+  /** A police cruiser takes damage; at 0 it blows up and leaves the chase. */
+  hurtCruiser(c: Car, amount: number, byPlayer: boolean): void {
+    if (amount <= 0) return;
+    c.hp = Math.max(0, c.hp - amount);
+    if (c.hp > 0) return;
+    const pol = this.g.street.police;
+    if (!pol.dropCruiser(c)) return;
+    if (byPlayer) pol.crime(HEAT.copCar);
+    this.wreckCar(c, byPlayer);
+  }
+
+  /** Turn a traffic or police car into one of ours and blow it up. */
+  private wreckCar(c: Car, byPlayer: boolean): void {
+    c.root.removeFromParent();
+    c.hazard.visible = false;
+    this.group.add(c.root);
+    const v: Vehicle = {
+      uid: nextUid++, def: null, name: 'car', color: c.color, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(),
+      x: c.x, z: c.z, yaw: c.root.rotation.y, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: false, mods: null, flames: [], brakeLights: [],
+      hp: 0, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
+    };
+    // Cruisers move by their own coordinates; traffic cars by x/z.
+    v.x = c.root.position.x;
+    v.z = c.root.position.z;
+    this.vehicles.push(v);
+    this.explode(v, byPlayer);
+  }
+
+  /** Boom: fireball, the shell left charred and burning, everything close by hurt. */
+  explode(v: Vehicle, byPlayer: boolean): void {
+    const g = this.g;
+    if (v.wreck >= 0) return;
+    // Thrown clear (the blast below still hurts).
+    if (this.driving === v) this.exit();
+    v.hp = 0;
+    v.wreck = 0;
+    v.burnT = 14;
+    v.speed = 0;
+    // Charred: every paint, chrome and lamp goes black.
+    const burnt = new THREE.MeshStandardMaterial({ color: 0x1b1918, roughness: 0.95, metalness: 0.2 });
+    v.root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) m.material = burnt;
+    });
+    for (const f of v.flames) f.visible = false;
+    v.root.rotation.z = (Math.random() - 0.5) * 0.12;
+    v.root.position.y = -0.08;
+    const w = g.street.globalToWorld(v.x, v.z);
+    const big = v.def?.kind === 'tank' || v.def?.kind === 'apc' ? 1.6 : 1;
+    g.effects.explosion(w.x, 0.8, w.z, big);
+    audio.playAt('explosion', w.x, w.z, 1.4);
+    const pg = this.playerGlobal();
+    const dist = Math.hypot(pg.x - v.x, pg.z - v.z);
+    g.cam.shake(Math.max(0.05, 0.45 - dist / 60));
+    g.stats.carsWrecked = (g.stats.carsWrecked ?? 0) + 1;
+    if (byPlayer) g.street.police.crime(HEAT.wreck);
+    if (v.owned && v.def) {
+      const fee = Math.min(g.money, insuranceFee(v.def));
+      if (fee > 0) g.spend(fee, 'upkeep');
+      g.notify(`Your ${v.def.name} blew up! Insurance replaces it for ${formatMoney(fee)}: call it again from My cars.`, 'bad');
+    }
+    this.blast(v.x, v.z, 6.5 * big, 70 * big, byPlayer, v);
+  }
+
+  /** An explosion at a point (global frame): hurts cars, people, the police and you. */
+  blast(x: number, z: number, radius: number, power: number, byPlayer: boolean, source?: Vehicle): void {
+    const g = this.g;
+    const st = g.street;
+    const fall = (d: number) => Math.max(0, 1 - d / radius);
+    for (const o of [...this.vehicles]) {
+      if (o === source || o.wreck >= 0) continue;
+      const k = fall(Math.hypot(o.x - x, o.z - z) - o.length * 0.3);
+      if (k > 0) this.damage(o, power * 1.4 * k * (o.armor < 0.5 ? 0.5 : 1), byPlayer);
+    }
+    for (const c of [...st.city.traffic]) {
+      const k = fall(Math.hypot(c.x - x, c.z - z) - 1);
+      if (k > 0) {
+        st.city.hitCar(c);
+        this.hurtTraffic(c, power * 1.4 * k, byPlayer);
+      }
+    }
+    for (const c of st.police.cruisersNear(x, z, radius + 2)) this.hurtCruiser(c, power * 1.4 * fall(Math.hypot(c.root.position.x - x, c.root.position.z - z) - 1), byPlayer);
+    for (const ped of st.crowd.around(x, z, radius)) {
+      const d = Math.hypot(ped.x - x, ped.z - z);
+      const r = st.crowd.damage(ped, power * 2 * fall(d), ped.x - x, ped.z - z);
+      if (r.ko && byPlayer) {
+        st.police.crime(HEAT.knockout);
+        g.stats.knockouts++;
+      }
+    }
+    for (const o of st.police.officers) {
+      if (o.ko > 0) continue;
+      const k = fall(Math.hypot(o.x - x, o.z - z));
+      if (k > 0 && st.police.damage(o, power * 2 * k) && byPlayer) g.stats.knockouts++;
+    }
+    g.base.blast(x, z, radius, power, byPlayer);
+    // You, on foot nearby (in a car, your car takes it instead).
+    if (!this.driving) {
+      const pg = this.playerGlobal();
+      const k = fall(Math.hypot(pg.x - x, pg.z - z));
+      if (k > 0) g.combat.damage(Math.round(power * 1.3 * k), 'world', 'the explosion');
+    }
+  }
+
+  /** Burning, smoking and clearing away wrecks; smoke from damaged traffic. */
+  private updateCondition(dt: number): void {
+    const g = this.g;
+    const st = g.street;
+    const pg = this.playerGlobal();
+    for (const v of [...this.vehicles]) {
+      const near = Math.hypot(v.x - pg.x, v.z - pg.z) < 140;
+      if (v.wreck >= 0) {
+        v.wreck += dt;
+        v.burnT = Math.max(0, v.burnT - dt);
+        if (near) {
+          const w = st.globalToWorld(v.x, v.z);
+          if (v.burnT > 0 && Math.random() < dt * 30) g.effects.fire(w.x, 0.9, w.z, 1.2);
+          if (Math.random() < dt * (v.burnT > 0 ? 8 : 2)) g.effects.soot(w.x, 1.2, w.z, 1);
+        }
+        // Towed away after a while.
+        if (v.wreck > 45) this.remove(v);
+        continue;
+      }
+      const f = v.hp / v.maxHp;
+      if (f < 0.5 && near && Math.random() < dt * (f < 0.25 ? 10 : 4)) {
+        const fx = v.x + Math.sin(v.yaw) * v.length * 0.35;
+        const fz = v.z + Math.cos(v.yaw) * v.length * 0.35;
+        const w = st.globalToWorld(fx, fz);
+        g.effects.soot(w.x, 1.0, w.z, f < 0.25 ? 1 : 0);
+        if (f < 0.15) g.effects.fire(w.x, 0.9, w.z, 0.6);
+      }
+      // On fire: it goes up when the fire reaches the tank.
+      if (v.burnT > 0) {
+        v.burnT -= dt;
+        if (v.burnT <= 0) this.explode(v, false);
+      }
+    }
+    // Shot-up traffic smokes too.
+    for (const c of st.city.traffic) {
+      if (c.hp >= c.maxHp * 0.5 || !c.root.visible || Math.random() > dt * 4) continue;
+      const w = st.globalToWorld(c.x, c.z);
+      g.effects.soot(w.x, 1.0, w.z, c.hp < c.maxHp * 0.25 ? 1 : 0);
+    }
+  }
+
+  // ------------------------------------------------------------------ bullets and shells
+
+  /** The first car (traffic, police or parked) along a ray (global frame, unit direction). */
+  raycast(ox: number, oz: number, dx: number, dz: number, range: number): CarTarget | null {
+    const st = this.g.street;
+    let best: CarTarget | null = null;
+    const tr = st.city.raycastCars(ox, oz, dx, dz, range);
+    if (tr) best = { t: tr.t, traffic: tr.car };
+    const cr = st.police.raycastCruisers(ox, oz, dx, dz, best ? best.t : range);
+    if (cr && (!best || cr.t < best.t)) best = { t: cr.t, cruiser: cr.car };
+    for (const v of this.vehicles) {
+      if (v === this.driving) continue;
+      const t = rayBox(ox, oz, dx, dz, best ? best.t : range, v.x, v.z, v.yaw, v.width / 2, v.length / 2);
+      if (t !== null && (!best || t < best.t)) best = { t, v };
+    }
+    return best;
+  }
+
+  /** A bullet (gun damage `dmg`) hit this car. */
+  shoot(tg: CarTarget, dmg: number): void {
+    if (tg.traffic) this.hurtTraffic(tg.traffic, shotDamage(dmg), true);
+    else if (tg.cruiser) this.hurtCruiser(tg.cruiser, shotDamage(dmg), true);
+    else if (tg.v) this.damage(tg.v, shotDamage(dmg, tg.v.armor), true);
+  }
+
+  /** The tank's main gun: a shell flies down the barrel's line and explodes where it lands. */
+  private fireCannon(v: Vehicle): void {
+    const g = this.g;
+    const st = g.street;
+    v.cannonT = 2.6;
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    const mx = v.x + fx * (v.length / 2 + 1.8);
+    const mz = v.z + fz * (v.length / 2 + 1.8);
+    // Where it lands: the first building, car, person or the end of its range.
+    let t = 0;
+    const range = 140;
+    for (; t < range; t += 0.8) {
+      const w = st.globalToWorld(mx + fx * t, mz + fz * t);
+      if (!st.isOutdoors(w.x, w.z)) break;
+    }
+    const car = this.raycast(mx, mz, fx, fz, t);
+    if (car) t = Math.min(t, car.t);
+    for (const p of st.crowd.raycast(mx, mz, fx, fz, t)) t = Math.min(t, p.s);
+    for (const c of st.police.raycast(mx, mz, fx, fz, t)) t = Math.min(t, c.s);
+    for (const so of g.base.raycast(mx, mz, fx, fz, t)) t = Math.min(t, so.s);
+    const wm = st.globalToWorld(mx, mz);
+    g.effects.explosion(wm.x, 2.0, wm.z, 0.35);
+    audio.play('cannon');
+    g.cam.shake(0.22);
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd28a, toneMapped: false }));
+    shell.position.set(wm.x, 2.0, wm.z);
+    g.effects.group.add(shell);
+    this.shells.push({ x: mx, z: mz, tx: mx + fx * t, tz: mz + fz * t, t: 0, dur: Math.max(0.05, t / 180), mesh: shell });
+    v.speed -= 1.5;
+  }
+
+  private updateShells(dt: number): void {
+    const st = this.g.street;
+    for (let i = this.shells.length - 1; i >= 0; i--) {
+      const s = this.shells[i];
+      s.t += dt;
+      const u = Math.min(1, s.t / s.dur);
+      const w = st.globalToWorld(s.x + (s.tx - s.x) * u, s.z + (s.tz - s.z) * u);
+      s.mesh.position.set(w.x, 2.0 - u * 1.2, w.z);
+      if (u >= 1) {
+        s.mesh.removeFromParent();
+        s.mesh.geometry.dispose();
+        this.shells.splice(i, 1);
+        const e = st.globalToWorld(s.tx, s.tz);
+        this.g.effects.explosion(e.x, 0.8, e.z, 1.2);
+        audio.playAt('explosion', e.x, e.z, 1.4);
+        this.g.cam.shake(0.12);
+        this.blast(s.tx, s.tz, 8, 260, true);
+      }
+    }
   }
 
   /** After customizing: swap the model of that car if it's out on the street. */
@@ -503,7 +877,7 @@ export class Driving {
     m.root.position.copy(v.root.position);
     m.root.rotation.copy(v.root.rotation);
     parent?.add(m.root);
-    Object.assign(v, { root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat, length: m.length, color: mods.color, mods, flames: m.flames, brakeLights: m.brakeLights });
+    Object.assign(v, { root: m.root, wheels: m.wheels, front: m.front, open: m.open, seat: m.seat, length: m.length, color: mods.color, mods, flames: m.flames, brakeLights: m.brakeLights, turret: m.turret, muzzle: m.muzzle });
   }
 
   /** Buy a car at Velocity Motors (cash from your casino). */
@@ -672,6 +1046,12 @@ export class Driving {
       h.parked.push(entry);
     }
     const stolen = !v.def;
+    // A vehicle taken from the military base is yours once it's in your garage.
+    const taken = !!v.def && !g.garage.owned.includes(v.def.id);
+    if (taken && v.def) {
+      g.garage.owned.push(v.def.id);
+      g.garage.mods[v.def.id] = defaultMods(v.def, v.color);
+    }
     this.exit();
     this.remove(v);
     // Step back out onto the driveway.
@@ -686,7 +1066,7 @@ export class Driving {
     }
     this.nitro = 1;
     audio.play('doorbell', { pitch: 0.7 });
-    g.notify(stolen ? 'You hid the car in your garage. It’s yours now!' : `Your ${v.name} is parked in your garage, washed and the nitro topped up.`, 'good');
+    g.notify(stolen || taken ? `You hid the ${taken ? v.name : 'car'} in your garage. It’s yours now!` : `Your ${v.name} is parked in your garage, repaired, washed and the nitro topped up.`, 'good');
     g.stats.carsParked = (g.stats.carsParked ?? 0) + 1;
     g.requestSave();
     return true;
@@ -734,7 +1114,7 @@ export class Driving {
       v = {
         uid: nextUid++, def: null, name: 'your car', color: p.color ?? 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
         x: at.x, z: at.z, yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: true, stolen: false, mods: null, flames: [], brakeLights: [],
-        kept: { kind: c.kind, color: c.color },
+        kept: { kind: c.kind, color: c.color }, hp: c.maxHp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
       };
       this.vehicles.push(v);
     }
@@ -769,11 +1149,12 @@ export class Driving {
     if (this.driving) this.exit();
     for (const v of this.vehicles) v.root.removeFromParent();
     this.vehicles = [];
+    this.g.base?.resetVehicles();
   }
 
   /** Every car on sale. */
   get catalog(): CarDef[] {
-    return CARS;
+    return DEALER_CARS;
   }
 }
 

@@ -42,6 +42,14 @@ export class CombatHud {
     this.lockHint.addEventListener('click', () => game.input.requestLock());
     this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp);
     this.wp.addEventListener('click', () => game.clearWaypoint());
+    // The tank's fire button (redrawn with the speedo, so listen on the speedo itself).
+    this.speedo.addEventListener('pointerdown', (e) => {
+      if ((e.target as HTMLElement).closest('.tank-fire')) {
+        e.preventDefault();
+        e.stopPropagation();
+        game.drive.fireRequest = true;
+      }
+    });
   }
 
   update(dt: number): void {
@@ -180,11 +188,13 @@ export class CombatHud {
     const nitro = car?.mods?.nitro ? Math.round(g.drive.nitro * 20) : -1;
     const dr = g.drive;
     const gearLabel = car ? (dr.gear === 0 ? 'R' : String(dr.gear)) : '';
-    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}|${nitro}|${gearLabel}|${dr.manual}|${Math.round(dr.rpm * 20)}` : '';
+    const hpPct = car ? Math.round((car.hp / car.maxHp) * 100) : 0;
+    const cannon = car?.def?.cannon ? Math.ceil(car.cannonT ?? 0) : -1;
+    const skey = car ? `${car.name}|${Math.round(Math.abs(car.speed) * 3.6)}|${nitro}|${gearLabel}|${dr.manual}|${Math.round(dr.rpm * 20)}|${hpPct}|${cannon}` : '';
     if (skey !== this.speedoKey) {
       this.speedoKey = skey;
       this.speedo.hidden = !car;
-      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/E' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i>${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
+      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/E' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i><em class="carhp${hpPct < 25 ? ' crit' : hpPct < 50 ? ' low' : ''}" title="Durability"><u style="width:${hpPct}%"></u></em><span>🛠 ${hpPct}%</span>${cannon >= 0 ? `<button class="tank-fire" type="button">${cannon > 0 ? `Reloading ${cannon}s` : '💥 FIRE · click / F'}</button>` : ''}${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
     }
     // Waypoint: what it is, how far, and which way (relative to where the camera looks).
     const wpt = playing ? g.waypoint : null;

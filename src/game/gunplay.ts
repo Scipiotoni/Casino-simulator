@@ -7,6 +7,7 @@ import { audio, type SfxName } from '../core/audio';
 import { softDotTexture } from '../render/textures';
 import type { Ped } from '../world/crowd';
 import { HEAT, type Officer } from '../world/police';
+import { shotDamage } from './driving';
 import { mat } from '../render/materials';
 
 interface Tracer {
@@ -45,7 +46,8 @@ interface ViewModel {
 type Hit =
   | { kind: 'wall' | 'ground' | 'air'; t: number }
   | { kind: 'target'; t: number; target: import('../world/cityView').Target }
-  | { kind: 'car'; t: number; car: import('../world/cityView').Car }
+  | { kind: 'car'; t: number; tg: import('./driving').CarTarget }
+  | { kind: 'soldier'; t: number; soldier: import('../world/militaryBase').Soldier; head: boolean }
   | { kind: 'ped'; t: number; ped: Ped; head: boolean }
   | { kind: 'cop'; t: number; cop: Officer; head: boolean }
   | { kind: 'player'; t: number; pid: string; name: string; head: boolean };
@@ -595,11 +597,22 @@ export class GunPlay {
         if (Math.hypot(dxy, dy) < r + (flat ? 0 : 0.05) && t < best.t) best = { kind: 'target', t, target: tg };
       }
       // Cars.
-      const car = city.raycastCars(og.x, og.z, hx, hz, best.t * hlen);
+      const car = g.drive.raycast(og.x, og.z, hx, hz, best.t * hlen);
       if (car) {
         const t = car.t / hlen;
         const y = yAt(t);
-        if (t < best.t && (flat || (y > 0 && y < 1.55))) best = { kind: 'car', t, car: car.car };
+        const top = car.v?.def?.kind === 'tank' || car.v?.def?.kind === 'apc' ? 2.6 : 1.55;
+        if (t < best.t && (flat || (y > 0 && y < top))) best = { kind: 'car', t, tg: car };
+      }
+      // Soldiers at the military base (tower guards stand up high).
+      for (const c of g.base.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
+        const t = c.s / hlen;
+        const y = yAt(t) - c.soldier.y;
+        const h = c.soldier.model.height;
+        if (t < best.t && (flat || (y > 0 && y < h + 0.08))) {
+          best = { kind: 'soldier', t, soldier: c.soldier, head: !flat && y > h - 0.42 };
+          break;
+        }
       }
       // People on the sidewalks.
       for (const c of st.crowd.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
@@ -642,11 +655,16 @@ export class GunPlay {
     const fx = g.effects;
     switch (best.kind) {
       case 'car': {
-        if (best.car.shaken <= 0 && this.alarmT <= 0) {
-          this.alarmT = 1.5;
-          audio.playAt('carAlarm', hit.x, hit.z, 0.8);
+        const tr = best.tg.traffic;
+        if (tr) {
+          if (tr.shaken <= 0 && this.alarmT <= 0) {
+            this.alarmT = 1.5;
+            audio.playAt('carAlarm', hit.x, hit.z, 0.8);
+          }
+          city.hitCar(tr);
         }
-        city.hitCar(best.car);
+        if (d.dmg > 0) g.drive.shoot(best.tg, d.dmg);
+        audio.playAt('metalHit', hit.x, hit.z, 0.7);
         g.stats.carsHit++;
         st.police.crime(HEAT.car, false);
         fx.sparkle(hit.x, Math.max(0.5, hit.y), hit.z, 8, 0xfff2c8, 0.4);
@@ -694,6 +712,17 @@ export class GunPlay {
         g.combat.onHitRemote?.(best.pid, Math.round(dmg));
         st.police.crime(HEAT.hitPerson);
         g.combat.landed(best.head, false);
+        break;
+      }
+      case 'soldier': {
+        const dmg = hitDamage(d, best.head);
+        if (flat) hit.y = best.soldier.y + 1.2;
+        if (dmg <= 0) break;
+        const ko = g.base.damage(best.soldier, dmg);
+        fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
+        if (ko) g.stats.knockouts++;
         break;
       }
       case 'cop': {
@@ -810,9 +839,20 @@ export class GunPlay {
       audio.play(tg.kind === 'bottle' ? 'glass' : tg.kind === 'balloon' ? 'balloon' : 'ping');
       landed++;
     }
+    for (const so of g.base.soldiers) {
+      if (so.ko > 0 || so.y > 1 || !inCone(so.x - og.x, so.z - og.z)) continue;
+      const at = hitAt(so.x, so.z, 1.2);
+      const ko = g.base.damage(so, d.dmg);
+      fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
+      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.combat.landed(false, ko);
+      if (ko) g.stats.knockouts++;
+      thump();
+    }
     for (const c of st.city.traffic) {
       if (!c.root.visible || !inCone(c.x - og.x, c.z - og.z)) continue;
       st.city.hitCar(c);
+      g.drive.hurtTraffic(c, shotDamage(d.dmg), true);
       g.stats.carsHit++;
       st.police.crime(HEAT.car, false);
       audio.play('carAlarm');

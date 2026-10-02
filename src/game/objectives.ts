@@ -78,6 +78,11 @@ export interface LifetimeStats {
   /** Cars taken out of traffic. */
   carsStolen: number;
   carsParked?: number;
+  /** Cash earned hitting the punching bag. */
+  earnedPunching?: number;
+  /** Cars wrecked (blown up) and vehicles driven out of the military base. */
+  carsWrecked?: number;
+  baseRaids?: number;
 }
 
 export function emptyStats(): LifetimeStats {

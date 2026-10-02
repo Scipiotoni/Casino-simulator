@@ -11,6 +11,7 @@ import { WALL_STYLES } from '../world/walls';
 import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
+import { openArcade } from './games/arcade';
 import { openTableGame } from './games';
 import { Minimap } from './minimap';
 import { cosmetic } from '../cosmetics/catalog';
@@ -224,6 +225,13 @@ export class Hud {
         level: { value: 1 },
       }) as PlacedItem);
       openTableGame({ game: g, modals: this.modals, item: real, practice: true });
+    });
+    g.events.on('arcade', (item) => {
+      if (this.modals.isOpen) return;
+      // Get up from the setup when you close the screen.
+      openArcade(this.modals, item.def.name, () => {
+        if (g.activity?.item === item) g.stopActivity();
+      });
     });
     g.events.on('dealer', () => {
       if (!this.modals.isOpen) openDealer(g, this.modals);

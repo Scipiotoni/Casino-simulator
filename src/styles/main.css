@@ -5277,3 +5277,68 @@ p.small {
   font-weight: 800;
   opacity: 0.7;
 }
+
+/* Gaming setup / arcade cabinet mini-games */
+.arcade {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+.arcade .seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+.arcade-screen {
+  width: min(320px, 100%);
+  aspect-ratio: 1;
+  border-radius: 10px;
+  border: 3px solid #26213a;
+  box-shadow: 0 0 24px rgba(47, 230, 255, 0.25);
+  touch-action: none;
+  image-rendering: pixelated;
+}
+.arcade-score {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Car durability and the tank's fire button */
+.speedo .carhp {
+  display: block;
+  width: 90px;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.speedo .carhp u {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #39ff88, #b6ff5a);
+  transition: width 0.2s;
+}
+.speedo .carhp.low u {
+  background: linear-gradient(90deg, #ff8a1f, #ffc53d);
+}
+.speedo .carhp.crit u {
+  background: linear-gradient(90deg, #ff2a2a, #ff8a1f);
+  animation: carhp-blink 0.5s steps(2) infinite;
+}
+@keyframes carhp-blink {
+  50% { opacity: 0.35; }
+}
+.speedo .tank-fire {
+  pointer-events: auto;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: #c8102e;
+  color: #fff;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+}

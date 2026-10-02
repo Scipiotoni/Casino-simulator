@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CharacterModel } from '../entities/characterModel';
 import { defaultAppearance, SKIN_TONES, type Appearance } from '../entities/appearance';
-import { Car } from './cityView';
+import { Car, rayBox } from './cityView';
 import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, cityX, openGround, streetZ } from './city';
 import { buildGun } from '../items/models/guns';
 import { gunDef } from '../game/guns';
@@ -11,7 +11,7 @@ import { softDotTexture } from '../render/textures';
 /** How many officers come for you at each wanted level (0–5 stars). */
 const OFFICERS = [0, 2, 3, 5, 6, 8];
 /** Heat added by each crime (stars = whole heat). */
-export const HEAT = { hitPerson: 0.5, knockout: 1, hitCop: 0.6, koCop: 1.5, car: 0.15 };
+export const HEAT = { hitPerson: 0.5, knockout: 1, hitCop: 0.6, koCop: 1.5, car: 0.15, wreck: 1.2, copCar: 2.2, base: 3.2 };
 const MAX_HEAT = 5.99;
 
 export interface Officer {
@@ -87,7 +87,7 @@ export interface PoliceView {
   /** You're behind the wheel (cruisers give chase), or null on foot. */
   car?: PoliceCarView | null;
   /** A cruiser rammed your car: shove it by (dx, dz) and scale its speed. */
-  onRam?: (dx: number, dz: number, speedMul: number) => void;
+  onRam?: (dx: number, dz: number, speedMul: number, by: Car) => void;
 }
 
 function copLook(swat: boolean): Appearance {
@@ -385,7 +385,7 @@ export class Police {
       c.ramT = 1.2;
       const ax = (car.x - c.x) / Math.max(0.1, dist);
       const az = (car.z - c.z) / Math.max(0.1, dist);
-      v.onRam?.(ax * 0.9, az * 0.9, 0.55);
+      v.onRam?.(ax * 0.9, az * 0.9, 0.55, c.car);
       c.speed *= 0.4;
       const w = v.toWorld(c.x, c.z);
       audio.playAt('thud', w.x, w.z, 0.9);
@@ -417,6 +417,32 @@ export class Police {
       }
       this.addOfficer(ox, oz, stars >= 4 && k === 0);
     }
+  }
+
+  /** The first police cruiser along a ray (global frame, unit direction). */
+  raycastCruisers(ox: number, oz: number, dx: number, dz: number, range: number): { car: Car; t: number } | null {
+    let best: { car: Car; t: number } | null = null;
+    for (const c of this.cruisers) {
+      const t = rayBox(ox, oz, dx, dz, range, c.x, c.z, c.car.root.rotation.y, 1, c.car.length / 2);
+      if (t !== null && (!best || t < best.t)) best = { car: c.car, t };
+    }
+    return best;
+  }
+
+  /** Cruisers near a point (global frame), for blasts. */
+  cruisersNear(x: number, z: number, r: number): Car[] {
+    return this.cruisers.filter((c) => Math.hypot(c.x - x, c.z - z) < r).map((c) => c.car);
+  }
+
+  /** A cruiser was destroyed: it's out of the chase (the wreck is handed to the caller). */
+  dropCruiser(car: Car): boolean {
+    const i = this.cruisers.findIndex((c) => c.car === car);
+    if (i < 0) return false;
+    const c = this.cruisers[i];
+    c.bar.visible = false;
+    this.cruisers.splice(i, 1);
+    this.spawnT = Math.max(this.spawnT, 6);
+    return true;
   }
 
   /** Officers standing in a bullet's way (global frame, unit direction), nearest first. */

@@ -5,8 +5,8 @@ import type { SfxName } from '../core/audio';
  * Things you can do with what's in your buildings: sit on sofas, nap in bed, hit the
  * punching bag, drum, play the piano, cook, practise on the home slot machine with pretend
  * chips… Each entry says where you go (on it, lying on it, at its edge or in front of it),
- * how you stand, and what Space does while you're at it. Purely for fun: nothing here
- * touches real money.
+ * how you stand, and what Space does while you're at it. Mostly for fun: only the
+ * punching bag pays (a little for every solid punch, more for a combo).
  */
 export type Spot = 'sit' | 'lie' | 'edge' | 'front' | 'on';
 
@@ -25,8 +25,8 @@ export interface Activity {
   lines?: string[];
   /** Over by itself after this many seconds (one-off things like grabbing a snack). */
   once?: number;
-  /** Opens a mini-game instead. */
-  game?: 'slots';
+  /** Opens a mini-game: the home slot machine instead of the activity, the arcade alongside it. */
+  game?: 'slots' | 'arcade';
 }
 
 export type Effect = 'punch' | 'sparkle' | 'smoke' | 'confetti' | 'bubbles' | 'flash' | 'notes' | 'hearts';
@@ -44,7 +44,7 @@ export const ACTIVITIES: Record<string, Activity> = {
   gazebo: SIT('Sit in the gazebo', 0.45, { lines: ['Peaceful.'] }),
   desk: { label: 'Work at the desk', spot: 'edge', pose: 'sitPlay', seatY: 0.45, ambient: { sfx: 'tick', every: 0.18 }, action: { label: 'Check the books', sfx: 'coin', lines: ['Numbers look good.', 'Expand again?', 'More slots. Definitely more slots.'] } },
   homebar: { label: 'Sit at the bar', spot: 'edge', pose: 'sit', seatY: 0.6, action: { label: 'Have a drink', sfx: 'drink', pose: 'drink', counter: 'drinks', lines: ['Cheers!', 'Shaken, not stirred.', 'One more.'] } },
-  gamingrig: { label: 'Play video games', spot: 'edge', pose: 'sitPlay', seatY: 0.5, ambient: { sfx: 'blip', every: 0.35 }, action: { label: 'Clutch play!', sfx: 'win', effect: 'confetti', counter: 'wins', lines: ['GG!', 'Victory royale!', 'Headshot!'] } },
+  gamingrig: { label: 'Play video games', spot: 'edge', pose: 'sitPlay', seatY: 0.5, game: 'arcade', ambient: { sfx: 'blip', every: 0.35 }, action: { label: 'Clutch play!', sfx: 'win', effect: 'confetti', counter: 'wins', lines: ['GG!', 'Victory royale!', 'Headshot!'] } },
   homecinema: { label: 'Watch a movie', spot: 'front', pose: 'sit', seatY: 0.0, lines: ['🍿', 'No spoilers!'], action: { label: 'Eat popcorn', sfx: 'pop', lines: ['🍿', 'Plot twist!', 'Best movie ever.'] } },
   tvwall: { label: 'Watch TV', spot: 'front', pose: 'sit', seatY: 0.0, lines: ['📺'], action: { label: 'Change channel', sfx: 'blip', lines: ['News…', 'Cooking show!', 'Casino ads. Mine!', 'Cartoons.'] } },
   // Lie down
@@ -53,7 +53,7 @@ export const ACTIVITIES: Record<string, Activity> = {
   bathtub: { label: 'Take a bubble bath', spot: 'lie', pose: 'sleep', seatY: 0.25, lines: ['🛁', 'Bubbles!'], action: { label: 'Splash', sfx: 'splash', effect: 'bubbles' } },
   hottubhome: { label: 'Get in the hot tub', spot: 'sit', pose: 'sit', seatY: 0.05, lines: ['Ahhh, warm.'], action: { label: 'Turn on the jets', sfx: 'splash', effect: 'bubbles' } },
   // Workouts
-  punchbag: { label: 'Hit the punching bag', spot: 'front', pose: 'box', action: { label: 'Punch!', sfx: 'thud', effect: 'punch', counter: 'punches' } },
+  punchbag: { label: 'Hit the punching bag (earns cash)', spot: 'front', pose: 'box', action: { label: 'Punch!', sfx: 'thud', effect: 'punch', counter: 'punches' } },
   treadmill: { label: 'Run on the treadmill', spot: 'on', pose: 'run', ambient: { sfx: 'tick', every: 0.32 }, lines: ['Cardio!', 'One more mile.'] },
   // Music
   drumkit: { label: 'Play the drums', spot: 'front', pose: 'drum', ambient: { sfx: 'drumhit', every: 0.22 }, action: { label: 'Crash cymbal!', sfx: 'cymbal', effect: 'notes' } },
@@ -63,7 +63,7 @@ export const ACTIVITIES: Record<string, Activity> = {
   jukebox: { label: 'Use the jukebox', spot: 'front', pose: 'idle', action: { label: 'Next song', sfx: 'win', effect: 'notes', lines: ['🎶', 'Classic!', 'My jam!'] } },
   // Games
   slothome: { label: 'Play (practice chips, no real money)', spot: 'front', pose: 'standPlay', game: 'slots' },
-  arcade: { label: 'Play the arcade game', spot: 'front', pose: 'standPlay', ambient: { sfx: 'blip', every: 0.25 }, action: { label: 'Mash the buttons', sfx: 'blip', counter: 'points' } },
+  arcade: { label: 'Play the arcade game', spot: 'front', pose: 'standPlay', game: 'arcade', ambient: { sfx: 'blip', every: 0.25 }, action: { label: 'Mash the buttons', sfx: 'blip', counter: 'points' } },
   pinball: { label: 'Play pinball', spot: 'front', pose: 'standPlay', ambient: { sfx: 'clack', every: 0.6 }, action: { label: 'Flippers!', sfx: 'ping', counter: 'points' } },
   pooltable: { label: 'Play pool', spot: 'front', pose: 'standPlay', action: { label: 'Take a shot', sfx: 'clack', counter: 'balls potted', lines: ['Corner pocket.', 'Nice shot!', 'Scratch!'] } },
   pingpong: { label: 'Play ping pong', spot: 'front', pose: 'standPlay', ambient: { sfx: 'ping', every: 0.55 }, action: { label: 'Smash!', sfx: 'clack', counter: 'points' } },
@@ -100,4 +100,14 @@ export const PRACTICE_LABEL = 'Practice play (pretend chips, no real money)';
 
 export function activityFor(kit: string | undefined): Activity | null {
   return kit ? ACTIVITIES[kit] ?? null : null;
+}
+
+/**
+ * Cash for a punch on the bag: a base that grows with your level, times a combo for punches
+ * thrown in quick succession (up to ×3). Mashing faster than a real boxer pays nothing.
+ */
+export function punchPay(level: number, combo: number, sinceLast: number): number {
+  if (sinceLast < 0.22) return 0;
+  const base = 10 + Math.max(1, level) * 3;
+  return Math.round(base * Math.min(3, 1 + Math.max(0, combo - 1) * 0.1));
 }

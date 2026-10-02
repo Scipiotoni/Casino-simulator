@@ -114,6 +114,11 @@ export class Effects {
   private confettiPool: Pool;
   private sparklePool: Pool;
   private smokePool: Pool;
+  /** Fireballs and flames (additive, they grow and fade). */
+  private firePool: Pool;
+  /** Thick black smoke from wrecks and explosions. */
+  private sootPool: Pool;
+  private blasts: { mesh: THREE.Mesh; t: number; size: number }[] = [];
   private coinMesh: THREE.InstancedMesh;
   private coins: FlyingCoin[] = [];
   private m4 = new THREE.Matrix4();
@@ -140,7 +145,12 @@ export class Effects {
     this.coinMesh = new THREE.InstancedMesh(coinGeo, coinMat, 160);
     this.coinMesh.frustumCulled = false;
     this.coinMesh.count = 0;
-    this.group.add(this.confettiPool.mesh, this.sparklePool.mesh, this.smokePool.mesh, this.coinMesh);
+    const fireMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+    this.firePool = new Pool(new THREE.IcosahedronGeometry(0.3, 1), fireMat, 260, -10);
+    const sootMat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.62, roughness: 1, depthWrite: false });
+    this.sootPool = new Pool(new THREE.IcosahedronGeometry(0.35, 1), sootMat, 220, -10);
+    this.group.add(this.confettiPool.mesh, this.sparklePool.mesh, this.smokePool.mesh, this.firePool.mesh, this.sootPool.mesh, this.coinMesh);
+    this.firePool.mesh.renderOrder = 6;
     this.sparklePool.mesh.renderOrder = 5;
   }
 
@@ -195,6 +205,82 @@ export class Effects {
     }
   }
 
+  /** A car (or a tank shell) blowing up: fireball, flash, sparks and a column of black smoke. */
+  explosion(x: number, y: number, z: number, power = 1): void {
+    if (this.muted) return;
+    const n = Math.round((this.reducedMotion ? 14 : 40) * power);
+    for (let i = 0; i < n; i++) {
+      this.firePool.spawn((p) => {
+        p.p.set(x + (Math.random() - 0.5) * 0.8, y + Math.random() * 0.5, z + (Math.random() - 0.5) * 0.8);
+        const a = Math.random() * Math.PI * 2;
+        const sp = (1.5 + Math.random() * 5) * power;
+        p.v.set(Math.cos(a) * sp, (1.5 + Math.random() * 4) * power, Math.sin(a) * sp);
+        p.max = 0.45 + Math.random() * 0.55;
+        p.size = (0.9 + Math.random() * 1.4) * power;
+        p.grow = 1.6;
+        p.drag = 3.2;
+        p.color.setHex(Math.random() < 0.35 ? 0xffe08a : Math.random() < 0.6 ? 0xff8a1f : 0xff3a10).multiplyScalar(1.8);
+      });
+    }
+    for (let i = 0; i < Math.round(18 * power); i++) {
+      this.sootPool.spawn((p) => {
+        p.p.set(x + (Math.random() - 0.5) * 1.2, y + 0.3 + Math.random() * 0.8, z + (Math.random() - 0.5) * 1.2);
+        p.v.set((Math.random() - 0.5) * 2, 1.2 + Math.random() * 2.4, (Math.random() - 0.5) * 2);
+        p.max = 2.4 + Math.random() * 2;
+        p.size = (1.2 + Math.random()) * power;
+        p.grow = 2.4;
+        p.drag = 0.9;
+        p.color.setHex(Math.random() < 0.5 ? 0x231f22 : 0x3a3438);
+      });
+    }
+    // Hot debris flying out.
+    for (let i = 0; i < Math.round(24 * power); i++) {
+      this.sparklePool.spawn((p) => {
+        p.p.set(x, y + 0.4, z);
+        const a = Math.random() * Math.PI * 2;
+        const sp = 4 + Math.random() * 8;
+        p.v.set(Math.cos(a) * sp, 3 + Math.random() * 6, Math.sin(a) * sp);
+        p.gravity = 12;
+        p.max = 0.8 + Math.random() * 0.8;
+        p.size = 0.8 + Math.random();
+        p.color.setHex(0xffc060).multiplyScalar(2.4);
+      });
+    }
+    // The flash: a bright ball that swells and fades in a moment.
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffd28a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+    mesh.position.set(x, y + 0.6, z);
+    this.group.add(mesh);
+    this.blasts.push({ mesh, t: 0, size: 3.2 * power });
+  }
+
+  /** Flames licking up from something burning (call every frame or so). */
+  fire(x: number, y: number, z: number, size = 1): void {
+    if (this.muted) return;
+    this.firePool.spawn((p) => {
+      p.p.set(x + (Math.random() - 0.5) * 0.7 * size, y, z + (Math.random() - 0.5) * 0.7 * size);
+      p.v.set((Math.random() - 0.5) * 0.4, 1.4 + Math.random() * 1.4, (Math.random() - 0.5) * 0.4);
+      p.max = 0.35 + Math.random() * 0.35;
+      p.size = (0.5 + Math.random() * 0.6) * size;
+      p.grow = -0.6;
+      p.drag = 0.5;
+      p.color.setHex(Math.random() < 0.4 ? 0xffd060 : 0xff6a1a).multiplyScalar(1.6);
+    });
+  }
+
+  /** Dark smoke rising from a damaged engine or a wreck. */
+  soot(x: number, y: number, z: number, dark = 1): void {
+    if (this.muted) return;
+    this.sootPool.spawn((p) => {
+      p.p.set(x + (Math.random() - 0.5) * 0.4, y, z + (Math.random() - 0.5) * 0.4);
+      p.v.set((Math.random() - 0.5) * 0.4, 1 + Math.random() * 0.8, (Math.random() - 0.5) * 0.4);
+      p.max = 1.8 + Math.random() * 1.4;
+      p.size = 0.5 + Math.random() * 0.5;
+      p.grow = 2.2;
+      p.drag = 0.3;
+      p.color.setHex(dark > 0.5 ? 0x2a2629 : 0x8a858c);
+    });
+  }
+
   dust(x: number, z: number, radius = 0.8): void {
     if (this.muted) return;
     for (let i = 0; i < 10; i++) {
@@ -230,6 +316,22 @@ export class Effects {
     this.confettiPool.update(dt);
     this.sparklePool.update(dt);
     this.smokePool.update(dt);
+    this.firePool.update(dt);
+    this.sootPool.update(dt);
+    for (let i = this.blasts.length - 1; i >= 0; i--) {
+      const b = this.blasts[i];
+      b.t += dt;
+      const u = b.t / 0.35;
+      if (u >= 1) {
+        b.mesh.removeFromParent();
+        b.mesh.geometry.dispose();
+        (b.mesh.material as THREE.Material).dispose();
+        this.blasts.splice(i, 1);
+        continue;
+      }
+      b.mesh.scale.setScalar(b.size * (0.3 + u * 0.9));
+      (b.mesh.material as THREE.MeshBasicMaterial).opacity = 0.85 * (1 - u);
+    }
     let k = 0;
     for (let i = this.coins.length - 1; i >= 0; i--) {
       const c = this.coins[i];

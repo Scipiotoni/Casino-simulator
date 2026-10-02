@@ -3,7 +3,7 @@ import type { Modals } from './modals';
 import { h, clear } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
-import { CARS, tunedSpecs } from '../world/vehicles';
+import { CARS, DEALER_CARS, tunedSpecs } from '../world/vehicles';
 import { carThumb } from './preview';
 import { modsOf } from '../game/driving';
 import { modsSummary, openCustomize } from './carGarage';
@@ -21,9 +21,9 @@ export function openDealer(game: Game, modals: Modals, mine = false): void {
     clear(body);
     body.appendChild(h('p', { class: 'muted small', text: mine
       ? 'Your garage. Bring any car to the curb next to you (out on the street), then walk up and press Space. Velocity Motors is on Downtown Boulevard (🚗 on the map).'
-      : 'Paid from your casino cash. Bought cars live in your garage: call one to the curb from here or from Menu → My cars. You can also steal any car from the traffic… but the police will come.' }));
+      : 'Paid from your casino cash. Bought cars live in your garage: call one to the curb from here or from Menu → My cars. You can also steal any car from the traffic… or raid the military base out in the desert for armour nobody sells.' }));
     const grid = h('div', { class: 'car-grid' });
-    for (const d of CARS) {
+    for (const d of mine ? CARS : DEALER_CARS) {
       const owned = g.garage.owned.includes(d.id);
       if (mine && !owned) continue;
       const locked = !owned && g.homeLevel < d.unlock;

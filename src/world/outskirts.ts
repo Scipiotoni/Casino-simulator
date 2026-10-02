@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { mat } from '../render/materials';
 import { asphaltTexture, canvasTexture, drawNeonText, lotTexture, makeCanvas, roundRect, seeded } from '../render/textures';
 import { ROAD_HALF, STREET_ROWS, WILDS, avenueMid, blocksFor, cityX, cityZ, setWildsObstacles, streetZ } from './city';
+import { inBaseArea } from './militaryBase';
 
 /**
  * Everything around the city, in the global frame: the desert you can walk and drive out
@@ -72,6 +73,8 @@ export class Outskirts {
   private beacon: THREE.Mesh | null = null;
   private signMats: THREE.MeshStandardMaterial[] = [];
   private t = 0;
+  /** More solid things out in the desert (the military base's fence and buildings). */
+  extraBlock: ((gx: number, gz: number) => boolean) | null = null;
 
   /** Ground height (global) of the land around the city: flat where you can go, mountains beyond. */
   height(gx: number, gz: number): number {
@@ -152,7 +155,7 @@ export class Outskirts {
     this.buildRoads();
     this.buildScatter();
     this.buildLandmarks();
-    setWildsObstacles((x, z) => this.blocked(x, z));
+    setWildsObstacles((x, z) => this.blocked(x, z) || (this.extraBlock?.(x, z) ?? false));
   }
 
   private buildGround(): void {
@@ -265,7 +268,7 @@ export class Outskirts {
         const dx = Math.max(this.x0 - x, 0, x - this.x1);
         const dz = Math.max(this.z0 - z, 0, z - this.z1);
         const d = Math.hypot(dx, dz);
-        if (d < minD || d > maxD || this.onRoad(x, z)) continue;
+        if (d < minD || d > maxD || this.onRoad(x, z) || inBaseArea(x, z, this.cols)) continue;
         return { x, z, d };
       }
       return null;

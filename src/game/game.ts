@@ -12,7 +12,10 @@ import {
 import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
 import { Street, type StreetLot } from '../world/street';
-import { MAX_DEPTH_STEPS } from '../world/city';
+import { MAX_DEPTH_STEPS, openGround } from '../world/city';
+import { MilitaryBase } from '../world/militaryBase';
+import { buildCar, carDef } from '../world/vehicles';
+import { HEAT as POLICE_HEAT } from '../world/police';
 import { Sky } from '../world/sky';
 import { CharacterModel } from '../entities/characterModel';
 import { WaypointBeacon } from '../world/waypoint';
@@ -53,8 +56,8 @@ import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
 import { SLOTS, autoSlot } from './guns';
 import { Combat } from './combat';
-import { Driving, type GarageState, emptyGarage, sanitizeGarage } from './driving';
-import { type Activity, activityFor, PRACTICE_LABEL } from './activities';
+import { Driving, type GarageState, emptyGarage, sanitizeGarage, shotDamage } from './driving';
+import { type Activity, activityFor, PRACTICE_LABEL, punchPay } from './activities';
 
 export type { SaveData } from './save';
 
@@ -123,6 +126,8 @@ export interface GameEvents {
   chips: void;
   /** Practice play (pretend chips) at one of your own games, or the home slot machine. */
   practice: PlacedItem;
+  /** Sat down at the gaming setup or the arcade cabinet: open its little games. */
+  arcade: PlacedItem;
   /** Walked up to the wardrobe: open the character creator. */
   wardrobe: void;
   /** Camera flash (photo booth). */
@@ -354,6 +359,8 @@ export class Game implements World, ItemHost {
   readonly combat: Combat;
   /** Cars: driving, stealing, your garage. */
   readonly drive: Driving;
+  /** Fort Mojave, the military base out in the western desert. */
+  readonly base: MilitaryBase;
   garage: GarageState = emptyGarage();
 
   constructor(container: HTMLElement, settings: Settings) {
@@ -375,6 +382,9 @@ export class Game implements World, ItemHost {
     this.combat = new Combat(this);
     this.drive = new Driving(this);
     this.street.city.group.add(this.drive.group, this.beacon.group);
+    this.base = this.makeBase();
+    this.street.city.group.add(this.base.group);
+    this.street.outskirts.extraBlock = (x, z) => this.base.blocked(x, z);
     CharacterModel.crude = settings.quality === 'ult';
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : settings.quality === 'low' ? 14 : 8;
     scene.add(this.gunplay.group);
@@ -387,6 +397,48 @@ export class Game implements World, ItemHost {
     this.effects.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     this.refreshStreet();
     this.resetWorld();
+  }
+
+  /** The military base, wired to the player, the police, cars and effects. */
+  private makeBase(): MilitaryBase {
+    const st = () => this.street;
+    return new MilitaryBase({
+      player: () => {
+        const car = this.drive.driving;
+        const pg = car ? { x: car.x, z: car.z } : st().worldToGlobal(this.player.x, this.player.z);
+        return {
+          x: pg.x, z: pg.z, exposed: this.combat.exposed && this.combat.ko <= 0, height: this.player.model.height,
+          car: car ? { x: car.x, z: car.z, uid: car.uid, armor: car.armor } : null,
+        };
+      },
+      lineOfSight: (ax, az, bx, bz) => st().police.lineOfSight(ax, az, bx, bz),
+      walkable: (x, z) => openGround(x, z, st().cols),
+      toWorld: (x, z) => st().globalToWorld(x, z),
+      shot: (hit, dmg, fx, fz) => {
+        const w = st().globalToWorld(fx, fz);
+        const car = this.drive.driving;
+        if (!hit) audio.play('whiz', { volume: 0.6 });
+        else if (car) {
+          this.drive.damage(car, shotDamage(22, car.armor), false);
+          audio.play('metalHit', { volume: 0.5 });
+        } else this.combat.damage(dmg, 'world', 'the Fort Mojave soldiers', w.x, w.z);
+      },
+      tracer: (ax, ay, az, bx, by, bz) => {
+        const a = st().globalToWorld(ax, az);
+        const b = st().globalToWorld(bx, bz);
+        this.gunplay.enemyTracer(new THREE.Vector3(a.x, ay, a.z), new THREE.Vector3(b.x, by, b.z));
+      },
+      spawnVehicle: (id, x, z, yaw) => {
+        const def = carDef(id);
+        if (!def || this.drive.vehicles.some((v) => Math.hypot(v.x - x, v.z - z) < 4)) return null;
+        const v = this.drive.addVehicle(def, buildCar(def), def.colors[0], x, z, yaw, false, true);
+        v.base = true;
+        return v.uid;
+      },
+      vehicleParked: (uid) => this.drive.vehicles.some((v) => v.uid === uid && v.base && v.wreck < 0),
+      alarm: (first) => st().police.crime(first ? POLICE_HEAT.base : 0.04),
+      notify: (text, kind) => this.notify(text, kind),
+    });
   }
 
   // ------------------------------------------------------------------ floors
@@ -2741,7 +2793,7 @@ export class Game implements World, ItemHost {
         this.gunplay.enemyTracer(new THREE.Vector3(a.x, ay, a.z), new THREE.Vector3(b.x, by, b.z));
       },
       car: this.drive.driving ? { x: this.drive.driving.x, z: this.drive.driving.z, yaw: this.drive.driving.yaw, speed: this.drive.driving.speed } : null,
-      onRam: (dx, dz, mul) => this.drive.rammed(dx, dz, mul),
+      onRam: (dx, dz, mul, by) => this.drive.rammed(dx, dz, mul, by),
     }, true);
     if (pol.stars > (this.stats.maxWanted ?? 0)) this.stats.maxWanted = pol.stars;
     if (pol.stars !== this.lastStars) {
@@ -3083,7 +3135,7 @@ export class Game implements World, ItemHost {
         const a = activityFor((it.def.params?.kit as string | undefined) ?? it.def.id);
         const practice = !a && own && it.isGambling;
         if (!a && !practice) continue;
-        if (a?.game && !own) continue;
+        if (a?.game === 'slots' && !own) continue;
         const bb = it.bounds;
         const d = distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1);
         if (d >= bestUse) continue;
@@ -3148,8 +3200,10 @@ export class Game implements World, ItemHost {
       this.floaters.prompt(target ? target.anchor : null, target ? `<b>${this.input.isTouch ? '●' : 'Space'}</b> ${target.label}` : '');
     }
     const blocked = this.modalOpen;
-    const pressing = !blocked && (this.input.down('Space') || this.input.down('KeyF') || this.actionHeld);
-    const pressed = !blocked && (this.input.hit('Space') || this.input.hit('KeyF') || this.actionPressed);
+    // In a tank, F fires the main gun instead.
+    const fKey = !this.drive.driving?.def?.cannon;
+    const pressing = !blocked && (this.input.down('Space') || (fKey && this.input.down('KeyF')) || this.actionHeld);
+    const pressed = !blocked && (this.input.hit('Space') || (fKey && this.input.hit('KeyF')) || this.actionPressed);
     this.actionPressed = false;
     if (target) {
       if (target.hold) {
@@ -3242,11 +3296,11 @@ export class Game implements World, ItemHost {
   }
 
   /** What you're doing right now (sitting on the sofa, hitting the bag…). */
-  activity: { item: PlacedItem; act: Activity; t: number; amb: number; count: number; poseT: number; exit: { x: number; z: number }; swing: number; swingV: number } | null = null;
+  activity: { item: PlacedItem; act: Activity; t: number; amb: number; count: number; poseT: number; exit: { x: number; z: number }; swing: number; swingV: number; combo: number; lastHit: number; earned: number } | null = null;
 
   /** Go and do the thing this item is for. */
   startActivity(item: PlacedItem, act: Activity): void {
-    if (act.game) {
+    if (act.game === 'slots') {
       this.events.emit('practice', item);
       return;
     }
@@ -3290,10 +3344,11 @@ export class Game implements World, ItemHost {
     this.select(null);
     this.player.seat = { x, z, yaw: face, sit, height: act.seatY ?? (act.spot === 'lie' ? 0.5 : 0) };
     this.player.playEmote(act.pose, 999);
-    this.activity = { item, act, t: 0, amb: 0, count: 0, poseT: 0, exit: front, swing: 0, swingV: 0 };
+    this.activity = { item, act, t: 0, amb: 0, count: 0, poseT: 0, exit: front, swing: 0, swingV: 0, combo: 0, lastHit: -9, earned: 0 };
     if (act.lines?.length) this.floaters.bubble(() => this.player.model.root.position.clone().setY(this.player.model.height + 0.9), act.lines[Math.floor(Math.random() * act.lines.length)]);
     audio.play('pop', { volume: 0.5 });
     this.events.emit('activity', undefined);
+    if (act.game === 'arcade') this.events.emit('arcade', item);
   }
 
   /** Get up (or step off) and carry on. */
@@ -3339,6 +3394,18 @@ export class Game implements World, ItemHost {
         a.swingV -= 2.6 + Math.random();
         this.effects.sparkle(at.x, 1.2, at.z, 4, 0xffffff, 0.3);
         this.cam.shake(0.03);
+        {
+          // The bag pays: a little per punch, more for a quick combo.
+          const since = a.t - a.lastHit;
+          a.combo = since < 1.2 ? a.combo + 1 : 1;
+          const pay = punchPay(this.level, a.combo, since);
+          if (pay > 0) {
+            a.lastHit = a.t;
+            a.earned += pay;
+            this.addMoney(pay, 'reward', at.clone().setY(1.9));
+            this.stats.earnedPunching = (this.stats.earnedPunching ?? 0) + pay;
+          }
+        }
         break;
       case 'sparkle':
         this.effects.sparkle(at.x, at.y, at.z, 12, 0xffe08a, 0.6);
@@ -3367,7 +3434,7 @@ export class Game implements World, ItemHost {
     if (ac.lines?.length && Math.random() < 0.6) this.floaters.bubble(() => this.player.model.root.position.clone().setY(this.player.model.height + 0.9), ac.lines[Math.floor(Math.random() * ac.lines.length)]);
     if (ac.counter === 'punches' && a.count % 25 === 0) {
       audio.play('objective');
-      this.notify(`${a.count} punches! You're a machine.`, 'good');
+      this.notify(`${a.count} punches! You're a machine. ${formatMoney(a.earned)} earned on the bag so far.`, 'good');
     }
     if (ac.counter === 'drinks') this.player.model.tipsy = Math.min(1, this.player.model.tipsy + 0.2);
   }
@@ -3800,7 +3867,10 @@ export class Game implements World, ItemHost {
     }
 
     // Driving (before the player, who sits in the car)
-    if (playing && sim > 0) this.drive.update(sim);
+    if (playing && sim > 0) {
+      this.drive.update(sim);
+      this.base.update(sim, this.street.cols, !this.inside);
+    } else audio.engine(null);
     // Waypoint: the beacon out in the world, cleared once you get there.
     {
       const wp = playing ? this.waypoint : null;

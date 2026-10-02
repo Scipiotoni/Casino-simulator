@@ -87,6 +87,12 @@ export const BAN_COOLDOWN_MS = 30 * 60 * 1000;
 export const BAN_CHOICES = [5, 15, 30, 60, 240];
 export const BAN_MAX_MIN = 24 * 60;
 
+/** What security charges to keep someone out for `minutes` (longer bans get a discount). */
+export function banPrice(minutes: number): number {
+  const m = Math.max(1, Math.min(BAN_MAX_MIN, minutes));
+  return Math.round(m * 500 * (m >= 60 ? 0.8 : 1));
+}
+
 const PID_KEY = 'jackpot-tycoon:pid';
 
 interface LotDoc {
@@ -613,17 +619,25 @@ export class Net {
    * Blacklist another player from your casino, hotel and house for a while. No reason
    * needed, no cooldown: pick a time, or blacklist them again to change it.
    */
-  ban(pid: string, name: string, minutes = BAN_MS / 60000): void {
+  ban(pid: string, name: string, minutes = BAN_MS / 60000): boolean {
     const now = Date.now();
     const net = this.game.net;
+    const price = banPrice(minutes);
+    if (this.game.money < price) {
+      audio.play('error');
+      this.game.notify(`Blacklisting ${name} for that long costs ${formatMoney(price)}. You don't have enough.`, 'bad');
+      return false;
+    }
+    this.game.spend(price, 'upkeep');
     net.bans[pid] = now + Math.max(1, Math.min(BAN_MAX_MIN, minutes)) * 60000;
     delete net.banCooldown[pid];
     audio.play('bust');
-    this.game.notify(`${name} is blacklisted from your casino and hotel for ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`}. Your security walks them out.`, 'good');
+    this.game.notify(`${name} is blacklisted from your casino and hotel for ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`} (${formatMoney(price)} to security). They're walked out.`, 'good');
     this.publishT = 0;
     this.presenceT = 0;
     this.lastPresence = '';
     this.game.requestSave();
+    return true;
   }
 
   /** Let a blacklisted player back in early. */
@@ -668,7 +682,8 @@ export class Net {
     }
     for (const m of BAN_CHOICES) {
       row.appendChild(h('button', {
-        class: 'btn small danger', text: m >= 60 ? `${m / 60} h` : `${m} min`, title: `Blacklist ${name} for ${m} minutes`,
+        class: 'btn small danger', text: `${m >= 60 ? `${m / 60} h` : `${m} min`} · ${formatMoney(banPrice(m))}`, title: `Blacklist ${name} for ${m} minutes (costs ${formatMoney(banPrice(m))})`,
+        disabled: g.money < banPrice(m),
         onClick: () => { this.ban(pid, name, m); onChange(); },
       }));
     }
@@ -680,7 +695,7 @@ export class Net {
     const body = h('div', { class: 'stack' });
     const render = () => {
       clear(body);
-      body.appendChild(h('p', { class: 'muted small', text: 'Blacklist anyone, for any reason (or none). They’re walked out of your casino, hotel and house and can’t come back in until the time runs out. Lift it whenever you like.' }));
+      body.appendChild(h('p', { class: 'muted small', text: 'Blacklist anyone, for any reason (or none). Your security charges for it: the longer the ban, the more it costs. They’re walked out of your casino, hotel and house and can’t come back in until the time runs out. Lifting it is free.' }));
       const list = this.knownPlayers();
       if (!list.length) {
         body.appendChild(h('p', { class: 'muted', text: this.online ? 'Nobody else is here right now.' : 'You’re offline: other players show up here when you’re connected.' }));
@@ -995,7 +1010,7 @@ export class Net {
     ));
     el.appendChild(h('div', { class: 'field-label', text: '🚫 Blacklist' }));
     el.appendChild(this.banControls(pid, name, () => g.select({ kind: 'remote', pid })));
-    el.appendChild(h('p', { class: 'muted small', text: 'No reason needed. They’re walked out of your casino, hotel and house and can’t come back until it runs out.' }));
+    el.appendChild(h('p', { class: 'muted small', text: 'No reason needed, but security charges by the minute. They’re walked out of your casino, hotel and house and can’t come back until it runs out.' }));
   }
 }
 

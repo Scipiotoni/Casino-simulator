@@ -858,7 +858,7 @@ export class Modals {
       ['Floors', 'Your lot has a width limit like every lot on the street, but you can build deeper and add as many floors as you can afford. The elevator links them.'],
       ['Yard', 'Decorations can also go in the two rows of sidewalk in front of your casino (build mode shows the grid). The red carpet stays clear.'],
       ['Door guards', 'Hire a Door Guard (Staff) to stand at the entrance and turn most cheaters away.'],
-      ['Blacklist', 'Click another player in your casino to blacklist them for 10 minutes (then a 30-minute cooldown).'],
+      ['Blacklist', 'Click another player (or open Menu → Players) and pay your security to keep them out of your casino, hotel and house for a while. Longer bans cost more.'],
       ['Camera', 'V switches between the top-down view and a third-person camera behind you (A/D turn, W/S walk).'],
     ];
     const body = h('div', { class: 'help' }, ...tips.map(([k, v]) => h('div', { class: 'help-row' }, h('b', { text: k }), h('span', { text: v }))));

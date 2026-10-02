@@ -5,6 +5,7 @@ import { CENTER_X, DEPTH_STEP, DOOR_TILES, FACADE_Z, ROAD_MID, SIDEWALK_Z0, STAR
 import type { StreetLot } from '../world/street';
 import { AVE_WALK, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, WILDS, avenueX, blocksFor, streetZ } from '../world/city';
 import { RING } from '../world/outskirts';
+import { BASE_HD, BASE_HW, baseSite } from '../world/militaryBase';
 
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 
@@ -339,6 +340,30 @@ export class Minimap {
     c.beginPath();
     c.arc(X((bd.x0 + bd.x1) / 2 - 60), Z(bd.z0 - RING - 120), 22 * s, 0, Math.PI * 2);
     c.fill();
+    // Fort Mojave, the military base out west, and its road to the ring.
+    {
+      const b = baseSite(st.cols);
+      c.fillStyle = '#34313d';
+      c.fillRect(X(b.roadX0), Z(b.cz - 5), (b.roadX1 - b.roadX0) * s, 10 * s);
+      c.fillStyle = '#4b5320';
+      c.fillRect(X(b.cx - BASE_HW), Z(b.cz - BASE_HD), BASE_HW * 2 * s, BASE_HD * 2 * s);
+      c.strokeStyle = g.base.alarm ? '#ff3a3a' : '#c8c2a8';
+      c.lineWidth = Math.max(1, s * 0.6);
+      c.strokeRect(X(b.cx - BASE_HW), Z(b.cz - BASE_HD), BASE_HW * 2 * s, BASE_HD * 2 * s);
+      c.fillStyle = '#e8e0c8';
+      c.font = `800 ${Math.max(9, Math.min(13, s * 3))}px system-ui, sans-serif`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      txt('⭐ FORT MOJAVE', X(b.cx), Z(b.cz));
+      if (g.base.alarm) {
+        c.fillStyle = '#ff6a3a';
+        for (const d of g.base.dots) {
+          c.beginPath();
+          c.arc(X(d.x), Z(d.z), Math.max(2, s * 0.5), 0, Math.PI * 2);
+          c.fill();
+        }
+      }
+    }
     c.fillStyle = '#1b1726';
     c.fillRect(X(bd.x0), Z(bd.z0), (bd.x1 - bd.x0) * s, (bd.z1 - bd.z0) * s);
     // Sidewalks, then roads, of every street and avenue.
