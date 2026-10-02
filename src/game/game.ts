@@ -4228,6 +4228,10 @@ export class Game implements World, ItemHost {
     this.renderer.setQuality(q);
     // Ult (AFK): crude block people, so hundreds of guests stay cheap to draw.
     CharacterModel.crude = q === 'ult';
+    // Everyone already here switches too (square heads only in Ult).
+    for (const c of this.customers) c.model.setCrude(CharacterModel.crude);
+    for (const w of this.workers) w.model.setCrude(CharacterModel.crude);
+    this.street.crowd.setCrude(CharacterModel.crude);
     this.street.crowd.target = q === 'high' ? 30 : q === 'medium' ? 22 : q === 'low' ? 14 : 8;
   }
 }

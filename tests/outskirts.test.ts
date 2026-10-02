@@ -131,3 +131,23 @@ describe('visitor ledgers never wipe your bank', () => {
     expect(MAX_BANK).toBe(20_000_000);
   });
 });
+
+import { vi } from 'vitest';
+import * as THREE from 'three';
+vi.mock('../src/render/textures', async (orig) => ({ ...(await orig<object>()), blobShadowTexture: () => new THREE.Texture() }));
+import { CharacterModel } from '../src/entities/characterModel';
+import { defaultAppearance } from '../src/entities/appearance';
+
+describe('square heads only in Ult', () => {
+  it('a crude NPC goes back to the full model (and back again)', () => {
+    const count = (m: CharacterModel) => { let n = 0; m.root.traverse((o) => { if ((o as { isMesh?: boolean }).isMesh && o.visible) n++; }); return n; };
+    const m = new CharacterModel(defaultAppearance(), { crude: true });
+    const crude = count(m);
+    expect(m.crudeBody).toBe(true);
+    m.setCrude(false);
+    expect(m.crudeBody).toBe(false);
+    expect(count(m)).toBeGreaterThan(crude);
+    m.setCrude(true);
+    expect(count(m)).toBe(crude);
+  });
+});

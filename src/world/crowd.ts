@@ -48,6 +48,11 @@ function walkZ(row: number, side: number): number {
 export class Crowd {
   readonly group = new THREE.Group();
   private peds: Ped[] = [];
+
+  /** Rebuild everyone on the sidewalks crude (Ult) or in full detail. */
+  setCrude(on: boolean): void {
+    for (const p of this.peds) p.model.setCrude(on);
+  }
   private spawnT = 0;
   /** How many people to keep around the camera. */
   target = 20;

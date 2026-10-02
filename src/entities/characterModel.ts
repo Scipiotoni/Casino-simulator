@@ -854,7 +854,7 @@ export class CharacterModel {
 
   constructor(appearance: Appearance, private opts: CharacterOpts = {}) {
     this.root.add(this.body);
-    if (!opts.override && !opts.crude) this.root.add(blobShadow());
+    if (!opts.override && !opts.crude) this.root.add((this.shadow = blobShadow()));
     this.body.add(this.hips, this.armL, this.armR, this.legL, this.legR, this.headPivot);
     this.hand.position.set(0, -0.33, 0.02);
     this.hand.rotation.x = Math.PI / 2;
@@ -929,6 +929,20 @@ export class CharacterModel {
     this.legR.position.set(d.torsoW * 0.25, d.hipY, 0);
     mk(crudeBox(0.12, r(d.legLen), 0.12, -r(d.legLen) / 2), a.bottomColor, this.legL);
     mk(crudeBox(0.12, r(d.legLen), 0.12, -r(d.legLen) / 2), a.bottomColor, this.legR);
+  }
+
+  private shadow: THREE.Mesh | null = null;
+
+  /** Switch between the full model and the crude block body (Ult graphics), in place. */
+  setCrude(on: boolean): void {
+    if (!!this.opts.crude === on || this.opts.override) return;
+    this.opts = { ...this.opts, crude: on };
+    if (on) {
+      this.shadow?.removeFromParent();
+      this.shadow = null;
+    } else if (!this.shadow) this.root.add((this.shadow = blobShadow()));
+    this.face.visible = !on;
+    this.setAppearance(this.appearance);
   }
 
   /** Built crude (Ult graphics). */
