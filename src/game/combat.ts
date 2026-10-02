@@ -132,6 +132,12 @@ export class Combat {
     const g = this.g;
     this.ko = KO_SECONDS;
     this.hp = 0;
+    // Knocked out at the wheel: the car stops and you're pulled out onto open ground beside it.
+    if (g.drive.driving) {
+      g.drive.driving.speed = 0;
+      g.drive.exit();
+    }
+    g.player.seat = null;
     if (fromPid === 'police') {
       // Busted: the police fine you and the chase is over.
       const police = g.street.police;
@@ -171,6 +177,8 @@ export class Combat {
     this.protect = PROTECT_SECONDS;
     this.hitFrom = null;
     this.g.player.emote = null;
+    // Up on your feet (never left sitting in mid-air).
+    if (!this.g.drive.driving && !this.g.activity) this.g.player.seat = null;
     this.g.events.emit('combat', undefined);
   }
 

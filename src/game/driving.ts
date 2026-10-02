@@ -275,7 +275,7 @@ export class Driving {
 
   enter(v: Vehicle): void {
     const g = this.g;
-    if (v.wreck >= 0) return;
+    if (v.wreck >= 0 || g.combat.ko > 0) return;
     g.stopActivity();
     g.standUp();
     if (g.build.active) g.build.cancel();
@@ -308,7 +308,7 @@ export class Driving {
     const fx = Math.sin(v.yaw);
     const fz = Math.cos(v.yaw);
     const spots = [[-fz, fx, 1.8], [fz, -fx, 1.8], [-fx, -fz, v.length / 2 + 1]] as const;
-    let at = { x: v.x - fz * 1.8, z: v.z + fx * 1.8 };
+    let at: { x: number; z: number } | null = null;
     for (const [dx, dz, d] of spots) {
       const x = v.x + dx * d;
       const z = v.z + dz * d;
@@ -317,6 +317,19 @@ export class Driving {
         break;
       }
     }
+    // Wedged in somewhere: the nearest open ground around the car, never inside a wall.
+    for (let r = 2.4; !at && r < 30; r += 0.8) {
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2;
+        const x = v.x + Math.cos(a) * r;
+        const z = v.z + Math.sin(a) * r;
+        if (openGround(x, z, this.cols)) {
+          at = { x, z };
+          break;
+        }
+      }
+    }
+    at ??= { x: v.x, z: v.z };
     const w = g.street.globalToWorld(at.x, at.z);
     g.player.x = w.x;
     g.player.z = w.z;

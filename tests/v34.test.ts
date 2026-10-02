@@ -184,3 +184,23 @@ describe('Fort Mojave', () => {
     expect(so.ko).toBeGreaterThan(0);
   });
 });
+
+import { engineLoop } from '../src/core/audio';
+
+describe('engine sound: real combustion pulses', () => {
+  it('builds a clean loop that repeats at the firing rate', () => {
+    const spec = { idle: 26, span: 190, res: 115, res2: 2.6, decay: 0.012, crack: 0.35, clatter: 0, jitter: 0.04, pattern: [1, 0.86, 0.97, 0.8], cut: 1, gain: 1 };
+    const sr = 22050;
+    const firing = 40;
+    const d = engineLoop(spec, firing, sr);
+    expect(d.every((x) => Number.isFinite(x))).toBe(true);
+    const peak = d.reduce((m, x) => Math.max(m, Math.abs(x)), 0);
+    expect(peak).toBeCloseTo(0.9, 2);
+    // Autocorrelation is strongest one firing apart (not at some buzzy oscillator pitch).
+    const period = Math.round(sr / firing);
+    const ac = (lag: number) => { let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[(i + lag) % d.length]; return s; };
+    const atPeriod = ac(period);
+    expect(atPeriod).toBeGreaterThan(ac(Math.round(period / 2)));
+    expect(atPeriod).toBeGreaterThan(0);
+  });
+});

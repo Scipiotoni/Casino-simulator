@@ -18,34 +18,112 @@ export type SfxName =
 /** How a car's engine sounds: pitch, rumble, rasp, whine. */
 export type EngineProfile = 'four' | 'v8' | 'sport' | 'diesel' | 'electric' | 'buggy' | 'tank';
 
-/** Engine voice settings per profile. */
-const ENGINE_VOICE: Record<EngineProfile, { idle: number; span: number; sub: number; rasp: number; whine: number; cut: number }> = {
-  four: { idle: 34, span: 130, sub: 0.35, rasp: 0.35, whine: 0, cut: 1 },
-  v8: { idle: 26, span: 95, sub: 0.75, rasp: 0.55, whine: 0, cut: 0.8 },
-  sport: { idle: 42, span: 190, sub: 0.3, rasp: 0.7, whine: 0.1, cut: 1.35 },
-  diesel: { idle: 22, span: 70, sub: 0.8, rasp: 0.25, whine: 0, cut: 0.6 },
-  electric: { idle: 60, span: 520, sub: 0, rasp: 0, whine: 1, cut: 1.2 },
-  buggy: { idle: 38, span: 150, sub: 0.25, rasp: 0.9, whine: 0, cut: 1.1 },
-  tank: { idle: 18, span: 48, sub: 1, rasp: 0.4, whine: 0.25, cut: 0.5 },
+/**
+ * How each engine is built. Firing rates are in pulses per second (idle, and how much more at
+ * the limiter): a four-cylinder fires twice per revolution, a V8 four times. `res` is the
+ * exhaust's main resonance (Hz), `pattern` the relative strength of successive firings (a
+ * cross-plane V8's lumpy burble, a flat-four's rattle), `jitter` how uneven the timing is,
+ * `crack` the sharp combustion snap and `clatter` the diesel knock.
+ */
+interface EngineSpec {
+  idle: number;
+  span: number;
+  res: number;
+  res2: number;
+  decay: number;
+  crack: number;
+  clatter: number;
+  jitter: number;
+  pattern: number[];
+  cut: number;
+  gain: number;
+}
+
+const ENGINE_SPEC: Record<Exclude<EngineProfile, 'electric'>, EngineSpec> = {
+  four: { idle: 26, span: 190, res: 115, res2: 2.6, decay: 0.012, crack: 0.35, clatter: 0, jitter: 0.04, pattern: [1, 0.86, 0.97, 0.8], cut: 1, gain: 1 },
+  v8: { idle: 36, span: 240, res: 72, res2: 2.3, decay: 0.016, crack: 0.25, clatter: 0, jitter: 0.07, pattern: [1, 0.55, 1.15, 0.7, 0.95, 0.5, 1.2, 0.65], cut: 0.8, gain: 1.15 },
+  sport: { idle: 44, span: 380, res: 160, res2: 2.9, decay: 0.008, crack: 0.55, clatter: 0, jitter: 0.03, pattern: [1, 0.9, 1, 0.92, 0.97, 0.88], cut: 1.35, gain: 0.95 },
+  diesel: { idle: 20, span: 100, res: 85, res2: 3.4, decay: 0.014, crack: 0.2, clatter: 0.7, jitter: 0.05, pattern: [1, 0.9, 1.05, 0.85], cut: 0.75, gain: 1.05 },
+  buggy: { idle: 28, span: 170, res: 130, res2: 3.1, decay: 0.01, crack: 0.6, clatter: 0.25, jitter: 0.1, pattern: [1, 0.7, 1.1, 0.6], cut: 1.1, gain: 1 },
+  tank: { idle: 16, span: 62, res: 48, res2: 2.2, decay: 0.022, crack: 0.25, clatter: 0.5, jitter: 0.06, pattern: [1, 0.8, 1.1, 0.75, 0.95, 0.85], cut: 0.55, gain: 1.3 },
 };
+
+/**
+ * One loop of an engine running steadily at `firing` pulses a second: every firing is a
+ * pressure pulse ringing through the exhaust (two damped resonances) with a burst of
+ * combustion noise, slightly uneven in time and strength like a real engine. The loop is
+ * seamless (tails wrap round), so it can be played back faster or slower with the revs.
+ */
+export function engineLoop(spec: EngineSpec, firing: number, sampleRate: number, seed = 1): Float32Array {
+  const pulses = spec.pattern.length * Math.max(4, Math.round((firing * 0.5) / spec.pattern.length));
+  const n = Math.max(64, Math.round((pulses / firing) * sampleRate));
+  const out = new Float32Array(n);
+  let r = seed * 9301 + 49297;
+  const rnd = () => {
+    r = (r * 233280 + 49297) % 2147483647;
+    return (r % 100000) / 100000;
+  };
+  const period = n / pulses;
+  const tail = Math.min(n, Math.round(sampleRate * spec.decay * 7));
+  const w1 = (2 * Math.PI * spec.res) / sampleRate;
+  const w2 = (2 * Math.PI * spec.res * spec.res2) / sampleRate;
+  const k1 = 1 / (spec.decay * sampleRate);
+  const k2 = 1 / (spec.decay * 0.45 * sampleRate);
+  const kc = 1 / (0.0016 * sampleRate);
+  const kk = 1 / (0.0005 * sampleRate);
+  let lp = 0;
+  for (let p = 0; p < pulses; p++) {
+    const amp = spec.pattern[p % spec.pattern.length] * (0.85 + rnd() * 0.3);
+    const start = Math.round(p * period + (rnd() - 0.5) * spec.jitter * period);
+    const phase = rnd() * 0.6;
+    for (let i = 0; i < tail; i++) {
+      const e1 = Math.exp(-i * k1);
+      // The pulse: a fast push, then the pipe rings.
+      let v = amp * (Math.sin(i * w1 + phase) * e1 + 0.35 * Math.sin(i * w2) * Math.exp(-i * k2));
+      if (i < 60) v *= i / 60;
+      // Combustion crack (smoothed noise) and diesel knock.
+      const nz = rnd() * 2 - 1;
+      lp += (nz - lp) * 0.35;
+      v += amp * spec.crack * lp * Math.exp(-i * kc);
+      if (spec.clatter) v += amp * spec.clatter * (rnd() * 2 - 1) * Math.exp(-i * kk) * 0.6;
+      out[(start + i + n) % n] += v;
+    }
+  }
+  // Remove any DC and normalise.
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += out[i];
+  mean /= n;
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    out[i] -= mean;
+    peak = Math.max(peak, Math.abs(out[i]));
+  }
+  if (peak > 0) for (let i = 0; i < n; i++) out[i] *= 0.9 / peak;
+  return out;
+}
 
 /** A running engine (one at a time: the car you drive). */
 interface EngineVoice {
   profile: EngineProfile;
   out: GainNode;
-  saw: OscillatorNode;
-  saw2: OscillatorNode;
-  sub: OscillatorNode;
-  whine: OscillatorNode;
-  whineGain: GainNode;
-  rasp: GainNode;
-  raspFilter: BiquadFilterNode;
+  /** Combustion engines: a low-rev and a high-rev loop, cross-faded with the revs. */
+  lo?: AudioBufferSourceNode;
+  hi?: AudioBufferSourceNode;
+  loGain?: GainNode;
+  hiGain?: GainNode;
+  loBase: number;
+  hiBase: number;
+  shaper?: WaveShaperNode;
   lp: BiquadFilterNode;
+  /** Electric motors: a pair of soft tones. */
+  whine?: OscillatorNode;
+  whine2?: OscillatorNode;
+  whineGain?: GainNode;
   noise: AudioBufferSourceNode;
+  intake: GainNode;
+  intakeFilter: BiquadFilterNode;
   skid: GainNode;
   skidFilter: BiquadFilterNode;
-  am: OscillatorNode;
-  amDepth: GainNode;
 }
 
 interface ToneOpts {
@@ -583,6 +661,22 @@ class AudioEngine {
 
   private eng: EngineVoice | null = null;
   private engStop = 0;
+  private engBuffers = new Map<string, AudioBuffer>();
+
+  private loopBuffer(profile: Exclude<EngineProfile, 'electric'>, which: 'lo' | 'hi'): { buf: AudioBuffer; base: number } {
+    const ctx = this.ctx!;
+    const spec = ENGINE_SPEC[profile];
+    const base = which === 'lo' ? spec.idle * 1.3 : spec.idle + spec.span * 0.55;
+    const key = `${profile}:${which}`;
+    let buf = this.engBuffers.get(key);
+    if (!buf) {
+      const data = engineLoop(spec, base, ctx.sampleRate, which === 'lo' ? 3 : 7);
+      buf = ctx.createBuffer(1, data.length, ctx.sampleRate);
+      buf.getChannelData(0).set(data);
+      this.engBuffers.set(key, buf);
+    }
+    return { buf, base };
+  }
 
   private startEngine(profile: EngineProfile): EngineVoice | null {
     const ctx = this.ctx;
@@ -590,61 +684,75 @@ class AudioEngine {
     const out = ctx.createGain();
     out.gain.value = 0;
     out.connect(this.sfxBus);
-    // Engine body: two detuned saws (the firing pulses) and a sub, through a low-pass.
+    // Everything goes through a low-pass that opens up with the throttle (muffled when you lift off).
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.Q.value = 3;
-    lp.frequency.value = 400;
-    // Each firing pulse throbs the level a little (amplitude modulation at the firing rate).
-    const body = ctx.createGain();
-    body.gain.value = 0.7;
-    const am = ctx.createOscillator();
-    am.type = 'sine';
-    const amDepth = ctx.createGain();
-    amDepth.gain.value = 0.3;
-    am.connect(amDepth);
-    amDepth.connect(body.gain);
-    lp.connect(body);
-    body.connect(out);
-    const saw = ctx.createOscillator();
-    saw.type = 'sawtooth';
-    const saw2 = ctx.createOscillator();
-    saw2.type = 'sawtooth';
-    saw2.detune.value = 9;
-    const sub = ctx.createOscillator();
-    sub.type = 'sine';
-    const v = ENGINE_VOICE[profile];
-    const g1 = ctx.createGain();
-    g1.gain.value = profile === 'electric' ? 0 : 0.5;
-    const g2 = ctx.createGain();
-    g2.gain.value = profile === 'electric' ? 0 : 0.32;
-    const gs = ctx.createGain();
-    gs.gain.value = v.sub;
-    saw.connect(g1);
-    saw2.connect(g2);
-    sub.connect(gs);
-    g1.connect(lp);
-    g2.connect(lp);
-    gs.connect(lp);
-    // Electric motors and turbos: a tonal whine.
-    const whine = ctx.createOscillator();
-    whine.type = 'sine';
-    const whineGain = ctx.createGain();
-    whineGain.gain.value = 0;
-    whine.connect(whineGain);
-    whineGain.connect(out);
-    // Intake / exhaust rasp: noise around the engine note, and the tyres' skid.
+    lp.Q.value = 0.7;
+    lp.frequency.value = 900;
+    lp.connect(out);
+    const e: EngineVoice = { profile, out, lp, loBase: 1, hiBase: 1 } as EngineVoice;
+    if (profile === 'electric') {
+      // An EV: a soft motor hum and inverter whine, nothing else.
+      const whineGain = ctx.createGain();
+      whineGain.gain.value = 0;
+      whineGain.connect(lp);
+      const whine = ctx.createOscillator();
+      whine.type = 'sine';
+      const whine2 = ctx.createOscillator();
+      whine2.type = 'triangle';
+      const g2 = ctx.createGain();
+      g2.gain.value = 0.25;
+      whine.connect(whineGain);
+      whine2.connect(g2);
+      g2.connect(whineGain);
+      whine.start();
+      whine2.start();
+      Object.assign(e, { whine, whine2, whineGain });
+    } else {
+      const lo = this.loopBuffer(profile, 'lo');
+      const hi = this.loopBuffer(profile, 'hi');
+      // A touch of saturation: under load the exhaust note gets gritty.
+      const shaper = ctx.createWaveShaper();
+      const curve = new Float32Array(1024);
+      for (let i = 0; i < 1024; i++) {
+        const x = (i / 1023) * 2 - 1;
+        curve[i] = Math.tanh(x * 2.2) / Math.tanh(2.2);
+      }
+      shaper.curve = curve;
+      shaper.oversample = '2x';
+      const pre = ctx.createGain();
+      pre.gain.value = 0.8;
+      pre.connect(shaper);
+      shaper.connect(lp);
+      const mk = (b: AudioBuffer) => {
+        const src = ctx.createBufferSource();
+        src.buffer = b;
+        src.loop = true;
+        const g = ctx.createGain();
+        g.gain.value = 0;
+        src.connect(g);
+        g.connect(pre);
+        src.start(0, Math.random() * b.duration);
+        return { src, g };
+      };
+      const L = mk(lo.buf);
+      const H = mk(hi.buf);
+      Object.assign(e, { lo: L.src, hi: H.src, loGain: L.g, hiGain: H.g, loBase: lo.base, hiBase: hi.base, shaper });
+      (e as EngineVoice & { pre: GainNode }).pre = pre;
+    }
+    // Intake roar (air rushing in under throttle) and the tyres' squeal share one noise source.
     const noise = ctx.createBufferSource();
     noise.buffer = this.noiseBuf;
     noise.loop = true;
-    const raspFilter = ctx.createBiquadFilter();
-    raspFilter.type = 'bandpass';
-    raspFilter.Q.value = 1.4;
-    const rasp = ctx.createGain();
-    rasp.gain.value = 0;
-    noise.connect(raspFilter);
-    raspFilter.connect(rasp);
-    rasp.connect(out);
+    const intakeFilter = ctx.createBiquadFilter();
+    intakeFilter.type = 'bandpass';
+    intakeFilter.Q.value = 0.8;
+    intakeFilter.frequency.value = 700;
+    const intake = ctx.createGain();
+    intake.gain.value = 0;
+    noise.connect(intakeFilter);
+    intakeFilter.connect(intake);
+    intake.connect(out);
     const skidFilter = ctx.createBiquadFilter();
     skidFilter.type = 'bandpass';
     skidFilter.frequency.value = 1100;
@@ -654,9 +762,9 @@ class AudioEngine {
     noise.connect(skidFilter);
     skidFilter.connect(skid);
     skid.connect(this.sfxBus);
-    for (const o of [saw, saw2, sub, whine, am]) o.start();
-    noise.start();
-    return { profile, out, saw, saw2, sub, whine, whineGain, rasp, raspFilter, lp, noise, skid, skidFilter, am, amDepth };
+    noise.start(0, Math.random());
+    Object.assign(e, { noise, intake, intakeFilter, skid, skidFilter });
+    return e;
   }
 
   private killEngine(e: EngineVoice): void {
@@ -666,8 +774,7 @@ class AudioEngine {
     e.out.gain.setTargetAtTime(0, t, 0.15);
     e.skid.gain.setTargetAtTime(0, t, 0.1);
     window.setTimeout(() => {
-      for (const o of [e.saw, e.saw2, e.sub, e.whine, e.am]) o.stop();
-      e.noise.stop();
+      for (const o of [e.lo, e.hi, e.whine, e.whine2, e.noise]) o?.stop();
       e.out.disconnect();
       e.skid.disconnect();
     }, 1200);
@@ -698,26 +805,39 @@ class AudioEngine {
       if (!this.eng) return;
     }
     const e = this.eng;
-    const v = ENGINE_VOICE[s.profile];
     const t = ctx.currentTime;
     const rpm = clamp(s.rpm, 0, 1.05);
     const thr = clamp(s.throttle, 0, 1);
-    // A damaged engine misfires: the note wobbles.
-    const rough = (s.damage ?? 0) > 0.6 ? (Math.random() - 0.5) * (s.damage ?? 0) * 0.25 : 0;
-    const f = (v.idle + rpm * v.span) * (1 + rough);
-    const k = 0.04;
-    e.saw.frequency.setTargetAtTime(f, t, k);
-    e.saw2.frequency.setTargetAtTime(f * 2, t, k);
-    e.sub.frequency.setTargetAtTime(f * 0.5, t, k);
-    e.am.frequency.setTargetAtTime(f * 0.5, t, k);
-    e.lp.frequency.setTargetAtTime((260 + rpm * 1500 + thr * 900) * v.cut, t, k);
-    e.raspFilter.frequency.setTargetAtTime(f * 6, t, k);
-    e.rasp.gain.setTargetAtTime(v.rasp * (0.01 + thr * 0.06 + rpm * 0.03), t, 0.05);
-    e.whine.frequency.setTargetAtTime(s.profile === 'electric' ? 180 + rpm * 1400 : f * 9, t, k);
-    e.whineGain.gain.setTargetAtTime(v.whine * (0.012 + rpm * 0.03 + thr * 0.01), t, 0.05);
-    e.out.gain.setTargetAtTime(0.09 + thr * 0.09 + rpm * 0.06, t, 0.06);
+    const k = 0.05;
     e.skid.gain.setTargetAtTime(clamp(s.skid, 0, 1) * 0.16, t, 0.05);
     e.skidFilter.frequency.setTargetAtTime(900 + s.skid * 500, t, 0.1);
+    if (s.profile === 'electric') {
+      const f = 90 + rpm * 900;
+      e.whine!.frequency.setTargetAtTime(f, t, k);
+      e.whine2!.frequency.setTargetAtTime(f * 2.01, t, k);
+      e.whineGain!.gain.setTargetAtTime(0.05 + thr * 0.08 + rpm * 0.05, t, 0.06);
+      e.lp.frequency.setTargetAtTime(1500 + rpm * 2500, t, k);
+      e.intakeFilter.frequency.setTargetAtTime(400 + rpm * 600, t, k);
+      e.intake.gain.setTargetAtTime(0.015 + rpm * 0.03, t, 0.1);
+      e.out.gain.setTargetAtTime(0.5, t, 0.1);
+      return;
+    }
+    const spec = ENGINE_SPEC[s.profile];
+    // A damaged engine misfires: the revs stumble now and then.
+    const miss = (s.damage ?? 0) > 0.6 && Math.random() < 0.08 ? 0.85 : 1;
+    const firing = (spec.idle + rpm * spec.span) * miss;
+    e.lo!.playbackRate.setTargetAtTime(firing / e.loBase, t, k);
+    e.hi!.playbackRate.setTargetAtTime(firing / e.hiBase, t, k);
+    // Cross-fade the low- and high-rev loops (equal power).
+    const mixT = clamp((firing - e.loBase) / (e.hiBase - e.loBase), 0, 1);
+    e.loGain!.gain.setTargetAtTime(Math.cos(mixT * Math.PI / 2), t, k);
+    e.hiGain!.gain.setTargetAtTime(Math.sin(mixT * Math.PI / 2), t, k);
+    // Under load: louder, brighter and grittier. Off throttle: a muffled burble.
+    (e as EngineVoice & { pre: GainNode }).pre.gain.setTargetAtTime(0.55 + thr * 0.9, t, k);
+    e.lp.frequency.setTargetAtTime((350 + rpm * 1400 + thr * (900 + rpm * 2600)) * spec.cut, t, k);
+    e.intakeFilter.frequency.setTargetAtTime(500 + rpm * 1800, t, k);
+    e.intake.gain.setTargetAtTime(thr * (0.02 + rpm * 0.05), t, 0.08);
+    e.out.gain.setTargetAtTime((0.2 + thr * 0.16 + rpm * 0.12) * spec.gain, t, 0.06);
   }
 
   // ---------------------------------------------------------------- ambience
