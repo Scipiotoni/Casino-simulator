@@ -89,8 +89,8 @@ const DOOR_H = 2.2;
 
 /**
  * The cutaway: walls standing between the camera and what you're looking at drop down to a
- * stub (like the building's outer walls do), the rest stand to the ceiling. Shared by every
- * floor's walls; the game sets it each frame.
+ * stub (like the building's outer walls do); the ones beside or behind you stand to the
+ * ceiling, from every camera. Shared by every floor's walls; the game sets it each frame.
  */
 export const WALL_CUT = {
   /** Point the camera looks at (world xz). */
@@ -101,21 +101,17 @@ export const WALL_CUT = {
   on: 0,
   /** Height the cut walls drop to. */
   low: 0.42,
-  /** Also cut every wall that faces the camera, wherever it is (the top-down view). */
-  face: 0,
 };
 const cutUniforms = {
   uCutFocus: { value: WALL_CUT.focus },
   uCutDir: { value: WALL_CUT.toCam },
   uCutOn: { value: 0 },
   uCutLow: { value: 0.42 },
-  uCutFace: { value: 0 },
 };
 /** Copy WALL_CUT into the shader uniforms (call once per frame). */
 export function syncWallCut(): void {
   cutUniforms.uCutOn.value = WALL_CUT.on;
   cutUniforms.uCutLow.value = WALL_CUT.low;
-  cutUniforms.uCutFace.value = WALL_CUT.face;
 }
 
 const cutCache = new Map<string, THREE.Material>();
@@ -132,21 +128,16 @@ function cutaway(m: THREE.Material, lift = 0): THREE.Material {
     Object.assign(sh.uniforms, cutUniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
-        attribute vec3 aCenter;
+        attribute vec2 aCenter;
         uniform vec2 uCutFocus;
         uniform vec2 uCutDir;
         uniform float uCutOn;
-        uniform float uCutLow;
-        uniform float uCutFace;`)
+        uniform float uCutLow;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         {
           vec2 cw = (modelMatrix * vec4(aCenter.x, 0.0, aCenter.y, 1.0)).xz;
           float front = dot(cw - uCutFocus, uCutDir);
-          // Which way the wall runs: 1 = along x (faces ±z), 2 = along z (faces ±x), 0 = a post.
-          float fx = abs(uCutDir.y);
-          float fz = abs(uCutDir.x);
-          float facing = aCenter.z < 0.5 ? min(fx, fz) : aCenter.z < 1.5 ? fx : fz;
-          float k = uCutOn * max(smoothstep(0.2, 1.4, front), uCutFace * smoothstep(0.5, 0.72, facing));
+          float k = uCutOn * smoothstep(0.2, 1.4, front);
           transformed.y = mix(transformed.y, transformed.y > uCutLow ? uCutLow + ${lift.toFixed(3)} : transformed.y, k);
         }`);
   };
@@ -308,8 +299,6 @@ class BoxBatch {
   /** Tile the next boxes belong to (decides whether they're cut away). */
   cx = 0;
   cz = 0;
-  /** 1 = runs along x, 2 = along z, 0 = a corner post. */
-  dir = 0;
 
   add(cx: number, cy: number, cz: number, sx: number, sy: number, sz: number, uvScale = 1.25): void {
     const x0 = cx - sx / 2, x1 = cx + sx / 2;
@@ -328,7 +317,7 @@ class BoxBatch {
       const b = this.pos.length / 3;
       for (const [px, py, pz] of cs) {
         this.pos.push(px, py, pz);
-        this.cen.push(this.cx, this.cz, this.dir);
+        this.cen.push(this.cx, this.cz);
         this.nor.push(n[0], n[1], n[2]);
         const u = n[0] !== 0 ? pz : n[2] !== 0 ? px : px;
         const v = n[1] !== 0 ? pz : py;
@@ -344,7 +333,7 @@ class BoxBatch {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    g.setAttribute('aCenter', new THREE.Float32BufferAttribute(this.cen, 3));
+    g.setAttribute('aCenter', new THREE.Float32BufferAttribute(this.cen, 2));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
     return g;
@@ -377,7 +366,6 @@ export class WallRenderer {
   /** The swinging leaf of one door: hinged on one jamb, it folds down with the walls in the cutaway. */
   private addDoorLeaf(x: number, z: number, type: number, run: 'x' | 'z'): void {
     const dt = doorType(type);
-    const dir = run === 'x' ? 1 : 2;
     const pivot = new THREE.Group();
     const W = 0.84;
     const LH = DOOR_H - 0.06;
@@ -386,13 +374,9 @@ export class WallRenderer {
       const geo = new THREE.BoxGeometry(sx, sy, sz);
       geo.translate(px, py, pz);
       const n = geo.getAttribute('position').count;
-      const cen = new Float32Array(n * 3);
-      for (let i = 0; i < n; i++) {
-        cen[i * 3] = W / 2;
-        cen[i * 3 + 1] = 0;
-        cen[i * 3 + 2] = dir;
-      }
-      geo.setAttribute('aCenter', new THREE.BufferAttribute(cen, 3));
+      const cen = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) cen[i * 2] = W / 2;
+      geo.setAttribute('aCenter', new THREE.BufferAttribute(cen, 2));
       const mesh = new THREE.Mesh(geo, cutaway(m, 0.006));
       mesh.castShadow = shadow;
       pivot.add(mesh);
@@ -434,12 +418,9 @@ export class WallRenderer {
           const g2 = wheel.clone();
           g2.translate(W / 2, 1.1, sd * (th / 2 + 0.04));
           const n = g2.getAttribute('position').count;
-          const cen = new Float32Array(n * 3);
-          for (let i = 0; i < n; i++) {
-            cen[i * 3] = W / 2;
-            cen[i * 3 + 2] = dir;
-          }
-          g2.setAttribute('aCenter', new THREE.BufferAttribute(cen, 3));
+          const cen = new Float32Array(n * 2);
+          for (let i = 0; i < n; i++) cen[i * 2] = W / 2;
+          g2.setAttribute('aCenter', new THREE.BufferAttribute(cen, 2));
           pivot.add(new THREE.Mesh(g2, cutaway(mat(0xc9ced6, { rough: 0.3, metal: 0.9 }), 0.006)));
         }
         wheel.dispose();
@@ -509,23 +490,15 @@ export class WallRenderer {
         const body = batch(bodies, s);
         const trim = batch(trims, s);
         const neon = st.neon ? batch(neons, s) : null;
-        const runX = lone || ((e || w) && !(so || n));
-        const runZ = !lone && (so || n) && !(e || w);
         for (const b of [body, trim, neon]) {
           if (!b) continue;
           b.cx = cx;
           b.cz = cz;
-          b.dir = runX ? 1 : runZ ? 2 : 0;
         }
         const plain = st.glass || st.pattern === 'hedge';
         // Grow a piece sideways (away from the wall face) only, never along its length.
         const proud = (sx: number, sz: number, d: number): [number, number] => sx > sz ? [sx, sz + d * 2] : sz > sx ? [sx + d * 2, sz] : [sx + d * 2, sz + d * 2];
-        const tileDir = runX ? 1 : runZ ? 2 : 0;
-        const setDir = (d: number) => {
-          for (const bb of [body, trim, neon]) if (bb) bb.dir = d;
-        };
         for (const [px, pz, sx, sz] of pieces) {
-          setDir(sx > sz + 0.01 ? 1 : sz > sx + 0.01 ? 2 : tileDir);
           if (st.glass) {
             // Glass pane in a metal frame: rails top and bottom.
             body.add(px, H / 2, pz, sx, H - 0.24, sz);
@@ -554,7 +527,6 @@ export class WallRenderer {
             neon.add(px, 0.2, pz, nx, 0.03, nz);
           }
         }
-        setDir(tileDir);
         // Pilasters at the ends and corners of every run.
         const count = (e ? 1 : 0) + (w ? 1 : 0) + (so ? 1 : 0) + (n ? 1 : 0);
         const corner = (e || w) && (so || n);
@@ -583,11 +555,9 @@ export class WallRenderer {
       const trim = batch(trims, s);
       const cx = d.x + 0.5;
       const cz = d.z + 0.5;
-      const dir = run === 'x' ? 1 : 2;
       for (const b of [body, trim]) {
         b.cx = cx;
         b.cz = cz;
-        b.dir = dir;
       }
       const along = (len: number, thick: number): [number, number] => (run === 'x' ? [len, thick] : [thick, len]);
       const [lx, lz] = along(1, T);
@@ -607,7 +577,6 @@ export class WallRenderer {
         const nb2 = batch(neons, s);
         nb2.cx = cx;
         nb2.cz = cz;
-        nb2.dir = dir;
         const [nx, nz] = along(1, T + 0.09);
         nb2.add(cx, H - 0.17, cz, nx, 0.04, nz);
       }

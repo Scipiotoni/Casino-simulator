@@ -4594,7 +4594,6 @@ export class Game implements World, ItemHost {
     const wallH = this.build.active ? 0.42 : 1;
     const camP = this.renderer.camera.position;
     WALL_CUT.on = this.cam.mode === 'first' && !this.tableFocus ? 0 : this.build.active ? 0 : 1;
-    WALL_CUT.face = this.cam.mode === 'top' ? 1 : 0;
     WALL_CUT.focus.set(fx, fz);
     WALL_CUT.toCam.set(camP.x - fx, camP.z - fz);
     if (WALL_CUT.toCam.lengthSq() < 1e-4) WALL_CUT.toCam.set(Math.sin(this.cam.yaw), Math.cos(this.cam.yaw));
