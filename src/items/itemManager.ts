@@ -541,6 +541,8 @@ export class ItemManager {
       it.pendingXp = Math.max(0, Math.min(5000, Number(s.pxp) || 0));
       loadSetup(it, s.setup);
       it.dirty = s.dirty === true;
+      // Tables from before dealers were hired come with one.
+      if (it.needsDealer) it.dealer = s.dl !== false;
       if (it.level > 1 || it.label || s.setup) it.rebuildModel();
       it.stats = Object.assign({ plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 }, s.stats);
       if (s.broken) it.broken = true;

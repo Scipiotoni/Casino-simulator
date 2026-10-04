@@ -33,7 +33,25 @@ export interface Ped {
   ko: number;
   /** Cash in their pockets. */
   cash: number;
+  /** Squaring up to you after you threw a punch at them. */
+  fight?: Brawler;
 }
+
+/** A passer-by who fights back: winds up (your cue to parry), throws a punch, recovers. */
+export interface Brawler {
+  /** Seconds left winding up a punch (0 = not swinging). */
+  wind: number;
+  /** Seconds before they can swing again. */
+  cool: number;
+  /** Seconds left stunned (after you parry or stagger them). */
+  stun: number;
+  /** They give up after a while. */
+  life: number;
+}
+
+/** How long a brawler winds up a punch: the window you have to block or parry it. */
+export const BRAWL_WINDUP = 0.55;
+export const BRAWL_REACH = 1.5;
 
 /** Middle of the sidewalk on one side of a street. */
 function walkZ(row: number, side: number): number {
@@ -54,6 +72,12 @@ export class Crowd {
     for (const p of this.peds) p.model.setCrude(on);
   }
   private spawnT = 0;
+  /** Where you are (global), for brawlers to come after; null when you're not out on the street. */
+  foe: { x: number; z: number } | null = null;
+  /** A brawler's punch reaches you: returns how you met it ('parry' stuns them). */
+  onPunch: ((p: Ped, dmg: number) => string) | null = null;
+  /** A brawler starts winding up, or squares up (for a little "!" over their head). */
+  onTell: ((p: Ped, text: string) => void) | null = null;
   /** How many people to keep around the camera. */
   target = 20;
   cols = 12;
@@ -168,6 +192,78 @@ export class Crowd {
     return out.sort((a, b) => a.s - b.s);
   }
 
+  /** They take a swing at you back. */
+  provoke(p: Ped): void {
+    if (p.ko > 0 || p.fight) return;
+    p.fight = { wind: 0, cool: 0.7, stun: 0, life: 25 };
+    p.panic = 0;
+    p.enters = false;
+    p.model.setExpression('angry', 25);
+    this.onTell?.(p, ['Oh, it’s ON!', 'You wanna go?!', 'Big mistake, pal!', 'Put ’em up!'][Math.floor(Math.random() * 4)]);
+  }
+
+  /** Knocked off balance: their swing is interrupted and they reel for a moment. */
+  stagger(p: Ped, seconds: number): void {
+    if (!p.fight) return;
+    p.fight.wind = 0;
+    p.fight.stun = Math.max(p.fight.stun, seconds);
+  }
+
+  /** People squaring up to you right now. */
+  get brawlers(): number {
+    return this.peds.filter((p) => p.fight && p.ko <= 0).length;
+  }
+
+  /** A brawler's turn: close in, wind up, swing, recover; give up after a while or if you leave. */
+  private updateBrawler(p: Ped, f: Brawler, dt: number): void {
+    f.life -= dt;
+    f.cool = Math.max(0, f.cool - dt);
+    const t = this.foe;
+    const d = t ? Math.hypot(t.x - p.x, t.z - p.z) : 99;
+    if (!t || f.life <= 0 || d > 25) {
+      // Lost interest: walk it off.
+      p.fight = undefined;
+      p.model.setExpression('neutral');
+      p.route = [{ x: p.x + (Math.random() < 0.5 ? -60 : 60), z: p.z }];
+      p.i = 0;
+      return;
+    }
+    p.model.root.rotation.y = Math.atan2(t.x - p.x, t.z - p.z);
+    if (f.stun > 0) {
+      f.stun -= dt;
+      p.model.setPose('idle');
+      return;
+    }
+    if (f.wind > 0) {
+      f.wind -= dt;
+      p.model.setPose('point');
+      if (f.wind <= 0) {
+        f.cool = 1.1 + Math.random() * 0.8;
+        p.model.swing = 1;
+        if (d < BRAWL_REACH + 0.3) {
+          const res = this.onPunch?.(p, Math.round(7 + Math.random() * 4));
+          if (res === 'parry') {
+            f.stun = 1.6;
+            p.model.setExpression('surprised', 1.6);
+          }
+        }
+      }
+      return;
+    }
+    if (d > BRAWL_REACH - 0.3) {
+      // Close in.
+      const step = Math.min(d - (BRAWL_REACH - 0.4), 3.4 * dt);
+      p.x += ((t.x - p.x) / d) * step;
+      p.z += ((t.z - p.z) / d) * step;
+      p.model.moveSpeed = 3.4 / 1.4;
+      p.model.setPose('run');
+    } else p.model.setPose('idle');
+    if (d < BRAWL_REACH && f.cool <= 0) {
+      f.wind = BRAWL_WINDUP;
+      this.onTell?.(p, '!');
+    }
+  }
+
   /** People standing within `r` of a point (global), awake. */
   around(gx: number, gz: number, r: number): Ped[] {
     return this.peds.filter((p) => p.ko <= 0 && p.fade <= 0 && Math.hypot(p.x - gx, p.z - gz) < r);
@@ -179,6 +275,11 @@ export class Crowd {
     p.hp -= dmg;
     p.model.flinch = 1;
     p.model.setExpression('surprised', 2);
+    if (p.hp > 0 && p.fight) {
+      p.fight.wind = 0;
+      p.fight.stun = Math.max(p.fight.stun, 0.25);
+      return { ko: false, cash: 0 };
+    }
     if (p.hp > 0) {
       // Hurt: run away from the shot.
       p.panic = 10;
@@ -188,6 +289,7 @@ export class Crowd {
       return { ko: false, cash: 0 };
     }
     p.ko = 9;
+    p.fight = undefined;
     p.model.root.rotation.y = Math.atan2(-dx, -dz);
     p.model.setPose('ko');
     const cash = p.cash;
@@ -214,6 +316,12 @@ export class Crowd {
           continue;
         }
         p.model.setPose('ko');
+        if (visible) p.model.update(dt);
+        continue;
+      }
+      if (p.fight) {
+        this.updateBrawler(p, p.fight, dt);
+        p.model.root.position.set(p.x, 0, p.z);
         if (visible) p.model.update(dt);
         continue;
       }

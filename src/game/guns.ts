@@ -5,7 +5,7 @@
  */
 export type GunKind = 'pistol' | 'revolver' | 'smg' | 'shotgun' | 'rifle' | 'sniper' | 'minigun' | 'laser' | 'paint' | 'confetti' | 'cannon'
   | 'launcher' | 'rocket' | 'railgun' | 'flamer'
-  | 'knuckles' | 'bat' | 'golf' | 'katana' | 'hammer';
+  | 'fists' | 'knuckles' | 'bat' | 'golf' | 'katana' | 'hammer';
 
 export interface GunDef {
   id: string;
@@ -53,6 +53,8 @@ export interface GunDef {
   headMul?: number;
   /** How hard it kicks the view up per shot (radians; default by type). */
   kick?: number;
+  /** Not sold anywhere: everyone has it (your fists). */
+  builtin?: boolean;
   blurb: string;
 }
 
@@ -81,6 +83,7 @@ export const GUNS: GunDef[] = [
 
 /** Melee weapons (also sold at Bullseye Guns). Swing rate, reach in metres. */
 GUNS.push(
+  { id: 'fists', name: 'Fists', kind: 'fists', price: 0, unlock: 1, rate: 3.2, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.55, range: 1.5, color: 0xd8a47a, tracer: 0xffffff, twoHand: false, dmg: 9, adsFov: 60, melee: true, builtin: true, blurb: 'Put ’em up. Everyone has a pair (X or 0).' },
   { id: 'knuckles', name: 'Gold Knuckles', kind: 'knuckles', price: 400, unlock: 1, rate: 3, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.5, range: 1.7, color: 0xf2b632, tracer: 0xffffff, twoHand: false, dmg: 18, adsFov: 60, melee: true, blurb: 'Quick jabs. Fits in a pocket.' },
   { id: 'bat', name: 'Baseball Bat', kind: 'bat', price: 900, unlock: 1, rate: 1.6, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.6, range: 2.3, color: 0xc89b5a, tracer: 0xffffff, twoHand: true, dmg: 34, adsFov: 60, melee: true, blurb: 'A home run every time.' },
   { id: 'golf', name: 'Golf Club', kind: 'golf', price: 2500, unlock: 2, rate: 1.4, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.6, range: 2.5, color: 0xd8dde3, tracer: 0xffffff, twoHand: true, dmg: 30, adsFov: 60, melee: true, blurb: 'Fore! For the high rollers.' },
@@ -172,6 +175,13 @@ export function reloadPress(progress: number): 'perfect' | 'fumble' {
 
 /** Number of weapon slots (keys 1–5). */
 export const SLOTS = 5;
+/** Your bare fists: always yours, raised with X (or 0). */
+export const FISTS = 'fists';
+
+/** Do you have this weapon (bought, or your fists)? */
+export function hasWeapon(owned: readonly string[], id: string): boolean {
+  return id === FISTS || owned.includes(id);
+}
 
 export function gunDef(id: string | null | undefined): GunDef | null {
   return GUNS.find((g) => g.id === id) ?? null;
@@ -370,7 +380,7 @@ export function autoSlot(st: GunState, id: string): void {
 export function sanitizeGuns(raw: unknown): GunState {
   const r = (raw ?? {}) as Record<string, unknown>;
   const owned = Array.isArray(r.owned) ? [...new Set(r.owned.filter((x): x is string => typeof x === 'string' && !!gunDef(x)))] : [];
-  const eq = typeof r.equipped === 'string' && owned.includes(r.equipped) ? r.equipped : null;
+  const eq = typeof r.equipped === 'string' && (owned.includes(r.equipped) || r.equipped === FISTS) ? r.equipped : null;
   const given = Array.isArray(r.slots) ? (r.slots as unknown[]) : null;
   const slots: (string | null)[] = Array(SLOTS).fill(null);
   if (given) {

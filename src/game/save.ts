@@ -62,6 +62,20 @@ export interface NetState {
   heistSeen?: Record<string, number>;
   /** Houses you were thrown out of after a failed heist: owner id → epoch ms you may try again. */
   heistLock?: Record<string, number>;
+  /** Gifts you sent (kept in your ledger until they expire). */
+  gifts?: import('./social').GiftOut[];
+  /** Gifts you opened: gift id → when. */
+  giftSeen?: Record<string, number>;
+  /** Gifts you opened, newest last (for the history). */
+  giftLog?: import('./social').GiftIn[];
+  /** Gifts sent before this moment aren't yours to open (a fresh player id starts here). */
+  giftSince?: number;
+  /** Gift cash that arrived while you ran the hotel (it goes into the casino's bank later). */
+  giftHeld?: number;
+  /** Daily login reward streak. */
+  daily?: import('./social').DailyState;
+  /** What you owe the bank (it follows you through rebirths and new casinos). */
+  loan?: number;
 }
 
 export function newNetEpoch(): string {
@@ -107,7 +121,7 @@ export interface SaveData extends CasinoSnapshot {
 }
 
 export function emptyNet(): NetState {
-  return { owes: {}, credited: {}, bans: {}, banCooldown: {}, ep: newNetEpoch(), creditedEp: {} };
+  return { owes: {}, credited: {}, bans: {}, banCooldown: {}, ep: newNetEpoch(), creditedEp: {}, giftSince: Date.now() };
 }
 
 export function newRival(): RivalState {
@@ -236,6 +250,7 @@ export function sanitizeSnapshot(raw: unknown, fonts: string[], sanitizeLook: (a
       label: typeof r.label === 'string' ? r.label.slice(0, 14).toUpperCase() : undefined,
       setup: r.setup && typeof r.setup === 'object' ? sanitizeSetup(r.setup) : undefined,
       dirty: r.dirty === true || undefined,
+      dl: typeof r.dl === 'boolean' ? r.dl : undefined,
     });
   }
   const roles = ['janitor', 'technician', 'security', 'doorman'];

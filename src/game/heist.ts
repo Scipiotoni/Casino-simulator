@@ -924,7 +924,9 @@ export class Heist {
     const g = this.g;
     const p = g.player;
     if (this.detectCool > 0 || !this.targetable) return;
-    const armed = !!g.guns.equipped || g.guns.slots.some((s) => !!s);
+    // Any real weapon on you (bare fists don't beep).
+    const real = (id: string | null | undefined) => !!id && !gunDef(id)?.builtin;
+    const armed = real(g.guns.equipped) || g.guns.slots.some(real);
     if (!armed) return;
     for (const md of this.detectors) {
       if (md.floor !== p.floor) continue;

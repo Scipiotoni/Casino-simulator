@@ -24,6 +24,8 @@ import { remoteShotEnd } from '../game/gunplay';
 import { buildCar, carDef, sanitizeMods } from '../world/vehicles';
 import { type HeistRecord, cleanRecords } from '../game/heistRules';
 import type { HouseTarget } from '../game/heist';
+import { GIFT_LOG, GIFT_KEEP_MS, type GiftOut, cleanGifts, cleanNote, giftBlock, giftId, pruneSeen, roundSig, unopenedGifts } from '../game/social';
+import type { LeaderEntry, SocialApi } from '../ui/social';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -112,6 +114,25 @@ interface LotDoc {
   heists: HeistRecord[];
   /** When the owner last wrote this (epoch ms). */
   updated: number;
+  /** Leaderboard numbers the owner last published. */
+  lb?: LeaderStats;
+}
+
+/** What the leaderboard ranks: net worth, star rating, casino level, rebirths. */
+interface LeaderStats {
+  nw: number;
+  st: number;
+  lv: number;
+}
+
+function leaderStats(raw: unknown): LeaderStats | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  return {
+    nw: Math.max(-1e11, Math.min(1e11, Math.round(num(r.nw)))),
+    st: Math.max(0, Math.min(5, Math.round(num(r.st) * 10) / 10)),
+    lv: Math.max(1, Math.min(999, Math.round(num(r.lv)) || 1)),
+  };
 }
 
 /** Another player's house as the street shows it, and what a burglar sizes up. */
@@ -165,6 +186,14 @@ interface Remote {
   prot: boolean;
   /** Their running totals of damage dealt to you and cash owed to you (undefined = not seen yet). */
   seenHits?: number;
+  /** Their melee running totals against you: damage, heavy blows, and your hits they parried. */
+  seenMelee?: number;
+  seenHeavy?: number;
+  seenParry?: number;
+  /** Fist-fight stance they publish: blocking, winding up a heavy (0..1), stunned. */
+  blocking: boolean;
+  charge: number;
+  stunned: boolean;
   seenLoot?: number;
   hpEl: HTMLElement;
   nameEl: HTMLElement;
@@ -198,6 +227,9 @@ interface Remote {
   hz: string;
   al: boolean;
   heists: HeistRecord[];
+  /** Gifts they've sent recently, and their leaderboard numbers. */
+  gifts: GiftOut[];
+  lb?: LeaderStats;
 }
 
 /** One position update from another player. */
@@ -262,6 +294,8 @@ export class Net {
   private ledgers = new Map<string, Record<string, number>>();
   /** Each ledger's running-total id (see NetState.ep). */
   private ledgerEps = new Map<string, string>();
+  /** Gifts each player has sent (from their ledger), and the name they go by. */
+  private giftLists = new Map<string, { name: string; gifts: GiftOut[] }>();
   private remotes = new Map<string, Remote>();
   private labelRoot: HTMLElement;
   private presenceT = 0;
@@ -275,6 +309,10 @@ export class Net {
   /** Damage you've dealt to each player and cash they owe you from knockouts (running totals this session). */
   private hits: Record<string, number> = {};
   private loot: Record<string, number> = {};
+  /** Melee: damage and heavy blows you've landed on each player, and their hits you parried (running totals). */
+  private melee: Record<string, number> = {};
+  private heavy: Record<string, number> = {};
+  private parries: Record<string, number> = {};
   /** Your recent chat lines, sent along with your presence. */
   private chatOut: { i: string; t: string; at: number }[] = [];
   private chatN = 0;
@@ -294,6 +332,7 @@ export class Net {
     game.heistRecords = () => this.allRecords();
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.openPlayers = () => this.openPlayers();
+    hud.modals.social = this.socialApi();
     game.combat.remoteTargets = () => this.targets();
     game.chatOut = (text) => {
       this.chatOut.push({ i: `${Date.now().toString(36)}${(this.chatN++).toString(36)}`, t: text, at: Date.now() });
@@ -304,6 +343,16 @@ export class Net {
     game.combat.onHitRemote = (pid, dmg) => {
       this.hits[pid] = (this.hits[pid] ?? 0) + dmg;
       this.lastHitAt[pid] = Date.now();
+      this.presenceT = 0;
+    };
+    game.combat.onMeleeRemote = (pid, dmg, heavy) => {
+      this.melee[pid] = (this.melee[pid] ?? 0) + dmg;
+      if (heavy) this.heavy[pid] = (this.heavy[pid] ?? 0) + 1;
+      this.lastHitAt[pid] = Date.now();
+      this.presenceT = 0;
+    };
+    game.combat.onParry = (pid) => {
+      this.parries[pid] = (this.parries[pid] ?? 0) + 1;
       this.presenceT = 0;
     };
     game.combat.onLoot = (pid, amount) => {
@@ -379,6 +428,7 @@ export class Net {
         houseSnap: raw.houseSnap ? sanitizeSnapshot(raw.houseSnap, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null,
         heists: cleanRecords(raw.heists),
         updated: typeof raw.updated === 'number' && Number.isFinite(raw.updated) ? raw.updated : 0,
+        lb: leaderStats(raw.lb),
       });
     }
     this.syncStreet();
@@ -391,6 +441,9 @@ export class Net {
       const raw = d.data() ?? {};
       this.ledgers.set(d.id, cleanNumbers(raw.owes));
       if (typeof raw.ep === 'string') this.ledgerEps.set(d.id, raw.ep.slice(0, 16));
+      const gifts = cleanGifts(raw.gifts);
+      if (gifts.length) this.giftLists.set(d.id, { name: typeof raw.name === 'string' ? raw.name.slice(0, 24) : '', gifts });
+      else this.giftLists.delete(d.id);
     }
   }
 
@@ -415,8 +468,9 @@ export class Net {
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, gm: '', shots: 0, held: null, label, visible: false,
           bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, wl: 0,
-          buf: [], bufLot: '', gap: 120, vel: 0, rolls: -1, reloading: false, rollT: 0, reloadT: 0, ks: 0, feedSeen: new Set(),
+          buf: [], bufLot: '', gap: 120, vel: 0, rolls: -1, reloading: false, rollT: 0, reloadT: 0, ks: 0, feedSeen: new Set(), gifts: [],
           hz: '', al: false, heists: [],
+          blocking: false, charge: 0, stunned: false,
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -497,6 +551,8 @@ export class Net {
       const snap = c ? sanitizeSnapshot({ ...c, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null;
       r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos), hotel: hotelInfo(c?.hotel), rb: r.rb, house: houseView(c?.house) } : null;
       r.fx.set(cleanCosmetics(pr.cos));
+      r.gifts = cleanGifts(pr.gf);
+      r.lb = leaderStats(pr.lb);
     }
     for (const [k, r] of this.remotes) {
       if (seen.has(k)) continue;
@@ -561,6 +617,32 @@ export class Net {
       r.seenHits = hits;
       // Only shots fired out on the street, from close enough to reach you, count.
       if ((r.out || this.fighting(r)) && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 150) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
+    }
+    // Fist fights: their punches and swings at you get blocked, parried or taken on your side.
+    r.blocking = pr.bk === 1;
+    r.stunned = pr.stn === 1;
+    r.charge = Math.max(0, Math.min(1, num(pr.mc)));
+    const mel = cleanNumbers(pr.mh)[this.pid] ?? 0;
+    const hev = cleanNumbers(pr.mhh)[this.pid] ?? 0;
+    if (r.seenMelee === undefined || mel < r.seenMelee) {
+      r.seenMelee = mel;
+      r.seenHeavy = hev;
+    } else if (mel > r.seenMelee) {
+      const dmg = Math.min(300, mel - r.seenMelee);
+      const heavy = hev > (r.seenHeavy ?? hev);
+      r.seenMelee = mel;
+      r.seenHeavy = hev;
+      // Only from someone actually standing next to you out on the street.
+      if ((r.out || this.fighting(r)) && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 6) g.combat.meleeHit(dmg, heavy, r.pid, r.name, r.x, r.z);
+    }
+    const par = cleanNumbers(pr.pa)[this.pid] ?? 0;
+    if (r.seenParry === undefined || par < r.seenParry) r.seenParry = par;
+    else if (par > r.seenParry) {
+      r.seenParry = par;
+      g.combat.brawl.parried(performance.now());
+      audio.play('clack', { pitch: 0.8 });
+      g.floaters.text(g.player.model.root.position.clone().setY(g.player.model.height + 0.6), `${r.name} PARRIED you!`, 'bad', 1.2, 0.9);
+      g.cam.shake(0.06);
     }
     const loot = cleanNumbers(pr.loot)[this.pid] ?? 0;
     if (r.seenLoot === undefined || loot < r.seenLoot) r.seenLoot = loot;
@@ -960,7 +1042,8 @@ export class Net {
       }
       for (const p of list) {
         body.appendChild(h('div', { class: 'player-row' },
-          h('div', {}, h('b', { text: p.name }), h('span', { class: `muted small${p.online ? ' pos' : ''}`, text: ` · ${p.online ? '● ' : ''}${p.where}` })),
+          h('div', {}, h('b', { text: p.name }), h('span', { class: `muted small${p.online ? ' pos' : ''}`, text: ` · ${p.online ? '● ' : ''}${p.where}` }),
+            h('button', { class: 'btn small gold gift-btn', text: '🎁 Gift', onClick: () => this.hud.modals.openGift(p.pid, p.name) })),
           this.banControls(p.pid, p.name, render),
         ));
       }
@@ -1011,6 +1094,7 @@ export class Net {
       this.creditVisitors();
       this.checkBanned();
       this.watchHouse();
+      this.checkGifts();
       // Expired bans drop off.
       const now = Date.now();
       for (const [k, v] of Object.entries(g.net.bans)) if (v < now) delete g.net.bans[k];
@@ -1054,6 +1138,12 @@ export class Net {
       chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
       loot: this.loot,
+      mh: this.melee,
+      mhh: this.heavy,
+      pa: this.parries,
+      bk: g.gunplay.drawn && g.gunplay.def?.melee && g.combat.brawl.blocking ? 1 : 0,
+      mc: g.gunplay.drawn ? Math.round(g.combat.brawl.charge * 10) / 10 : 0,
+      stn: g.combat.brawl.stunned ? 1 : 0,
       look: p.appearance,
       bans,
       owes: g.net.owes,
@@ -1061,6 +1151,9 @@ export class Net {
       since: g.createdAt,
       cos: equipped(g.cosmetics, 'player'),
       rb: g.rebirths,
+      lb: this.myStats(),
+      // Gifts from the last few minutes, so an online friend gets them at once.
+      gf: (g.net.gifts ?? []).filter((x) => Date.now() - x.t < 5 * 60_000).slice(-4),
       casino: {
         cos: equipped(g.cosmetics, 'casino'),
         hotel: g.hotelInfo(),
@@ -1073,10 +1166,16 @@ export class Net {
     // Presence is small: shed the least important parts first so bans always get through.
     const casino = data.casino as Record<string, unknown>;
     if (JSON.stringify(data).length > 3800) delete data.owes;
+    if (JSON.stringify(data).length > 3800) data.gf = (data.gf as unknown[]).slice(-1);
     if (JSON.stringify(data).length > 3800) casino.hotel = (casino.hotel as unknown[]).slice(0, 2);
     if (JSON.stringify(data).length > 3800) delete casino.house;
     if (JSON.stringify(data).length > 3800) delete data.cos;
     if (JSON.stringify(data).length > 3800) data.hits = trimTop(this.hits, 8);
+    if (JSON.stringify(data).length > 3800) {
+      data.mh = trimTop(this.melee, 6);
+      data.mhh = trimTop(this.heavy, 6);
+      data.pa = trimTop(this.parries, 6);
+    }
     if (JSON.stringify(data).length > 3800) data.chat = (data.chat as unknown[]).slice(-1);
     if (JSON.stringify(data).length > 3800) data.heists = (data.heists as unknown[]).slice(0, 2);
     return data;
@@ -1112,6 +1211,7 @@ export class Net {
       houseSnap: g.houseSnapshot(),
       heists: cleanRecords(g.net.heists ?? []),
       rb: g.rebirths,
+      lb: this.myStats(),
       updated: Date.now(),
     };
     const key = JSON.stringify({ ...doc, updated: 0 });
@@ -1130,10 +1230,11 @@ export class Net {
   private async publishLedger(): Promise<void> {
     const g = this.game;
     if (!this.db || !this.writable) return;
-    const key = JSON.stringify(g.net.owes);
-    if (key === this.lastLedger || key === '{}') return;
+    const gifts = (g.net.gifts ?? []).filter((x) => Date.now() - x.t < GIFT_KEEP_MS);
+    const key = JSON.stringify([g.net.owes, gifts]);
+    if (key === this.lastLedger || (key === '[{},[]]' && !this.lastLedger)) return;
     try {
-      await this.db.collection('ledger').doc(this.pid).set({ owes: { ...g.net.owes }, ep: g.net.ep ?? '', name: g.player.name.slice(0, 24), t: Date.now() });
+      await this.db.collection('ledger').doc(this.pid).set({ owes: { ...g.net.owes }, gifts, ep: g.net.ep ?? '', name: g.player.name.slice(0, 24), t: Date.now() });
       this.lastLedger = key;
     } catch {
       /* try again later */
@@ -1254,8 +1355,15 @@ export class Net {
         m.reloadK = 0;
       }
       r.label.classList.toggle('bounty', r.ks >= 3);
+      // Their fist-fight stance: guard up, a heavy blow glowing in their fist, seeing stars.
+      if (r.charge > 0 && Math.random() < dt * 18) {
+        const yaw = m.root.rotation.y;
+        g.effects.sparkle(r.x + Math.sin(yaw) * 0.45, 1.25, r.z + Math.cos(yaw) * 0.45, 1, r.charge >= 1 ? 0xff5a3a : 0xffc53d, 0.15 + r.charge * 0.2);
+      }
+      if (r.stunned && Math.random() < dt * 3) g.floaters.text(new THREE.Vector3(r.x, m.height + 0.5, r.z), '💫', '', 0.6, 0.4);
       if (r.ko) m.setPose('ko');
       else if (r.car) m.setPose('sit');
+      else if (r.blocking && r.vel < 2.5) m.setPose('handsUp');
       else if (r.vel > 0.35 || (r.moving && r.vel > 0.1)) {
         // Walk or run at the pace they're really going (no stepping in place, no sliding).
         m.moveSpeed = r.vel / 1.4;
@@ -1273,6 +1381,120 @@ export class Net {
     }
     g.remotes = views;
     g.mapPlayers = map;
+  }
+
+  // ------------------------------------------------------------------ gifts & leaderboard
+
+  private statsCache: LeaderStats | null = null;
+  private statsAt = 0;
+
+  /**
+   * Your numbers for the leaderboard, as published: net worth to three significant figures
+   * and refreshed every 10 seconds, so presence and the lot only change when they matter.
+   */
+  private myStats(): LeaderStats {
+    const g = this.game;
+    if (!this.statsCache || Date.now() - this.statsAt > 10_000) {
+      this.statsCache = { nw: roundSig(g.netWorth, 3), st: Math.round(g.rating * 10) / 10, lv: g.homeLevel };
+      this.statsAt = Date.now();
+    }
+    return this.statsCache;
+  }
+
+  /** Open every gift addressed to you that you haven't opened yet. */
+  private checkGifts(): void {
+    const g = this.game;
+    if (g.state !== 'playing' || !this.pid) return;
+    const net = g.net;
+    net.giftSeen ??= {};
+    const since = net.giftSince ?? 0;
+    const senders = new Map<string, { name: string; gifts: GiftOut[] }>();
+    for (const [pid, l] of this.giftLists) senders.set(pid, { name: l.name, gifts: [...l.gifts] });
+    for (const r of this.remotes.values()) {
+      const cur = senders.get(r.pid);
+      if (cur) {
+        cur.name = r.name;
+        for (const x of r.gifts) if (!cur.gifts.some((y) => y.i === x.i)) cur.gifts.push(x);
+      } else if (r.gifts.length) senders.set(r.pid, { name: r.name, gifts: [...r.gifts] });
+    }
+    let opened = false;
+    for (const [pid, { name, gifts }] of senders) {
+      if (pid === this.pid) continue;
+      for (const gift of unopenedGifts(gifts, this.pid, net.giftSeen, since)) {
+        net.giftSeen[gift.i] = Date.now();
+        const from = name || 'Someone';
+        net.giftLog = [...(net.giftLog ?? []), { from, a: gift.a, c: gift.c, m: gift.m, t: gift.t }].slice(-30);
+        g.openGift(from, gift.a, gift.c, gift.m);
+        opened = true;
+      }
+    }
+    if (opened) {
+      net.giftSeen = pruneSeen(net.giftSeen);
+      g.requestSave();
+    }
+  }
+
+  /** Wrap a gift: it leaves your bank now and reaches them as soon as they're online. */
+  private sendGift(pid: string, name: string, amount: number, item: string | undefined, note: string): boolean {
+    const g = this.game;
+    const c = item ? cosmetic(item) : undefined;
+    const now = Date.now();
+    const sent = g.net.gifts ?? [];
+    const why = !this.online
+      ? 'You’re offline: gifts need a connection to the street.'
+      : !this.writable && !this.remotes.size
+        ? 'You’re connected as a guest: you can only send gifts to players who are online right now.'
+        : giftBlock({ amount, itemPrice: c?.price ?? 0, money: g.money, recent: sent.filter((x) => now - x.t < 60_000).length, self: pid === this.pid, inHotel: g.inHotel });
+    const online = [...this.remotes.values()].some((r) => r.pid === pid);
+    if (!why && !this.writable && !online) {
+      audio.play('error');
+      g.notify(`${name} isn’t online. As a guest you can only send gifts to players who are online.`, 'bad');
+      return false;
+    }
+    if (why) {
+      audio.play('error');
+      g.notify(why, 'bad');
+      return false;
+    }
+    const total = Math.round(amount) + (c?.price ?? 0);
+    g.spend(total, 'gift');
+    const gift: GiftOut = { i: giftId(now), to: pid, nm: name.slice(0, 24), a: Math.round(amount), c: c?.id, m: cleanNote(note), t: now };
+    g.net.gifts = [...sent.filter((x) => now - x.t < GIFT_KEEP_MS), gift].slice(-GIFT_LOG);
+    g.stats.giftsSent = (g.stats.giftsSent ?? 0) + 1;
+    audio.play('purchase');
+    g.effects.confetti(g.player.x, 2, g.player.z, 50);
+    g.notify(`🎁 Gift sent to ${name}${online ? '' : ': it’s waiting for them next time they play'}.`, 'good');
+    this.presenceT = 0;
+    this.ledgerT = 0;
+    g.saveNow();
+    return true;
+  }
+
+  /** Everyone on the street ranked by net worth, rating and level (you included). */
+  private leaderboard(): LeaderEntry[] {
+    const g = this.game;
+    const out = new Map<string, LeaderEntry>();
+    out.set(this.pid || 'me', { pid: this.pid || 'me', name: g.player.name, me: true, online: true, nw: g.netWorth, st: Math.round(g.rating * 10) / 10, lv: g.homeLevel, rb: g.rebirths });
+    for (const [pid, l] of this.lots) {
+      if (!l.lb) continue;
+      out.set(pid, { pid, name: l.owner, me: false, online: false, nw: l.lb.nw, st: l.lb.st, lv: l.lb.lv, rb: l.info.rb ?? 0 });
+    }
+    for (const r of this.remotes.values()) {
+      if (!r.lb || r.pid === this.pid) continue;
+      out.set(r.pid, { pid: r.pid, name: r.name, me: false, online: true, nw: r.lb.nw, st: r.lb.st, lv: r.lb.lv, rb: r.rb });
+    }
+    return [...out.values()];
+  }
+
+  private socialApi(): SocialApi {
+    return {
+      online: () => this.online,
+      me: () => this.pid,
+      players: () => this.knownPlayers(),
+      sendGift: (pid, name, amount, item, note) => this.sendGift(pid, name, amount, item, note),
+      leaderboard: () => this.leaderboard(),
+      isOnline: (pid) => [...this.remotes.values()].some((r) => r.pid === pid),
+    };
   }
 
   // ------------------------------------------------------------------ UI
@@ -1302,6 +1524,7 @@ export class Net {
     el.appendChild(h('div', { class: 'card-stats' },
       h('div', { class: 'kv' }, h('span', { text: 'At your tables, all time' }), h('b', { class: owed >= 0 ? 'pos' : 'neg', text: owed >= 0 ? `lost ${formatMoney(owed)}` : `won ${formatMoney(-owed)}` })),
     ));
+    el.appendChild(h('button', { class: 'btn gold', text: `🎁 Send ${name} a gift`, onClick: () => this.hud.modals.openGift(pid, name) }));
     el.appendChild(h('div', { class: 'field-label', text: '🚫 Blacklist' }));
     el.appendChild(this.banControls(pid, name, () => g.select({ kind: 'remote', pid })));
     el.appendChild(h('p', { class: 'muted small', text: 'No reason needed, but security charges by the minute. They’re walked out of your casino, hotel and house and can’t come back until it runs out.' }));

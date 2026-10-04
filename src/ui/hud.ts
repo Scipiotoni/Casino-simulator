@@ -6,6 +6,7 @@ import { itemThumb } from './preview';
 import { MAX_LEVEL, type PlacedItem } from '../items/placedItem';
 import type { Customer } from '../entities/customer';
 import type { Worker } from '../entities/staff';
+import { DEALER_WAGE } from '../entities/staff';
 import { FLOOR_STYLES } from '../render/textures';
 import { DOOR_TYPES, WALL_STYLES } from '../world/walls';
 import { initHeistUi } from './heistUi';
@@ -554,6 +555,9 @@ export class Hud {
       ),
     );
     this.cardEl.appendChild(head);
+    if (item.needsDealer && !item.dealer && !g.visit) {
+      this.cardEl.appendChild(h('p', { class: 'chip warn', text: 'No dealer: guests can’t play here unless you stand beside it and hold Space to deal.' }));
+    }
     if (def.kind !== 'decor') {
       this.cardEl.appendChild(h('div', { class: 'card-stats', dataset: { live: 'itemstats' } }));
     }
@@ -574,6 +578,11 @@ export class Hud {
     }
     if (item.setup && !g.visit) {
       actions.appendChild(h('button', { class: 'btn gold', html: `${icon('paint', 16)} Decorate`, onClick: () => this.modals.openRoom(item) }));
+    }
+    if (item.needsDealer && !g.visit) {
+      actions.appendChild(item.dealer
+        ? h('button', { class: 'btn', text: `🃏 Let the dealer go`, title: `Saves ${formatMoney(DEALER_WAGE)} a day; the table only runs while you deal it yourself`, onClick: () => { g.fireDealer(item); this.renderCard({ kind: 'item', item }); } })
+        : h('button', { class: 'btn gold', html: `🃏 Hire a dealer <b>${formatMoney(DEALER_WAGE)}/day</b>`, onClick: () => { if (g.hireDealer(item)) this.renderCard({ kind: 'item', item }); } }));
     }
     actions.appendChild(h('button', { class: 'btn', html: `${icon('move', 16)} Move`, onClick: () => { g.build.startMove(item); } }));
     actions.appendChild(h('button', { class: 'btn', html: `${icon('rotate', 16)} Rotate`, onClick: () => this.quickRotate(item) }));

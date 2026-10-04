@@ -365,7 +365,15 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
       muzzle = new THREE.Vector3(0, 0.045, 0.64);
       break;
     }
-    case 'knuckles': {
+    case 'fists': {
+      // Taped-up knuckles: there's nothing in your hand but your fist.
+      const tape = mat(0xf1ece2, { rough: 0.9 });
+      B(tape, 0.075, 0.05, 0.06, 0, 0.0, 0.03);
+      B(tape, 0.08, 0.018, 0.064, 0, 0.012, 0.03);
+      muzzle = new THREE.Vector3(0, 0.0, 0.08);
+      break;
+    }
+        case 'knuckles': {
       B(body, 0.095, 0.032, 0.03, 0, 0.015, 0.06);
       for (let i = 0; i < 4; i++) {
         const r = new THREE.Mesh(new THREE.TorusGeometry(0.013, 0.006, 6, 12), body);

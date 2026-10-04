@@ -89,6 +89,9 @@ export interface LifetimeStats {
   heists?: number;
   heistLoot?: number;
   robbed?: number;
+  /** Gifts sent to and opened from other players. */
+  giftsSent?: number;
+  giftsReceived?: number;
 }
 
 export function emptyStats(): LifetimeStats {

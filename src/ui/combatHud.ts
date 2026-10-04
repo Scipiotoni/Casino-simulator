@@ -2,6 +2,7 @@ import type { Game } from '../game/game';
 import { h } from './dom';
 import { formatMoney } from '../core/math';
 import { MAX_HP } from '../game/combat';
+import { MAX_STAMINA } from '../game/melee';
 import { PERFECT_WINDOW } from '../game/guns';
 import { drawReticle, reticleKey } from './reticle';
 
@@ -17,6 +18,10 @@ export class CombatHud {
   private hpWrap: HTMLElement;
   private hpFill = h('i');
   private hpText = h('span');
+  /** Fist fights: stamina, and your stance (blocking, combo, wind-up, counter ready, stunned). */
+  private stFill = h('i');
+  private stText = h('span', { class: 'st-text' });
+  private stWrap = h('div', { class: 'stbar', hidden: true, 'aria-label': 'Stamina' }, h('span', { class: 'st-ico', text: '⚡' }), h('div', { class: 'st-track' }, this.stFill), this.stText);
   private vignette = h('div', { class: 'hurt-vig' });
   private arrow = h('div', { class: 'hurt-arrow' });
   private koEl = h('div', { class: 'ko-screen', hidden: true });
@@ -54,7 +59,7 @@ export class CombatHud {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.stWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl);
     this.wp.addEventListener('click', () => game.clearWaypoint());
     // The tank's fire button (redrawn with the speedo, so listen on the speedo itself).
     this.speedo.addEventListener('pointerdown', (e) => {
@@ -172,6 +177,19 @@ export class CombatHud {
       this.hpWrap.classList.toggle('prot', c.protect > 0);
       const lock = c.teleportLock;
       this.hpText.textContent = `${c.protect > 0 ? 'Safe' : Math.ceil(c.hp)}${lock > 0 ? ` · 📍✕ ${Math.ceil(lock)}s` : ''}`;
+    }
+    // Stamina and stance while your fists (or a melee weapon) are up, or while you get your breath back.
+    const br = c.brawl;
+    const melee = armed && !!gp.def?.melee;
+    const showSt = playing && !g.inside && c.ko <= 0 && (melee || br.stamina < MAX_STAMINA - 0.5 || br.stunned);
+    this.stWrap.hidden = !showSt;
+    if (showSt) {
+      this.stFill.style.width = `${((br.stamina / MAX_STAMINA) * 100).toFixed(1)}%`;
+      this.stWrap.classList.toggle('low', br.winded);
+      const stance = br.stunned ? '💫 Stunned!' : br.riposte > 0 ? '⚔ Counter ready (×2)' : br.blocking ? (br.parryArmed && br.blockFor < 0.25 ? '🛡 Parry!' : '🛡 Blocking') : br.charge > 0 ? `💪 Heavy ${Math.round(br.charge * 100)}%` : br.combo > 0 ? `👊 Combo ${br.combo + 1}/3` : '';
+      this.stText.textContent = stance;
+      this.stText.hidden = !stance;
+      this.stWrap.classList.toggle('alert', br.stunned || br.riposte > 0);
     }
     this.vignette.style.opacity = String(Math.min(0.85, c.flash + (c.hp < 35 && c.ko <= 0 ? 0.25 + Math.sin(performance.now() / 160) * 0.08 : 0)));
     if (c.hitFrom !== null && c.flash > 0.05) {

@@ -36,11 +36,12 @@ import { ITEMS, ITEM_BY_ID, type ItemDef, type Site, itemDef, soldAt, zoneBlock 
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
 import type { Outcome } from '../items/types';
 import { Customer, type CustomerType, spawnPoint } from '../entities/customer';
-import { Worker, roleFor, DOOR_POSTS, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
+import { Worker, roleFor, DOOR_POSTS, DEALER_WAGE, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
 import { Player } from '../entities/player';
 import { type Appearance, defaultAppearance, sanitizeAppearance } from '../entities/appearance';
 import { Floaters } from '../ui/floaters';
 import type { MoneyReason, World } from './world';
+import { LOAN_CALL, LOAN_RATE, accrue, canBorrow, cleanLoan, dailyReward, dailyStatus, dayKey, loanLimit } from './social';
 import { BuildController } from './build';
 import { ACTIVE_OBJECTIVES, HOTEL_OBJECTIVES, OBJECTIVES, type LifetimeStats, type Objective, type ObjectiveView, emptyStats, xpForLevel } from './objectives';
 import { type RoomSetup, changeCost, sameSetup } from '../hotel/rooms';
@@ -54,7 +55,7 @@ import {
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
-import { SLOTS, autoSlot } from './guns';
+import { FISTS, SLOTS, autoSlot, hasWeapon } from './guns';
 import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
 import { Heist, type HouseTarget } from './heist';
 import { type HeistRecord, RECORD_TTL_MS, applyRobbery, cleanRecords, houseCooldown, maxTake, waitText } from './heistRules';
@@ -336,7 +337,11 @@ export class Game implements World, ItemHost {
   private buzz = 0;
   private autosaveT = 30;
   private objectiveT = 0;
-  private interactTarget: { kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void } | null = null;
+  private interactTarget: {
+    kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void;
+    /** Runs every frame Space is held (instead of a hold-to-finish ring). */
+    whileHeld?: (dt: number) => void;
+  } | null = null;
   private holdT = 0;
   private lastInteractKey = '';
   private moneyHistoryT = 0;
@@ -398,6 +403,15 @@ export class Game implements World, ItemHost {
     this.build = new BuildController(this);
     this.gunplay = new GunPlay(this);
     this.combat = new Combat(this);
+    this.street.crowd.onPunch = (p, dmg) => {
+      const w = this.street.globalToWorld(p.x, p.z);
+      audio.playAt('whoosh', w.x, w.z, 0.6);
+      return this.combat.meleeHit(dmg, false, 'world', 'a street brawler', w.x, w.z);
+    };
+    this.street.crowd.onTell = (p, text) => {
+      const w = this.street.globalToWorld(p.x, p.z);
+      this.floaters.text(new THREE.Vector3(w.x, p.model.height + 0.5, w.z), text, text === '!' ? 'bad' : '', text === '!' ? 0.55 : 1.6, 0.3);
+    };
     this.drive = new Driving(this);
     this.street.city.group.add(this.drive.group, this.beacon.group);
     this.base = this.makeBase();
@@ -731,6 +745,151 @@ export class Game implements World, ItemHost {
     this.events.emit('rebirth', n);
     this.saveNow();
     return true;
+  }
+
+  // ------------------------------------------------------------------ bank loan, daily reward, gifts
+
+  /** What you owe the bank right now. */
+  get loanOwed(): number {
+    return cleanLoan(this.net.loan);
+  }
+
+  /** The bank's credit line: grows with your casino's level and your rebirths. */
+  get loanLine(): number {
+    return loanLimit(this.homeLevel, this.rebirths);
+  }
+
+  /** Why you can't use the bank right now (null = go ahead). */
+  loanBlock(): string | null {
+    if (this.site === 'hotel') return 'Loans go to and from your casino’s bank. Leave the hotel first.';
+    return null;
+  }
+
+  /** Borrow from the bank: the cash lands in your casino's bank, interest runs while you play. */
+  borrow(amount: number): boolean {
+    const a = Math.floor(Math.min(amount, canBorrow(this.loanOwed, this.homeLevel, this.rebirths), Math.max(0, MAX_BANK - this.money)));
+    if (this.loanBlock() || a < 100) {
+      audio.play('error');
+      this.notify(this.loanBlock() ?? 'The bank won’t lend you that much more.', 'bad');
+      return false;
+    }
+    this.net.loan = this.loanOwed + a;
+    this.money += a;
+    this.events.emit('money', { money: this.money, delta: a });
+    audio.play('cash');
+    this.notify(`🏦 The bank lent you ${formatMoney(a)}. Interest runs at ${Math.round(LOAN_RATE * 100)}% a day while you play.`, 'money');
+    this.saveNow();
+    return true;
+  }
+
+  /** Pay back some (or all) of the loan from your casino's bank. */
+  repayLoan(amount: number): boolean {
+    const owed = this.loanOwed;
+    const a = Math.min(Math.ceil(owed), Math.floor(amount), Math.floor(Math.max(0, this.money)));
+    if (this.loanBlock() || a <= 0) {
+      audio.play('error');
+      this.notify(this.loanBlock() ?? (owed > 0 ? 'Nothing in the bank to pay with.' : 'You don’t owe the bank anything.'), 'bad');
+      return false;
+    }
+    this.spend(a, 'loan');
+    const left = owed - a;
+    this.net.loan = left >= 1 ? left : 0;
+    audio.play(left >= 1 ? 'cash' : 'jackpot');
+    if (left < 1) this.effects.confetti(this.player.x, 2, this.player.z, 80);
+    this.notify(left >= 1 ? `🏦 Paid back ${formatMoney(a)}. You still owe ${formatMoney(left)}.` : '🏦 Loan paid off. You’re debt free!', 'good');
+    this.saveNow();
+    return true;
+  }
+
+  private loanWarned = 0;
+  /** Seconds spent dealing tables yourself (a little XP every few seconds). */
+  private dealXp = 0;
+
+  /** Interest while you play; owe too much and the bank takes it back out of your casino. */
+  private tickLoan(sim: number): void {
+    const owed = this.loanOwed;
+    if (!owed) return;
+    const now = accrue(owed, sim * 1000);
+    this.net.loan = now;
+    const line = this.loanLine;
+    if (now > line * LOAN_CALL && this.site !== 'hotel') {
+      this.money -= Math.ceil(now);
+      this.net.loan = 0;
+      this.loanWarned = 0;
+      audio.play('bust');
+      this.notify(`🏦 The bank called in your loan and took ${formatMoney(now)} from your casino.${this.money < 0 ? ' You’re in the red!' : ''}`, 'bad');
+      this.events.emit('money', { money: this.money, delta: -Math.ceil(now) });
+      this.saveNow();
+      return;
+    }
+    // Warn once at the credit line and once close to the call.
+    const level = now > line * (LOAN_CALL - 0.15) ? 2 : now > line ? 1 : 0;
+    if (level > this.loanWarned) {
+      this.loanWarned = level;
+      this.notify(level === 2 ? `🏦 Final warning: pay the bank back now or they call in the loan at ${formatMoney(line * LOAN_CALL)}.` : '🏦 Interest has pushed your loan past your credit line. Pay some back soon.', 'bad');
+    } else if (level < this.loanWarned) this.loanWarned = level;
+  }
+
+  /** Today's login reward: can you claim it, which day of the streak, and how much. */
+  dailyInfo(now = new Date()): { claimable: boolean; streak: number; reward: number } {
+    const st = dailyStatus(this.net.daily, now);
+    return { ...st, reward: dailyReward(st.streak, this.homeLevel) };
+  }
+
+  /** Claim today's login reward into your casino's bank (held for later if you're at the hotel). */
+  claimDaily(now = new Date()): number {
+    const d = this.dailyInfo(now);
+    if (!d.claimable) return 0;
+    this.net.daily = { day: dayKey(now), streak: d.streak };
+    this.creditCasino(d.reward, 'reward');
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2, this.player.z, d.streak % 7 === 0 ? 200 : 90, d.streak % 7 === 0 ? 1.3 : 1);
+    this.saveNow();
+    return d.reward;
+  }
+
+  /** Money for your casino's bank from anywhere: at the hotel it waits until you leave. */
+  creditCasino(amount: number, reason: MoneyReason): void {
+    if (amount <= 0) return;
+    if (this.site === 'hotel') this.net.giftHeld = (this.net.giftHeld ?? 0) + amount;
+    else this.addMoney(amount, reason, this.player.model.root.position.clone().setY(2.2));
+  }
+
+  /** Gift cash that waited while you were at the hotel. */
+  releaseHeld(): void {
+    const held = this.net.giftHeld ?? 0;
+    if (held <= 0 || this.site === 'hotel' || this.state !== 'playing') return;
+    this.net.giftHeld = 0;
+    this.addMoney(Math.round(held), 'gift');
+    this.notify(`🎁 ${formatMoney(held)} from gifts and rewards went into your casino’s bank.`, 'money');
+  }
+
+  /** Open a gift: cash into the bank, a luxury item into your collection (or its price, if you have it). */
+  openGift(from: string, cash: number, item: string | undefined, note: string): void {
+    let total = cash;
+    let got = '';
+    const c = item ? cosmetic(item) : undefined;
+    if (c) {
+      if (this.cosmetics.owned.includes(c.id)) total += c.price;
+      else {
+        this.cosmetics = { owned: [...this.cosmetics.owned, c.id], on: [...this.cosmetics.on, c.id] };
+        this.applyCosmetics();
+        got = `${c.icon} ${c.name}`;
+      }
+    }
+    if (total > 0) this.creditCasino(total, 'gift');
+    this.stats.giftsReceived = (this.stats.giftsReceived ?? 0) + 1;
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2.2, this.player.z, 120);
+    const what = [total > 0 ? formatMoney(total) : '', got].filter(Boolean).join(' and ');
+    this.notify(`🎁 ${from} sent you ${what}!${note ? ` “${note}”` : ''}`, 'money');
+    this.saveNow();
+  }
+
+  /** Everything you're worth: both banks and the vault, minus what you owe. */
+  get netWorth(): number {
+    const casino = this.site === 'hotel' ? this.parked?.home.money ?? 0 : this.money;
+    return Math.round(casino + this.hotelMoney + (this.house?.vault ?? 0) - this.loanOwed);
   }
 
   // ------------------------------------------------------------------ hotel
@@ -1504,13 +1663,25 @@ export class Game implements World, ItemHost {
     this.equipGun(this.guns.equipped === id ? null : id);
   }
 
+  private meleeHinted = false;
+
+  /** Step into a punch or a swing (a little lunge the way you face). */
+  lunge(yaw: number, dist: number): void {
+    if (this.drive.driving || this.player.seat || this.combat.rolling) return;
+    this.player.shove(Math.sin(yaw) * dist, Math.cos(yaw) * dist, this.playerWalk);
+  }
+
   /** Draw a gun you own, or holster (null). */
   equipGun(id: string | null): void {
-    if (id && !this.guns.owned.includes(id)) return;
+    if (id && !hasWeapon(this.guns.owned, id)) return;
     // Switching weapons drops whatever the last one was doing (a reload, a burst, a charge).
     if (id !== this.guns.equipped) this.gunplay.switched();
     this.guns = { ...this.guns, equipped: id };
     audio.play(id ? 'reload' : 'click');
+    if (id && gunDef(id)?.melee && !this.meleeHinted) {
+      this.meleeHinted = true;
+      this.notify('👊 Tap to jab (3-hit combos), hold to wind up a heavy blow, hold right-click (AIM on touch) to block. Block just as a hit lands to PARRY: they’re stunned and your next hit counts double.', 'info');
+    }
     this.events.emit('guns', undefined);
     this.requestSave();
   }
@@ -1923,6 +2094,10 @@ export class Game implements World, ItemHost {
   notify(text: string, kind: ToastKind = 'info'): void {
     if (this.state !== 'playing') return;
     this.events.emit('toast', { text, kind });
+  }
+
+  dealersRequired(): boolean {
+    return this.state === 'playing' && !this.visit && this.site === 'casino';
   }
 
   statueLook(): Appearance {
@@ -2487,6 +2662,9 @@ export class Game implements World, ItemHost {
     this.effects.sparkle(item.cx, 1, item.cz, 10);
     this.floaters.money(new THREE.Vector3(item.cx, 1.5, item.cz), -def.price);
     item.pendingXp = Math.round(def.price / 60);
+    if (item.needsDealer) {
+      this.notify(`${def.name} needs a dealer: click it to hire one (${formatMoney(DEALER_WAGE)} a day), or stand beside it and hold Space to deal yourself.`, 'info');
+    }
     if (def.kind === 'vault' && this.house) {
       // A brand-new vault: tier 1, and it wants a code before it'll hold anything.
       if (!this.house.tier) this.house.tier = 1;
@@ -2610,6 +2788,56 @@ export class Game implements World, ItemHost {
     this.events.emit('staff', undefined);
     this.requestSave();
     return true;
+  }
+
+  /** Tables here that need a dealer, and how many have one. */
+  get dealerTables(): PlacedItem[] {
+    return this.items.items.filter((i) => i.needsDealer);
+  }
+
+  /** What the dealers cost a day. */
+  get dealerWages(): number {
+    return this.site === 'casino' ? this.dealerTables.filter((i) => i.dealer).length * DEALER_WAGE : 0;
+  }
+
+  /** Hire a dealer for a table (a small signing bonus, then a daily wage). */
+  hireDealer(item: PlacedItem, quiet = false): boolean {
+    if (this.visit || !item.needsDealer || item.dealer) return false;
+    if (this.money < DEALER_WAGE) {
+      audio.play('error');
+      this.notify(`Hiring a dealer costs a ${formatMoney(DEALER_WAGE)} signing bonus.`, 'bad');
+      return false;
+    }
+    this.spend(DEALER_WAGE, 'wages');
+    item.dealer = true;
+    if (!quiet) {
+      audio.play('purchase');
+      this.notify(`A dealer took their place at the ${item.def.name} (${formatMoney(DEALER_WAGE)} a day).`, 'good');
+    }
+    this.events.emit('staff', undefined);
+    this.requestSave();
+    return true;
+  }
+
+  /** Let a table's dealer go: the table only runs while you deal it yourself. */
+  fireDealer(item: PlacedItem): void {
+    if (this.visit || !item.dealer) return;
+    item.dealer = false;
+    audio.play('click');
+    this.notify(`The ${item.def.name}'s dealer went home. Hold Space beside it to deal yourself.`, 'info');
+    this.events.emit('staff', undefined);
+    this.requestSave();
+  }
+
+  /** A dealer for every table that hasn't got one (as many as you can afford). */
+  hireAllDealers(): number {
+    let n = 0;
+    for (const it of this.dealerTables) if (!it.dealer && this.money >= DEALER_WAGE && this.hireDealer(it, true)) n++;
+    if (n) {
+      audio.play('purchase');
+      this.notify(`${n} dealer${n > 1 ? 's' : ''} hired (${formatMoney(DEALER_WAGE)} a day each).`, 'good');
+    } else this.notify(this.dealerTables.some((i) => !i.dealer) ? `Hiring a dealer costs a ${formatMoney(DEALER_WAGE)} signing bonus.` : 'Every table already has a dealer.', 'info');
+    return n;
   }
 
   fire(w: Worker): void {
@@ -3387,6 +3615,33 @@ export class Game implements World, ItemHost {
         }
       }
     }
+    // A table with no dealer: stand beside it and hold Space to deal yourself.
+    if (!target && this.dealersRequired() && !this.tableFocus) {
+      let bestDeal = 1.6;
+      for (const it of this.items.items) {
+        if (!it.needsDealer || it.dealer || it.broken || it.floor !== pf) continue;
+        const b = it.bounds;
+        const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
+        if (d >= bestDeal) continue;
+        bestDeal = d;
+        const dealing = it.manualDeal > 0;
+        target = {
+          kind: `deal${it.uid}`, label: dealing ? `Dealing ${it.def.name}… keep holding` : `Hold to deal ${it.def.name} · no dealer (click it to hire one)`, hold: true,
+          anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.7, it.cz),
+          act: () => undefined,
+          whileHeld: (dt) => {
+            it.manualDeal = 0.75;
+            this.player.playEmote('deal', 0.3);
+            // A little XP for the time you put in behind the table.
+            this.dealXp += dt;
+            if (this.dealXp >= 6) {
+              this.dealXp = 0;
+              this.gainXp(3);
+            }
+          },
+        };
+      }
+    }
     // Your vault
     if (!target && this.inHouse && this.house) {
       for (const it of this.items.items) {
@@ -3486,7 +3741,9 @@ export class Game implements World, ItemHost {
     const pressed = !blocked && (this.input.hit('Space') || (fKey && this.input.hit('KeyF')) || this.actionPressed);
     this.actionPressed = false;
     if (target) {
-      if (target.hold) {
+      if (target.whileHeld) {
+        if (pressing) target.whileHeld(dt);
+      } else if (target.hold) {
         if (pressing) {
           this.holdT += dt;
           if (Math.random() < dt * 6) audio.play('repair', { volume: 0.6 });
@@ -3856,7 +4113,7 @@ export class Game implements World, ItemHost {
   // ------------------------------------------------------------------ loop
 
   private endOfDay(): void {
-    const wages = this.workers.reduce((a, w) => a + w.info.wage, 0);
+    const wages = this.workers.reduce((a, w) => a + w.info.wage, 0) + this.dealerWages;
     let upkeep = this.items.items.reduce((a, i) => a + i.def.upkeep, 0);
     // In the hotel, the buildings you're not standing in still pay their staff and upkeep.
     if (this.hotel && this.site === 'hotel') upkeep += hotelDailyCosts(this.hotel.buildings.filter((b) => b.id !== this.hotelBid).map((b) => b.snap));
@@ -4013,6 +4270,10 @@ export class Game implements World, ItemHost {
     if (playing) {
       if (this.parked) this.parked.away += sim;
       this.tickHotel(sim);
+      if (!this.catchingUp) {
+        this.tickLoan(sim);
+        if (this.net.giftHeld && this.site !== 'hotel') this.releaseHeld();
+      }
       if (this.visit) {
         this.visit.away += sim;
         if (tickRival(this.rival, sim)) this.refreshStreet();
@@ -4139,6 +4400,8 @@ export class Game implements World, ItemHost {
       if (!this.build.active) {
         // 1–5: weapon slots. 6–9: emotes.
         for (let k = 0; k < SLOTS; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.useSlot(k);
+        // X (or 0): fists up, or put them down.
+        if (input.hit('KeyX') || input.hit('Digit0') || input.hit('Numpad0')) this.equipGun(this.guns.equipped === FISTS ? null : FISTS);
         if (input.hit('Digit6')) this.player.playEmote('wave', 2);
         if (input.hit('Digit7')) this.player.playEmote('dance', 4);
         if (input.hit('Digit8')) this.player.playEmote('cheer', 2);
@@ -4204,6 +4467,17 @@ export class Game implements World, ItemHost {
       }
       const c = this.combat;
       if (c.rolling) ix = iz = 0;
+      // Fist fights: blocking slows you to a shuffle, being stunned nearly roots you.
+      const br = c.brawl;
+      if (br.stunned) {
+        ix *= 0.2;
+        iz *= 0.2;
+        if (Math.random() < dt * 3) this.floaters.text(this.player.model.root.position.clone().setY(this.player.model.height + 0.5), '💫', '', 0.6, 0.4);
+      } else if (br.blocking && this.gunplay.drawn) {
+        ix *= 0.5;
+        iz *= 0.5;
+        this.player.playEmote('handsUp', 0.12);
+      }
       this.player.model.roll = c.rolling ? 1 - c.rollT / ROLL_TIME : 0;
       const rp = this.gunplay.reloadProgress;
       this.player.model.reloadK = rp >= 0 ? rp : 0;
@@ -4333,7 +4607,10 @@ export class Game implements World, ItemHost {
     const pg = this.street.worldToGlobal(this.player.x, this.player.z);
     this.street.city.player.x = this.inside ? -9999 : pg.x;
     this.street.city.player.z = pg.z;
-    this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
+    // Street brawlers come after you while you're out there and on your feet.
+    const crowd = this.street.crowd;
+    crowd.foe = this.state === 'playing' && this.combat.exposed && this.combat.ko <= 0 && !this.drive.driving ? this.street.worldToGlobal(this.player.x, this.player.z) : null;
+        this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
     // Neon pops a little more after dark
     // The sky follows the clock; indoors the casino keeps its own lighting.
     this.sky.set(this.state === 'playing' ? this.clockMinutes : 19.8 * 60, dt);
