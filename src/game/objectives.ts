@@ -85,6 +85,9 @@ export interface LifetimeStats {
   /** Cars wrecked (blown up) and vehicles driven out of the military base. */
   carsWrecked?: number;
   baseRaids?: number;
+  /** Gifts sent to and opened from other players. */
+  giftsSent?: number;
+  giftsReceived?: number;
 }
 
 export function emptyStats(): LifetimeStats {

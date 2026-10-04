@@ -56,6 +56,20 @@ export interface NetState {
   ep?: string;
   /** The running-total id each visitor's `credited` amount belongs to. */
   creditedEp?: Record<string, string>;
+  /** Gifts you sent (kept in your ledger until they expire). */
+  gifts?: import('./social').GiftOut[];
+  /** Gifts you opened: gift id → when. */
+  giftSeen?: Record<string, number>;
+  /** Gifts you opened, newest last (for the history). */
+  giftLog?: import('./social').GiftIn[];
+  /** Gifts sent before this moment aren't yours to open (a fresh player id starts here). */
+  giftSince?: number;
+  /** Gift cash that arrived while you ran the hotel (it goes into the casino's bank later). */
+  giftHeld?: number;
+  /** Daily login reward streak. */
+  daily?: import('./social').DailyState;
+  /** What you owe the bank (it follows you through rebirths and new casinos). */
+  loan?: number;
 }
 
 export function newNetEpoch(): string {
@@ -101,7 +115,7 @@ export interface SaveData extends CasinoSnapshot {
 }
 
 export function emptyNet(): NetState {
-  return { owes: {}, credited: {}, bans: {}, banCooldown: {}, ep: newNetEpoch(), creditedEp: {} };
+  return { owes: {}, credited: {}, bans: {}, banCooldown: {}, ep: newNetEpoch(), creditedEp: {}, giftSince: Date.now() };
 }
 
 export function newRival(): RivalState {

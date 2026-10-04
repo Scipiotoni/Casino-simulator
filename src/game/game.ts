@@ -41,6 +41,7 @@ import { Player } from '../entities/player';
 import { type Appearance, defaultAppearance, sanitizeAppearance } from '../entities/appearance';
 import { Floaters } from '../ui/floaters';
 import type { MoneyReason, World } from './world';
+import { LOAN_CALL, LOAN_RATE, accrue, canBorrow, cleanLoan, dailyReward, dailyStatus, dayKey, loanLimit } from './social';
 import { BuildController } from './build';
 import { ACTIVE_OBJECTIVES, HOTEL_OBJECTIVES, OBJECTIVES, type LifetimeStats, type Objective, type ObjectiveView, emptyStats, xpForLevel } from './objectives';
 import { type RoomSetup, changeCost, sameSetup } from '../hotel/rooms';
@@ -690,6 +691,149 @@ export class Game implements World, ItemHost {
     this.events.emit('rebirth', n);
     this.saveNow();
     return true;
+  }
+
+  // ------------------------------------------------------------------ bank loan, daily reward, gifts
+
+  /** What you owe the bank right now. */
+  get loanOwed(): number {
+    return cleanLoan(this.net.loan);
+  }
+
+  /** The bank's credit line: grows with your casino's level and your rebirths. */
+  get loanLine(): number {
+    return loanLimit(this.homeLevel, this.rebirths);
+  }
+
+  /** Why you can't use the bank right now (null = go ahead). */
+  loanBlock(): string | null {
+    if (this.site === 'hotel') return 'Loans go to and from your casino’s bank. Leave the hotel first.';
+    return null;
+  }
+
+  /** Borrow from the bank: the cash lands in your casino's bank, interest runs while you play. */
+  borrow(amount: number): boolean {
+    const a = Math.floor(Math.min(amount, canBorrow(this.loanOwed, this.homeLevel, this.rebirths), Math.max(0, MAX_BANK - this.money)));
+    if (this.loanBlock() || a < 100) {
+      audio.play('error');
+      this.notify(this.loanBlock() ?? 'The bank won’t lend you that much more.', 'bad');
+      return false;
+    }
+    this.net.loan = this.loanOwed + a;
+    this.money += a;
+    this.events.emit('money', { money: this.money, delta: a });
+    audio.play('cash');
+    this.notify(`🏦 The bank lent you ${formatMoney(a)}. Interest runs at ${Math.round(LOAN_RATE * 100)}% a day while you play.`, 'money');
+    this.saveNow();
+    return true;
+  }
+
+  /** Pay back some (or all) of the loan from your casino's bank. */
+  repayLoan(amount: number): boolean {
+    const owed = this.loanOwed;
+    const a = Math.min(Math.ceil(owed), Math.floor(amount), Math.floor(Math.max(0, this.money)));
+    if (this.loanBlock() || a <= 0) {
+      audio.play('error');
+      this.notify(this.loanBlock() ?? (owed > 0 ? 'Nothing in the bank to pay with.' : 'You don’t owe the bank anything.'), 'bad');
+      return false;
+    }
+    this.spend(a, 'loan');
+    const left = owed - a;
+    this.net.loan = left >= 1 ? left : 0;
+    audio.play(left >= 1 ? 'cash' : 'jackpot');
+    if (left < 1) this.effects.confetti(this.player.x, 2, this.player.z, 80);
+    this.notify(left >= 1 ? `🏦 Paid back ${formatMoney(a)}. You still owe ${formatMoney(left)}.` : '🏦 Loan paid off. You’re debt free!', 'good');
+    this.saveNow();
+    return true;
+  }
+
+  private loanWarned = 0;
+
+  /** Interest while you play; owe too much and the bank takes it back out of your casino. */
+  private tickLoan(sim: number): void {
+    const owed = this.loanOwed;
+    if (!owed) return;
+    const now = accrue(owed, sim * 1000);
+    this.net.loan = now;
+    const line = this.loanLine;
+    if (now > line * LOAN_CALL && this.site !== 'hotel') {
+      this.money -= Math.ceil(now);
+      this.net.loan = 0;
+      this.loanWarned = 0;
+      audio.play('bust');
+      this.notify(`🏦 The bank called in your loan and took ${formatMoney(now)} from your casino.${this.money < 0 ? ' You’re in the red!' : ''}`, 'bad');
+      this.events.emit('money', { money: this.money, delta: -Math.ceil(now) });
+      this.saveNow();
+      return;
+    }
+    // Warn once at the credit line and once close to the call.
+    const level = now > line * (LOAN_CALL - 0.15) ? 2 : now > line ? 1 : 0;
+    if (level > this.loanWarned) {
+      this.loanWarned = level;
+      this.notify(level === 2 ? `🏦 Final warning: pay the bank back now or they call in the loan at ${formatMoney(line * LOAN_CALL)}.` : '🏦 Interest has pushed your loan past your credit line. Pay some back soon.', 'bad');
+    } else if (level < this.loanWarned) this.loanWarned = level;
+  }
+
+  /** Today's login reward: can you claim it, which day of the streak, and how much. */
+  dailyInfo(now = new Date()): { claimable: boolean; streak: number; reward: number } {
+    const st = dailyStatus(this.net.daily, now);
+    return { ...st, reward: dailyReward(st.streak, this.homeLevel) };
+  }
+
+  /** Claim today's login reward into your casino's bank (held for later if you're at the hotel). */
+  claimDaily(now = new Date()): number {
+    const d = this.dailyInfo(now);
+    if (!d.claimable) return 0;
+    this.net.daily = { day: dayKey(now), streak: d.streak };
+    this.creditCasino(d.reward, 'reward');
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2, this.player.z, d.streak % 7 === 0 ? 200 : 90, d.streak % 7 === 0 ? 1.3 : 1);
+    this.saveNow();
+    return d.reward;
+  }
+
+  /** Money for your casino's bank from anywhere: at the hotel it waits until you leave. */
+  creditCasino(amount: number, reason: MoneyReason): void {
+    if (amount <= 0) return;
+    if (this.site === 'hotel') this.net.giftHeld = (this.net.giftHeld ?? 0) + amount;
+    else this.addMoney(amount, reason, this.player.model.root.position.clone().setY(2.2));
+  }
+
+  /** Gift cash that waited while you were at the hotel. */
+  releaseHeld(): void {
+    const held = this.net.giftHeld ?? 0;
+    if (held <= 0 || this.site === 'hotel' || this.state !== 'playing') return;
+    this.net.giftHeld = 0;
+    this.addMoney(Math.round(held), 'gift');
+    this.notify(`🎁 ${formatMoney(held)} from gifts and rewards went into your casino’s bank.`, 'money');
+  }
+
+  /** Open a gift: cash into the bank, a luxury item into your collection (or its price, if you have it). */
+  openGift(from: string, cash: number, item: string | undefined, note: string): void {
+    let total = cash;
+    let got = '';
+    const c = item ? cosmetic(item) : undefined;
+    if (c) {
+      if (this.cosmetics.owned.includes(c.id)) total += c.price;
+      else {
+        this.cosmetics = { owned: [...this.cosmetics.owned, c.id], on: [...this.cosmetics.on, c.id] };
+        this.applyCosmetics();
+        got = `${c.icon} ${c.name}`;
+      }
+    }
+    if (total > 0) this.creditCasino(total, 'gift');
+    this.stats.giftsReceived = (this.stats.giftsReceived ?? 0) + 1;
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2.2, this.player.z, 120);
+    const what = [total > 0 ? formatMoney(total) : '', got].filter(Boolean).join(' and ');
+    this.notify(`🎁 ${from} sent you ${what}!${note ? ` “${note}”` : ''}`, 'money');
+    this.saveNow();
+  }
+
+  /** Everything you're worth: both banks and the vault, minus what you owe. */
+  get netWorth(): number {
+    const casino = this.site === 'hotel' ? this.parked?.home.money ?? 0 : this.money;
+    return Math.round(casino + this.hotelMoney + (this.house?.vault ?? 0) - this.loanOwed);
   }
 
   // ------------------------------------------------------------------ hotel
@@ -3799,6 +3943,10 @@ export class Game implements World, ItemHost {
     if (playing) {
       if (this.parked) this.parked.away += sim;
       this.tickHotel(sim);
+      if (!this.catchingUp) {
+        this.tickLoan(sim);
+        if (this.net.giftHeld && this.site !== 'hotel') this.releaseHeld();
+      }
       if (this.visit) {
         this.visit.away += sim;
         if (tickRival(this.rival, sim)) this.refreshStreet();

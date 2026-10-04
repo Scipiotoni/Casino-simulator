@@ -10,7 +10,7 @@ import type { Customer } from '../entities/customer';
 
 export type MoneyReason =
   | 'collect' | 'tip' | 'bust' | 'purchase' | 'upgrade' | 'sell' | 'wages' | 'upkeep' | 'reward' | 'payout' | 'expand' | 'paint'
-  | 'comp' | 'event' | 'play' | 'cosmetic' | 'build' | 'loot' | 'robbed';
+  | 'comp' | 'event' | 'play' | 'cosmetic' | 'build' | 'loot' | 'robbed' | 'gift' | 'loan';
 
 /** What NPCs and machines are allowed to see and poke of the running game. */
 export interface World {

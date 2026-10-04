@@ -67,6 +67,8 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 
 **Multiplayer**
 - Everyone who opens the game (the public site, or the shared Claude artifact) builds a casino on the same street. You see each other walking around live, with name tags, and you can walk into any published casino and play its games. Losses and wins at another player's tables are settled into their bank through a shared ledger, even if they're offline.
+- **Gifts:** send any player cash (up to $1,000,000 a box), a luxury item from the luxury shop, or both, with a note: click them, or use Menu → 🎁 Gifts or the 🎁 buttons in the players list and leaderboard. It comes out of your casino's bank right away. If they're online they open it at once (confetti!); if not, it waits for them for up to two weeks. A luxury item they already own turns into its price in cash. Menu → 🎁 Gifts also shows every gift you've sent and opened.
+- **Leaderboard** (Menu → 🏆 Leaderboard): everyone with a casino on the street, ranked by net worth (both banks plus the vault, minus what you owe), star rating, casino level or rebirths. Send a gift straight from the list.
 - **Blacklist** anyone, any time, for no reason at all: from **Menu → Players & blacklist** (everyone online plus every casino owner on the street) or by clicking a player. **Your security charges for it:** $2,500 for 5 min, $7,500 for 15 min, $15,000 for 30 min, $24,000 for 1 h and $96,000 for 4 h (each button shows its price). Change it any time (you pay for the new length), or lift it early for free. A blacklisted player is walked out of your casino, hotel and house and can't get back in until it runs out.
 
 **Hotel and rebirths**
@@ -78,6 +80,10 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 - **Services:** breakfast buffet, restaurant, spa, gym, gift shop, vending machines and a laundry (housekeepers clean faster). Guests write reviews after checking out, and the average moves your rating. Watch for tour groups, conventions, weddings, celebrities and the hotel critic.
 - Guests have a budget: backpackers, regulars, business travellers and high rollers. They check in at reception, pick the best room they can afford, sleep in it (and pay) for a few nights, have breakfast, take a swim or a drink, and check out. Then the room needs making up: hire housekeepers, or hold Space next to it yourself. While you're at the casino the hotel keeps earning on an estimate from your last visit, and some of its guests come over to gamble.
 - **Rebirth** (in the menu) once your casino reaches level 15 and $1,000,000 (the bar rises each time): your casino, hotel, money, level and goals reset, but you keep your character, casino style and luxury items, and everything you earn is worth 25% more for each rebirth. Your rebirth badge shows next to your level, on your name tag and on your casino's sign.
+
+**Daily rewards and the bank**
+- **Daily reward** (Menu → 📅 Daily reward, offered when you come back): play on consecutive days for a bigger reward each day. Day 7 pays ten times day 1. The amounts grow with your casino's level, and missing a day starts the streak over.
+- **Bank loans** (Menu → 🏦 Bank loan): borrow up to $20,000 per casino level (more after rebirths) straight into your casino's bank. Interest is 3% a game day, charged only while you play. Pay it back whenever you like. If interest pushes what you owe past 1.5× your credit line, the bank calls the loan in and takes the lot from your casino, even if that puts you in the red. Loans follow you through rebirths and new casinos.
 
 **Your house and bank**
 - From casino level 3, buy a **house on Palm Avenue** ($15,000), right behind your casino. Furnish it from its own shop (furniture, fun, decor, garden, security) and hire **bodyguards** and **gate guards**. Your casino keeps running while you're home.

@@ -21,6 +21,7 @@ import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
 import { CharacterCreator } from './creator';
+import { type SocialApi, openDaily, openGift, openGifts, openLeaderboard, openLoan } from './social';
 
 interface Frame {
   layer: HTMLElement;
@@ -37,6 +38,16 @@ export class Modals {
   openPlayers: (() => void) | null = null;
   /** One line about multiplayer (set by the net layer). */
   netStatus: (() => string) | null = null;
+  /** Gifts and the leaderboard (set by the net layer). */
+  social: SocialApi | null = null;
+
+  openGift(pid: string, name: string): void {
+    openGift(this.game, this, this.social, pid, name);
+  }
+
+  openDaily(): void {
+    openDaily(this.game, this);
+  }
 
   constructor(private parent: HTMLElement, private game: Game, private hud: Hud) {
     window.addEventListener('keydown', (e) => {
@@ -756,6 +767,10 @@ export class Modals {
       h('button', { class: 'btn', text: '🚗 My cars', onClick: () => { this.close(); openDealer(g, this, true); } }),
       h('button', { class: 'btn', text: '📖 Casino school', onClick: () => { this.close(); openSchool(g, this); } }),
       h('button', { class: 'btn', text: '👥 Players & blacklist', onClick: () => (this.openPlayers ? this.openPlayers() : g.notify('Multiplayer isn’t connected here.', 'bad')) }),
+      h('button', { class: 'btn', text: '🎁 Gifts', onClick: () => openGifts(g, this, this.social) }),
+      h('button', { class: 'btn', text: '🏆 Leaderboard', onClick: () => openLeaderboard(g, this, this.social) }),
+      h('button', { class: 'btn', text: `📅 Daily reward${g.dailyInfo().claimable ? ' •' : ''}`, onClick: () => this.openDaily() }),
+      h('button', { class: 'btn', text: `🏦 Bank loan${g.loanOwed > 0 ? ` (${formatMoney(g.loanOwed)})` : ''}`, onClick: () => openLoan(g, this) }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));
     body.appendChild(slider('Sound effects', st.sfx, (v) => { st.sfx = v; this.onSettingsChanged?.(); }));

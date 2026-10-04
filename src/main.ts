@@ -142,6 +142,9 @@ async function start(hotData: unknown): Promise<void> {
     hud.banner(`Welcome to ${opts.name}!`, 'Tap Build to buy your first slot machine.', 'level');
     window.setTimeout(() => game.notify('Tip: every bet lands straight in your bank, and every guest win comes out of it. The house edge does the rest.', 'info'), 4200);
     window.setTimeout(() => game.notify('Tip: walk out the front door to visit the rival casino down the street.', 'info'), 12000);
+    window.setTimeout(() => {
+      if (game.state === 'playing' && game.dailyInfo().claimable) game.notify('📅 A daily reward is waiting for you in the Menu. Come back every day for a bigger one!', 'event');
+    }, 30000);
   };
   title.onContinue = () => {
     const s = readSave();
@@ -150,6 +153,10 @@ async function start(hotData: unknown): Promise<void> {
       game.load(s);
       enterGame();
       game.notify(`Welcome back! ${s.name} is open for business.`, 'good');
+      // A new day: offer the login reward.
+      window.setTimeout(() => {
+        if (game.state === 'playing' && !hud.modals.isOpen && game.dailyInfo().claimable) hud.modals.openDaily();
+      }, 1500);
     } catch (err) {
       console.error(err);
       game.notify('That save could not be loaded. Starting fresh.', 'bad');
