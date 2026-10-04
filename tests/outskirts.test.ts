@@ -3,9 +3,9 @@ import { MIN_COLS, STREET_ROWS, WILDS, cityX, cityZ, inWilds, onRoadNetwork, ope
 import { sunDirection } from '../src/world/sky';
 
 describe('a bigger city with open desert around it', () => {
-  it('has eight streets and at least ten blocks', () => {
-    expect(STREET_ROWS).toBe(8);
-    expect(MIN_COLS).toBeGreaterThanOrEqual(40);
+  it('has twelve streets and at least sixteen blocks', () => {
+    expect(STREET_ROWS).toBe(12);
+    expect(MIN_COLS).toBeGreaterThanOrEqual(64);
   });
 
   it('lets you walk past the city edge into the desert, up to the mountains', () => {

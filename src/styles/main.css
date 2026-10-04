@@ -5938,3 +5938,43 @@ p.small {
   background: var(--gold);
   color: var(--gold-ink);
 }
+
+/* Drift score, top middle while you slide */
+.drift-meter {
+  position: absolute;
+  top: 128px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 16px;
+  border-radius: 14px;
+  background: rgba(14, 10, 24, 0.72);
+  border: 1px solid rgba(255, 197, 61, 0.45);
+  color: #fff;
+  font-family: Bungee, 'Arial Black', sans-serif;
+  pointer-events: none;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.drift-meter small { font-family: system-ui, sans-serif; font-weight: 800; font-size: 12px; letter-spacing: 0.08em; color: #ffd76a; }
+.drift-meter b { font-size: 26px; font-weight: 400; color: #fff; }
+.drift-meter em { font-style: normal; font-size: 16px; color: #2fe6ff; }
+.drift-meter.done { border-color: #39ff88; animation: drift-pop 0.35s ease-out; }
+.drift-meter.done b { color: #39ff88; }
+.drift-meter.wiped { border-color: #ff4d6d; }
+.drift-meter.wiped b { color: #ff4d6d; }
+@keyframes drift-pop { from { transform: translateX(-50%) scale(1.35); } to { transform: translateX(-50%) scale(1); } }
+.speedo .drift-btn {
+  pointer-events: auto;
+  margin-top: 6px;
+  width: 100%;
+  padding: 10px 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: #2f6ad6;
+  color: #fff;
+  font-weight: 900;
+  font-size: 14px;
+  touch-action: none;
+}

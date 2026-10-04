@@ -101,6 +101,11 @@ export class Input {
   }
 
   /** True only on the frame the key went down. */
+  /** Forget a key press this frame (it was used up). */
+  consume(code: string): void {
+    this.pressed.delete(code);
+  }
+
   hit(code: string): boolean {
     return this.pressed.has(code);
   }

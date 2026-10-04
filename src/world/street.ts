@@ -8,6 +8,7 @@ import {
 import { type SolidRect, lotHeight, lotSolids } from './footprint';
 import { CentralPark } from './park';
 import { cullChunks } from './nature';
+import { VIEW } from './viewDistance';
 import { CityView } from './cityView';
 import { Crowd, type DoorSpot } from './crowd';
 import { Police } from './police';
@@ -94,6 +95,9 @@ export class Street {
   camPos: { x: number; y: number; z: number } | null = null;
   /** Seconds a building in the way stays hidden (no flicker at the edges). */
   private hideT = new Map<string, number>();
+  /** The lots near the focus (re-picked when you've moved a bit: the city has over a thousand). */
+  private nearLots: StreetLot[] = [];
+  private nearAt = { x: 1e9, z: 1e9, r: 0, active: '' };
   lots: StreetLot[] = [];
   activeId = 'me';
   /** Lot columns along each street. */
@@ -244,6 +248,7 @@ export class Street {
     this.byId = new Map(out.map((l) => [l.id, l]));
     this.solids.clear();
     this.prints.clear();
+    this.nearAt.r = -1;
     for (const l of out) this.solids.set(slotKey(this.slots.get(l.id)!), lotSolids(l.info));
     this.skyRebuild = true;
     // Doors people walk in and out of: casinos and hotels are the busy ones.
@@ -449,10 +454,20 @@ export class Street {
     if (sim > 0) this.crowd.update(sim, f.x, f.z, this.doors.filter((d) => d.lotId !== this.activeId), true);
     // The camera in the global frame: buildings between it and you get out of the way.
     const cam = !inside && this.camPos ? { ...this.worldToGlobal(this.camPos.x, this.camPos.z), y: this.camPos.y } : null;
-    for (const l of this.lots) {
-      if (emptyLot(l)) continue;
+    const R = VIEW_R * VIEW.scale;
+    const na = this.nearAt;
+    if (na.r !== R || na.active !== this.activeId || Math.hypot(f.x - na.x, f.z - na.z) > 12) {
+      this.nearAt = { x: f.x, z: f.z, r: R, active: this.activeId };
+      this.nearLots = this.lots.filter((l) => {
+        if (emptyLot(l)) return false;
+        if (l.id === this.activeId) return true;
+        const c = this.toGlobal(l.id, CENTER_X, FACADE_Z - 12);
+        return Math.hypot(c.x - f.x, c.z - f.z) < R + 14;
+      });
+    }
+    for (const l of this.nearLots) {
       const c = this.toGlobal(l.id, CENTER_X, FACADE_Z - 12);
-      if (l.id !== this.activeId && Math.hypot(c.x - f.x, c.z - f.z) > VIEW_R) continue;
+      if (l.id !== this.activeId && Math.hypot(c.x - f.x, c.z - f.z) > R) continue;
       keep.add(l.id);
       const key = JSON.stringify(l.info);
       let b = this.built.get(l.id);

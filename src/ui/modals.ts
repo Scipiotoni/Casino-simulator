@@ -1,3 +1,4 @@
+import { VIEW_DISTANCES } from '../world/viewDistance';
 import { type Game, type DayReport, roman } from '../game/game';
 import { HOTEL_PRICE, HOTEL_START_CASH, buildingCost, buildingName, hotelGuestBoost, hotelName, snapChecklist } from '../game/hotel';
 import { BEDS, ROOM_CLASS_NAMES, ROOM_EXTRAS, ROOM_FLOORS, ROOM_THEMES, ROOM_WALLS, type RoomSetup, changeCost, fitsClass, roomRate, roomStars, sameSetup, setupValue, themeFor } from '../hotel/rooms';
@@ -810,6 +811,15 @@ export class Modals {
       }));
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Graphics' }), q));
+    const vd = h('div', { class: 'seg' });
+    for (const v of VIEW_DISTANCES) {
+      vd.appendChild(h('button', {
+        class: `seg-btn${(st.viewDist ?? 'normal') === v.id ? ' on' : ''}`, text: v.label,
+        onClick: () => { g.setViewDistance(v.id); vd.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.textContent === v.label)); this.onSettingsChanged?.(); },
+      }));
+    }
+    body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'View distance' }), vd));
+    body.appendChild(h('p', { class: 'muted small', text: 'How far buildings, trees and street lamps are drawn in full (further out the city is simple blocks). Near is lighter on slow devices; Far looks further but costs more.' }));
     body.appendChild(h('p', { class: 'muted small', text: 'Ult (AFK) is for leaving the game running: up to 600 guests (3× as many arrive, and far more than you have seats), everyone drawn as simple blocks, half resolution and no shadows or glow.' }));
     const cam = h('div', { class: 'seg' });
     for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person'], ['first', 'First person']] as const) {

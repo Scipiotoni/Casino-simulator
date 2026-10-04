@@ -140,7 +140,7 @@ export class Effects {
     this.sparklePool = new Pool(sparkGeo, sparkMat, 300, -10);
     const smokeGeo = new THREE.SphereGeometry(0.16, 8, 6);
     const smokeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, roughness: 1, depthWrite: false });
-    this.smokePool = new Pool(smokeGeo, smokeMat, 160, -10);
+    this.smokePool = new Pool(smokeGeo, smokeMat, 300, -10);
     const coinGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.022, 16);
     coinGeo.rotateX(Math.PI / 2);
     const coinMat = new THREE.MeshStandardMaterial({ map: coinTexture(), metalness: 0.6, roughness: 0.3, emissive: 0x6b4a00, emissiveIntensity: 0.6 });
@@ -303,6 +303,20 @@ export class Effects {
       p.grow = 2.2;
       p.drag = 0.3;
       p.color.setHex(dark > 0.5 ? 0x2a2629 : 0x8a858c);
+    });
+  }
+
+  /** Thick white tyre smoke from a drifting or spinning wheel; it drifts with the car a little. */
+  tyreSmoke(x: number, z: number, vx: number, vz: number, amount = 1): void {
+    if (this.muted) return;
+    this.smokePool.spawn((p) => {
+      p.p.set(x + (Math.random() - 0.5) * 0.3, 0.25, z + (Math.random() - 0.5) * 0.3);
+      p.v.set(vx * 0.12 + (Math.random() - 0.5) * 0.8, 0.35 + Math.random() * 0.5, vz * 0.12 + (Math.random() - 0.5) * 0.8);
+      p.drag = 1.2;
+      p.max = 1.6 + amount * 1.4 + Math.random() * 0.6;
+      p.size = 0.9 + amount * 0.8;
+      p.grow = 3.2;
+      p.color.setHex(0xe9e6e2);
     });
   }
 

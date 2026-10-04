@@ -53,13 +53,16 @@ export class CombatHud {
   private feedEl = h('div', { class: 'kill-feed' });
   private feedKey = '';
   private bannerEl = h('div', { class: 'ko-banner', hidden: true });
+  /** The drift going on (score, angle), and the one you just finished. */
+  private driftEl = h('div', { class: 'drift-meter', hidden: true });
+  private driftKey = '';
   private bannerT = -1;
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.stWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.stWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl, this.driftEl);
     this.wp.addEventListener('click', () => game.clearWaypoint());
     // The tank's fire button (redrawn with the speedo, so listen on the speedo itself).
     this.speedo.addEventListener('pointerdown', (e) => {
@@ -68,7 +71,16 @@ export class CombatHud {
         e.stopPropagation();
         game.drive.fireRequest = true;
       }
+      // Touch: hold DRIFT for the handbrake.
+      if ((e.target as HTMLElement).closest('.drift-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        game.drive.handbrake = true;
+      }
     });
+    const release = () => (game.drive.handbrake = false);
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
   }
 
   update(dt: number): void {
@@ -259,7 +271,24 @@ export class CombatHud {
     if (skey !== this.speedoKey) {
       this.speedoKey = skey;
       this.speedo.hidden = !car;
-      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/E' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i><em class="carhp${hpPct < 25 ? ' crit' : hpPct < 50 ? ' low' : ''}" title="Durability"><u style="width:${hpPct}%"></u></em><span>🛠 ${hpPct}%</span>${cannon >= 0 ? `<button class="tank-fire" type="button">${cannon > 0 ? `Reloading ${cannon}s` : '💥 FIRE · click / F'}</button>` : ''}${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
+      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/R' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i><em class="carhp${hpPct < 25 ? ' crit' : hpPct < 50 ? ' low' : ''}" title="Durability"><u style="width:${hpPct}%"></u></em><span>🛠 ${hpPct}%</span>${cannon >= 0 ? `<button class="tank-fire" type="button">${cannon > 0 ? `Reloading ${cannon}s` : '💥 FIRE · click / F'}</button>` : g.input.isTouch ? '<button class="drift-btn" type="button">💨 DRIFT</button>' : ''}${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>NITRO · Shift</span>` : ''}`;
+    }
+    // Drift score: live while you slide, then what you banked (or WIPED OUT).
+    const dft = car && !car.def?.cannon ? dr.drift : null;
+    const live = !!dft && dft.t > 0.35;
+    const done = !!dft && !live && dft.doneT > 0;
+    const dkey = live ? `l${Math.round(dft!.score / 10)}|${Math.round(dft!.angle * 57.3 / 5)}` : done ? `d${dft!.done}|${dft!.wiped}` : '';
+    if (dkey !== this.driftKey) {
+      this.driftKey = dkey;
+      this.driftEl.hidden = !live && !done;
+      this.driftEl.classList.toggle('done', done);
+      this.driftEl.classList.toggle('wiped', done && dft!.wiped);
+      if (live) {
+        const mult = 1 + Math.min(2, dft!.t / 3);
+        this.driftEl.innerHTML = `<small>DRIFT · ${Math.round(dft!.angle * 57.3)}°</small><b>${Math.round(dft!.score).toLocaleString('en-US')}</b><em>×${mult.toFixed(1)}</em>`;
+      } else if (done) {
+        this.driftEl.innerHTML = dft!.wiped ? '<small>DRIFT LOST</small><b>WIPED OUT</b>' : `<small>NICE DRIFT</small><b>+${dft!.done.toLocaleString('en-US')}</b>${(g.stats.bestDrift ?? 0) <= dft!.done ? '<em>BEST!</em>' : ''}`;
+      }
     }
     // Waypoint: what it is, how far, and which way (relative to where the camera looks).
     const wpt = playing ? g.waypoint : null;

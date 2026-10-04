@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mat } from '../render/materials';
+import { VIEW } from './viewDistance';
 
 /**
  * Bits shared by the parks, the lake and the forest: a spatial hash of things you can't walk
@@ -159,7 +160,15 @@ export function instances(parent: THREE.Object3D, geo: THREE.BufferGeometry, m: 
 }
 
 /** Every chunk made by `instancedChunks`, so the far ones can be skipped (global frame). */
-const chunks: { mesh: THREE.InstancedMesh; x: number; z: number; r: number; far: number }[] = [];
+const chunks: { mesh: THREE.Mesh; x: number; z: number; r: number; far: number }[] = [];
+
+/** Skip this mesh when it's further than `far` from the focus (its geometry is in the global frame). */
+export function cullByDistance(mesh: THREE.Mesh, far: number): void {
+  const g = mesh.geometry;
+  if (!g.boundingSphere) g.computeBoundingSphere();
+  const bs = g.boundingSphere;
+  if (bs) chunks.push({ mesh, x: bs.center.x, z: bs.center.z, r: bs.radius, far });
+}
 let cullTick = 0;
 
 /** Is this object still part of a scene? */
@@ -178,7 +187,8 @@ export function cullChunks(fx: number, fz: number): void {
     // Chunks of a rebuilt city are gone from the scene: forget them.
     for (let i = chunks.length - 1; i >= 0; i--) if (!attached(chunks[i].mesh)) chunks.splice(i, 1);
   }
-  for (const c of chunks) c.mesh.visible = Math.hypot(c.x - fx, c.z - fz) - c.r < c.far;
+  const k = VIEW.scale;
+  for (const c of chunks) c.mesh.visible = Math.hypot(c.x - fx, c.z - fz) - c.r < c.far * k;
 }
 
 /**

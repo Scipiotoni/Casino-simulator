@@ -24,18 +24,27 @@ export const ALLEY = 8;
 /** Distance between two streets (centre to centre). */
 export const ROW_GAP = 2 * (ROAD_MID - FACADE_Z) + 2 * MAX_DEPTH + ALLEY;
 /** Streets in the city (rows of lots). */
-export const STREET_ROWS = 8;
+export const STREET_ROWS = 12;
 /** The city is at least this many lots wide. */
-export const MIN_COLS = 40;
+export const MIN_COLS = 64;
 /** Half the road width (curb to centre line). */
 export const ROAD_HALF = ROAD_MID - (SIDEWALK_Z0 + 4);
 
-export const STREET_NAMES = ['Casino Strip', 'Palm Avenue', 'Downtown Boulevard', 'Sunset Drive', 'Park Lane', 'Lakeview Road', 'Industrial Way', 'Old Town Road'];
-export const STREET_BLURBS = ['Casinos & hotels', 'Houses', 'Shops & offices', 'Warehouses & nightlife', 'Central Park', 'Homes by the park', 'Factories & depots', 'Old town & markets'];
-const AVENUE_NAMES = ['1st Ave', '2nd Ave', '3rd Ave', '4th Ave', '5th Ave', '6th Ave', '7th Ave', '8th Ave', '9th Ave', '10th Ave', '11th Ave', '12th Ave', '13th Ave', '14th Ave'];
+export const STREET_NAMES = [
+  'Casino Strip', 'Palm Avenue', 'Downtown Boulevard', 'Sunset Drive', 'University Avenue', 'Park Lane',
+  'Lakeview Road', 'Market Street', 'Industrial Way', 'Hillside Terrace', 'Old Town Road', 'Airport Road',
+];
+export const STREET_BLURBS = [
+  'Casinos & hotels', 'Houses', 'Shops & offices', 'Warehouses & nightlife', 'Campus & student flats', 'Central Park',
+  'Homes by the park', 'Markets & diners', 'Factories & depots', 'Homes on the hill', 'Old town', 'Motels, depots & gas',
+];
+/** Streets lined with homes: lawns and hedges behind them. */
+export const RESIDENTIAL_ROWS = [1, 6, 9, 10];
 
 export function avenueName(k: number): string {
-  return AVENUE_NAMES[k] ?? `${k + 1}th Ave`;
+  const n = k + 1;
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : n % 10 === 1 ? 'st' : n % 10 === 2 ? 'nd' : n % 10 === 3 ? 'rd' : 'th';
+  return `${n}${suffix} Ave`;
 }
 
 /** Global x offset of a lot column (lot-local x → global x on the north side). */
@@ -84,8 +93,8 @@ export function streetBand(r: number): [number, number] {
  * three blocks wide. Nothing gets built there: it's lawns, a lake, woods and paths, and you can
  * walk anywhere in it.
  */
-export const PARK_STREET = 4;
-export const PARK_BLOCKS: [number, number] = [3, 5];
+export const PARK_STREET = 5;
+export const PARK_BLOCKS: [number, number] = [6, 8];
 
 /** Global bounds of Central Park (the avenues still cross it). */
 export function parkRect(): { x0: number; x1: number; z0: number; z1: number } {
@@ -244,10 +253,14 @@ const FILLERS_BY_ROW: FillerKind[][] = [
   ['villa', 'cottage', 'brownstone', 'apartments', 'park', 'villa', 'cottage', 'church'],
   ['office', 'tower', 'tower', 'warehouse', 'shops', 'gasstation', 'apartments', 'parking', 'office', 'hospital'],
   ['warehouse', 'cinema', 'diner', 'warehouse', 'gasstation', 'parking', 'shops', 'hotelOld', 'park', 'firestation'],
+  ['school', 'apartments', 'office', 'apartments', 'diner', 'shops', 'brownstone', 'park', 'school', 'cinema'],
   ['apartments', 'brownstone', 'tower', 'office', 'diner', 'shops', 'villa', 'apartments', 'school'],
   ['villa', 'cottage', 'villa', 'apartments', 'church', 'cottage', 'brownstone', 'park', 'school'],
+  ['shops', 'diner', 'shops', 'apartments', 'brownstone', 'parking', 'cinema', 'shops', 'hotelOld'],
   ['warehouse', 'factory', 'factory', 'warehouse', 'gasstation', 'parking', 'diner', 'factory', 'firestation'],
+  ['villa', 'villa', 'cottage', 'park', 'villa', 'cottage', 'church', 'villa'],
   ['brownstone', 'church', 'shops', 'diner', 'cottage', 'hotelOld', 'cinema', 'shops', 'park', 'hospital'],
+  ['hotelOld', 'gasstation', 'warehouse', 'diner', 'parking', 'warehouse', 'hotelOld', 'factory', 'gasstation'],
 ];
 
 const FILLER_NAMES: Record<FillerKind, string[]> = {

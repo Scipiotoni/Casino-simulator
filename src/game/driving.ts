@@ -56,6 +56,10 @@ export interface Vehicle {
   /** A tank's turret angle (relative to the hull), the hull's rock after a shot. */
   turretYaw?: number;
   recoil?: number;
+  /** Sideways speed (m/s, + = to the left of the nose): the car slides when the rear lets go. */
+  lat?: number;
+  /** How fast the car is turning (rad/s): it keeps rotating in a slide. */
+  yawRate?: number;
   /** Roof lights that flash with the siren. */
   beacons?: THREE.Mesh[];
   /** Parked at the military base (taking it sets off the alarm). */
@@ -139,6 +143,8 @@ let nextUid = 1;
 const TANK_RELOAD = 2.2;
 /** Track marks kept on the ground at once. */
 const TREAD_MARKS = 600;
+/** Skid marks kept on the ground at once. */
+const SKID_MARKS = 1400;
 
 function angleDiff(a: number, b: number): number {
   return ((a - b + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
@@ -354,6 +360,12 @@ export class Driving {
     if (!v) return;
     this.driving = null;
     v.speed = 0;
+    v.lat = 0;
+    v.yawRate = 0;
+    v.root.rotation.z = 0;
+    v.root.rotation.x = 0;
+    this.handbrake = false;
+    if (this.drift.t > 0) this.endDrift(false);
     audio.engine(null);
     this.siren = false;
     v.beacons?.forEach((b) => (b.visible = true));
@@ -471,17 +483,18 @@ export class Driving {
     }
     for (const b of v.brakeLights) b.scale.y = throttle < 0 && v.speed > 0.5 ? 1.6 : 1;
     if (nitroOn && Math.random() < dt * 6) audio.play('whoosh', { volume: 0.3, pitch: 0.6 });
-    // Gearbox: Q/E shift yourself (switches to manual), Z goes back to automatic. (A tank's Q/E turn its turret.)
+    // Gearbox: R/Q shift up and down yourself (switches to manual), Z goes back to automatic.
+    // (A tank's Q/R turn its turret; E gets you out.)
     if (!g.modalOpen && !tank) {
-      const up = input.hit('KeyE');
+      const up = input.hit('KeyR');
       const down = input.hit('KeyQ');
       if ((up || down) && !this.manual) {
         this.manual = true;
-        g.notify('Manual gearbox: E shifts up, Q shifts down. Z for automatic.', 'info');
+        g.notify('Manual gearbox: R shifts up, Q shifts down. Z for automatic.', 'info');
       }
       if (input.hit('KeyZ')) {
         this.manual = !this.manual;
-        g.notify(this.manual ? 'Manual gearbox: E shifts up, Q shifts down.' : 'Automatic gearbox.', 'info');
+        g.notify(this.manual ? 'Manual gearbox: R shifts up, Q shifts down.' : 'Automatic gearbox.', 'info');
       }
       if (this.manual && (up || down) && v.speed >= -0.5) {
         const next = clamp(this.gear + (up ? 1 : -1), 1, GEARS);
@@ -527,20 +540,32 @@ export class Driving {
     v.steer = damp(v.steer, steer, 8, dt);
     // Sharper turns at low speed, gentler at high speed. A tank turns on the spot (one track
     // forward, one back), standing still or not.
-    const turn = tank
-      ? v.steer * 1.25 * (1 - Math.min(0.3, Math.abs(v.speed) / 50))
-      : v.steer * grip * 2.3 * clamp(v.speed / 7, -1, 1) * (1 - Math.min(0.55, Math.abs(v.speed) / (top * 2.2)));
-    v.yaw += turn * dt;
-    const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
-    const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
+    const grippy = v.steer * grip * 2.3 * clamp(v.speed / 7, -1, 1) * (1 - Math.min(0.55, Math.abs(v.speed) / (top * 2.2)));
+    const handbrake = !g.modalOpen && (input.down('Space') || this.handbrake);
+    if (tank) {
+      v.yaw += v.steer * 1.25 * (1 - Math.min(0.3, Math.abs(v.speed) / 50)) * dt;
+      // Space: both tracks locked.
+      if (handbrake) v.speed = damp(v.speed, 0, 3, dt);
+      v.lat = 0;
+      v.yawRate = 0;
+    } else this.slide(v, dt, grippy, throttle, handbrake, grip);
+    const fx0 = Math.sin(v.yaw);
+    const fz0 = Math.cos(v.yaw);
+    const lat = v.lat ?? 0;
+    // Moving: forward speed along the nose plus the sideways slide.
+    const nx = v.x + (fx0 * v.speed + fz0 * lat) * dt;
+    const nz = v.z + (fz0 * v.speed - fx0 * lat) * dt;
     // Hitbox a little inside the body, so you can squeeze past corners and lamp posts.
     if (this.fits(nx, nz, v.yaw, v.length * 0.8, v.width * 0.72)) {
       v.x = nx;
       v.z = nz;
     } else {
-      // Into a wall: bounce back.
-      this.crash(v, Math.abs(v.speed));
+      // Into a wall: bounce back (a drift into a wall ends badly).
+      this.crash(v, Math.hypot(v.speed, lat));
       v.speed *= -0.3;
+      v.lat = 0;
+      v.yawRate = 0;
+      if (this.drift.t > 0.6) this.endDrift(true);
     }
     if (v.wreck >= 0) return;
     // Traffic
@@ -629,7 +654,13 @@ export class Driving {
     g.player.seat = { x: w.x, z: w.z, yaw: yawW, sit: true, height: v.seat.y };
     g.player.playEmote('sit', 999);
     g.player.yaw = yawW;
-    g.cam.followYaw = yawW;
+    // In a slide the camera swings round towards where the car is going, so you see it sideways.
+    g.cam.followYaw = yawW + clamp(-this.slipAngle(v), -0.9, 0.9) * 0.6;
+    // Body roll in a slide, and a little squat under the handbrake.
+    if (!tank) {
+      v.root.rotation.z = clamp(-(v.lat ?? 0) * 0.012, -0.07, 0.07);
+      v.root.rotation.x = handbrake && Math.abs(v.speed) > 3 ? 0.02 : 0;
+    }
     if (v.turret) {
       // The barrel recoils after a shot; the hull rocks back.
       v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - (TANK_RELOAD - 0.4)) * 0.8;
@@ -644,12 +675,14 @@ export class Driving {
     const corner = Math.abs(v.steer) * speedAbs / Math.max(10, top) * (2.2 - grip);
     const braking = throttle < 0 && v.speed > 8 ? 0.6 : 0;
     const launch = throttle > 0 && speedAbs < 6 && this.gear <= 1 && accel > 11 ? 0.5 : 0;
-    const want = profile === 'tank' ? 0 : clamp(Math.max(corner - 0.35, braking, launch), 0, 1);
+    const slideSkid = clamp(Math.abs(this.slipAngle(v)) * 2.4 * Math.min(1, speedAbs / 8), 0, 1);
+    const want = profile === 'tank' ? 0 : clamp(Math.max(corner - 0.35, braking, launch, slideSkid, handbrake && speedAbs > 3 ? 0.7 : 0), 0, 1);
     this.skid = damp(this.skid, want, 10, dt);
-    if (this.skid > 0.35 && Math.random() < dt * 12) {
+    if (this.skid > 0.35 && Math.random() < dt * 12 && slideSkid < 0.3) {
       const w = g.street.globalToWorld(v.x - Math.sin(v.yaw) * v.length * 0.4, v.z - Math.cos(v.yaw) * v.length * 0.4);
       g.effects.dust(w.x, w.z, 0.4);
     }
+    if (!tank) this.driftFx(v, dt, slideSkid, handbrake);
     audio.engine({ profile, rpm: this.gear === 0 ? Math.min(0.6, speedAbs / 9) : this.rpm, throttle: Math.max(0, throttle) * (this.shiftT > 0 ? 0.3 : 1), skid: this.skid, damage: 1 - health, speed: speedAbs });
     // Shifting up at speed: the turbo's blow-off and a crackle from the exhaust.
     if (this.gear !== this.lastGear) {
@@ -695,6 +728,167 @@ export class Driving {
         this.coaxShot(v);
       }
     }
+  }
+
+  // ------------------------------------------------------------------ drifting
+
+  /** The touch DRIFT button is held. */
+  handbrake = false;
+  /** The drift going on: its score, how long, the widest angle; the last one shown a moment. */
+  drift = { score: 0, t: 0, angle: 0, done: 0, doneT: 0, wiped: false, grace: 0 };
+  private skids: THREE.InstancedMesh | null = null;
+  private skidI = 0;
+  private skidDist = 0;
+  private wasHandbrake = false;
+
+  /** How far the car is sliding sideways: the angle between its nose and where it's going. */
+  slipAngle(v: Vehicle): number {
+    const s = Math.abs(v.speed);
+    if (s < 0.5 && Math.abs(v.lat ?? 0) < 0.5) return 0;
+    return Math.atan2(v.lat ?? 0, Math.max(1, s)) * Math.sign(v.speed || 1);
+  }
+
+  /**
+   * Car physics with grip that can run out. The car has a sideways speed besides its forward
+   * one; the tyres scrub it away, quickly while they grip, slowly once the rear lets go. Pull
+   * the handbrake (Space) to lock the rear and kick the tail out; the car keeps rotating into
+   * the slide (more with throttle on), steering against it (countersteer) catches it, lifting
+   * off or letting go of the handbrake brings the grip back.
+   */
+  private slide(v: Vehicle, dt: number, grippy: number, throttle: number, hand: boolean, grip: number): void {
+    const spd = Math.abs(v.speed);
+    let lat = v.lat ?? 0;
+    let rate = v.yawRate ?? grippy;
+    const slip = this.slipAngle(v);
+    const sliding = Math.abs(slip) > 0.2 && spd > 5;
+    // Some cars let go more easily (the Drift King has a loose rear on purpose).
+    const loose = clamp(1.25 - grip * 0.45, 0.5, 1);
+    if (hand && !this.wasHandbrake && spd > 6 && Math.abs(v.steer) > 0.15) {
+      // Yank the handbrake mid-corner: the tail steps out.
+      rate += Math.sign(v.steer) * Math.sign(v.speed) * Math.min(1.6, spd / 9) * loose;
+    }
+    this.wasHandbrake = hand;
+    const slideMode = sliding || (hand && spd > 5);
+    if (slideMode) {
+      // In the slide: steering still turns the car, the slide itself keeps rotating it (power
+      // oversteer with the throttle on), and countersteer cuts the rotation.
+      const k = clamp(spd / 12, 0.5, 1.15);
+      // Steering into it keeps the slide going; let go of the wheel and the front tyres pull the
+      // car straight again.
+      const engaged = 0.3 + 0.7 * Math.min(1, Math.abs(v.steer));
+      const keepRotating = -lat * (throttle > 0 ? 0.26 : 0.11) * loose * engaged * Math.sign(v.speed || 1);
+      const target = v.steer * 2.1 * k * Math.sign(v.speed || 1) + keepRotating;
+      rate = damp(rate, target, 3.2, dt);
+    } else rate = damp(rate, grippy, 14, dt);
+    // Rotate the car, keeping its velocity (that's what makes it slide).
+    const vx = Math.sin(v.yaw) * v.speed + Math.cos(v.yaw) * lat;
+    const vz = Math.cos(v.yaw) * v.speed - Math.sin(v.yaw) * lat;
+    const mag = Math.hypot(vx, vz);
+    v.yaw += rate * dt;
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    v.speed = vx * fx + vz * fz;
+    lat = vx * fz - vz * fx;
+    const dir = Math.sign(v.speed) || 1;
+    if (slideMode) {
+      // Sliding: the tyres scrub the sideways speed away slowly (a locked rear barely at all),
+      // and scrubbing costs speed.
+      const gLat = (hand ? 1.1 * loose : (throttle > 0 ? 1.7 : 3.4) * (2 - loose)) * (!hand && Math.abs(v.steer) < 0.1 ? 2.2 : 1);
+      const before = lat;
+      lat *= Math.exp(-gLat * dt);
+      const scrub = Math.abs(before - lat);
+      v.speed -= dir * Math.min(Math.abs(v.speed), scrub * 0.25 + (hand ? 4.5 * dt : 0));
+    } else {
+      // Gripping: the tyres turn the car's momentum to where the nose points (no speed lost).
+      lat *= Math.exp(-12 * grip * dt);
+      v.speed = dir * Math.sqrt(Math.max(0, mag * mag - lat * lat));
+    }
+    if (Math.abs(lat) < 0.02) lat = 0;
+    v.lat = lat;
+    v.yawRate = rate;
+  }
+
+  /** Tyre smoke, skid marks and the drift score. */
+  private driftFx(v: Vehicle, dt: number, amount: number, hand: boolean): void {
+    const g = this.g;
+    const spd = Math.hypot(v.speed, v.lat ?? 0);
+    const slip = Math.abs(this.slipAngle(v));
+    const marking = (amount > 0.25 || (hand && Math.abs(v.speed) > 4)) && spd > 3;
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    const back = v.length * 0.32;
+    const half = v.width * 0.42;
+    const wheels = [-1, 1].map((sd) => ({ x: v.x - fx * back + fz * half * sd, z: v.z - fz * back - fx * half * sd }));
+    const vx = fx * v.speed + fz * (v.lat ?? 0);
+    const vz = fz * v.speed - fx * (v.lat ?? 0);
+    if (marking) {
+      if (Math.random() < dt * 36 * Math.max(0.35, amount)) {
+        for (const wh of wheels) {
+          const w = g.street.globalToWorld(wh.x, wh.z);
+          g.effects.tyreSmoke(w.x, w.z, vx, vz, amount);
+        }
+      }
+      this.skidDist += spd * dt;
+      if (this.skidDist > 0.35) {
+        this.skidDist = 0;
+        this.addSkids(wheels, Math.atan2(vx, vz), Math.min(1, 0.4 + amount));
+      }
+    }
+    // Score: angle × speed × time; it grows while you hold the slide.
+    const d = this.drift;
+    if (slip > 0.22 && spd > 7) {
+      d.t += dt;
+      d.grace = 0.7;
+      d.angle = slip;
+      d.score += (slip * 57.3) * spd * dt * 0.5 * (1 + Math.min(2, d.t / 3));
+    } else if (d.t > 0) {
+      // A moment to link it into the next slide (a flick the other way keeps the combo).
+      d.angle = slip;
+      d.grace -= dt;
+      if (d.grace <= 0) this.endDrift(false);
+    }
+    d.doneT = Math.max(0, d.doneT - dt);
+  }
+
+  /** A drift ends: banked (shown big for a moment), or lost if it ended in a crash. */
+  private endDrift(crashed: boolean): void {
+    const d = this.drift;
+    const g = this.g;
+    if (d.t > 0.6 && d.score > 50) {
+      d.done = crashed ? 0 : Math.round(d.score);
+      d.wiped = crashed;
+      d.doneT = 2.4;
+      if (!crashed) {
+        g.stats.bestDrift = Math.max(g.stats.bestDrift ?? 0, d.done);
+        if (d.done > 2000) audio.play('streak', { volume: 0.5 });
+      }
+    }
+    d.score = 0;
+    d.t = 0;
+    d.angle = 0;
+  }
+
+  /** Dark rubber marks behind the rear wheels (they fade as new ones replace the old). */
+  private addSkids(wheels: { x: number; z: number }[], yaw: number, dark: number): void {
+    if (!this.skids) {
+      const geo = new THREE.PlaneGeometry(0.26, 0.42);
+      geo.rotateX(-Math.PI / 2);
+      const m = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0x141214, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 }), SKID_MARKS);
+      const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+      for (let i = 0; i < SKID_MARKS; i++) m.setMatrixAt(i, zero);
+      m.frustumCulled = false;
+      this.skids = m;
+      this.group.add(m);
+    }
+    const m = this.skids;
+    for (const wh of wheels) {
+      const t = new THREE.Matrix4().makeRotationY(yaw);
+      t.scale(new THREE.Vector3(1, 1, 0.8 + dark * 0.4));
+      t.setPosition(wh.x, 0.012, wh.z);
+      m.setMatrixAt(this.skidI, t);
+      this.skidI = (this.skidI + 1) % SKID_MARKS;
+    }
+    m.instanceMatrix.needsUpdate = true;
   }
 
   // ------------------------------------------------------------------ the tank
@@ -763,14 +957,14 @@ export class Driving {
     const input = g.input;
     if (!this.told) {
       this.told = true;
-      g.notify(input.isTouch ? '🎯 Tank: the turret locks onto targets ahead. Fire button shoots the cannon.' : '🎯 Tank: aim the turret with the mouse (or Q/E), click or F to fire the cannon, hold right click for the machine gun. A/D turn on the spot.', 'info');
+      g.notify(input.isTouch ? '🎯 Tank: the turret locks onto targets ahead. Fire button shoots the cannon.' : '🎯 Tank: aim the turret with the mouse (or Q/R), click or F to fire the cannon, hold right click for the machine gun. A/D turn on the spot. E gets out.', 'info');
     }
     let rel = v.turretYaw ?? 0;
     let want = rel;
     let aimDist = 140;
     let mouse = false;
     const q = !g.modalOpen && input.down('KeyQ');
-    const e = !g.modalOpen && input.down('KeyE');
+    const e = !g.modalOpen && input.down('KeyR');
     if (q || e) {
       this.aimKeys = true;
       want = rel + (q ? 1 : -1) * 0.6;

@@ -3,15 +3,14 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { mat, glow } from '../render/materials';
 import { asphaltTexture, canvasTexture, makeCanvas, sidewalkTexture } from '../render/textures';
 import { disposeTree } from '../items/models/common';
-import { Obstacles, Strips, instancedChunks, place } from './nature';
+import { Obstacles, Strips, cullByDistance, instancedChunks, place } from './nature';
 import { CENTER_X, FACADE_Z, LOT_STRIDE, ROAD_MID } from './grid';
 import {
-  AVE_WALK, BLOCK_COLS, MAX_DEPTH, PARK_BLOCKS, PARK_STREET, ROAD_HALF, ROW_GAP, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blockX0,
+  AVE_WALK, BLOCK_COLS, MAX_DEPTH, PARK_BLOCKS, PARK_STREET, RESIDENTIAL_ROWS, ROAD_HALF, ROW_GAP, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blockX0,
   blocksFor, cityX, cityZ, colX, hash01, inParkSlot, slotToGlobal, streetZ,
 } from './city';
 
-/** Streets with homes on them: their backyards are lawns with hedges between them. */
-const RESIDENTIAL_ROWS = [1, 5, 7];
+
 
 /** Global x of the gun shop's door (column 1, north side of the Casino Strip). */
 function colGallery(): number {
@@ -189,6 +188,37 @@ class Quads {
     const mesh = new THREE.Mesh(g, m);
     mesh.receiveShadow = true;
     return mesh;
+  }
+
+  /**
+   * The same quads split into square chunks of the city (each quad goes where its middle is),
+   * so markings off screen or far away aren't drawn.
+   */
+  chunks(m: THREE.Material, size = 400, far = 360): THREE.Group {
+    const cells = new Map<string, { pos: number[]; uv: number[] }>();
+    for (let q = 0; q < this.pos.length; q += 18) {
+      let cx = 0;
+      let cz = 0;
+      for (let k = 0; k < 6; k++) {
+        cx += this.pos[q + k * 3];
+        cz += this.pos[q + k * 3 + 2];
+      }
+      const key = `${Math.floor(cx / 6 / size)},${Math.floor(cz / 6 / size)}`;
+      let c = cells.get(key);
+      if (!c) cells.set(key, (c = { pos: [], uv: [] }));
+      for (let i = 0; i < 18; i++) c.pos.push(this.pos[q + i]);
+      for (let i = 0; i < 12; i++) c.uv.push(this.uv[(q / 3) * 2 + i]);
+    }
+    const out = new THREE.Group();
+    for (const c of cells.values()) {
+      const part = new Quads(this.uvScale);
+      part.pos = c.pos;
+      part.uv = c.uv;
+      const mesh = part.mesh(m);
+      cullByDistance(mesh, far);
+      out.add(mesh);
+    }
+    return out;
   }
 }
 
@@ -465,8 +495,8 @@ export class CityView {
     s.add(
       asphalt.mesh(mat(0xffffff, { map: asph, rough: 0.95 })),
       walk.mesh(mat(0xffffff, { map: swTex, rough: 0.9 })),
-      white.mesh(mat(0xf4f1ea, { rough: 0.6, emissive: 0x302c28, emissiveIntensity: 0.4 })),
-      yellow.mesh(mat(0xffd23f, { emissive: 0x6b5200, emissiveIntensity: 0.4 })),
+      white.chunks(mat(0xf4f1ea, { rough: 0.6, emissive: 0x302c28, emissiveIntensity: 0.4 })),
+      yellow.chunks(mat(0xffd23f, { emissive: 0x6b5200, emissiveIntensity: 0.4 })),
     );
     const cm = instanced(curbGeo, mat(0xb9b4c2, { rough: 0.8 }), curbs);
     if (cm) s.add(cm);
@@ -614,7 +644,7 @@ export class CityView {
       const x = instanced(geo, m, list);
       if (x) s.add(x);
     }
-    const litGeo = new THREE.SphereGeometry(0.13, 10, 8);
+    const litGeo = new THREE.SphereGeometry(0.13, 6, 4);
     litGeo.scale(1, 1, 0.4);
     this.litLamps = new THREE.InstancedMesh(litGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), this.heads.length);
     this.litLamps.frustumCulled = false;

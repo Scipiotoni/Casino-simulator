@@ -14,6 +14,7 @@ import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/buil
 import { NPC_OWNER, Street, type StreetLot } from '../world/street';
 import { MAX_DEPTH_STEPS, openGround } from '../world/city';
 import { MilitaryBase, armoryPayroll, armoryRefillLeft } from '../world/militaryBase';
+import { VIEW, type ViewDist, viewScale } from '../world/viewDistance';
 import { buildCar, carDef } from '../world/vehicles';
 import { HEAT as POLICE_HEAT } from '../world/police';
 import { Sky } from '../world/sky';
@@ -171,6 +172,8 @@ export interface Settings {
   lookSens?: number;
   /** Your crosshair (screen, scope glass and full-screen scope). */
   reticle?: ReticleOpts;
+  /** How far the world is drawn in detail. */
+  viewDist?: ViewDist;
 }
 
 const DAY_SECONDS = 300;
@@ -341,6 +344,8 @@ export class Game implements World, ItemHost {
   private objectiveT = 0;
   private interactTarget: {
     kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void;
+    /** The key that does it, if not Space (getting out of a car is E: Space is the handbrake). */
+    key?: 'KeyE';
     /** Runs every frame Space is held (instead of a hold-to-finish ring). */
     whileHeld?: (dt: number) => void;
   } | null = null;
@@ -420,6 +425,7 @@ export class Game implements World, ItemHost {
     this.street.city.group.add(this.base.group);
     this.street.outskirts.extraBlock = (x, z) => this.base.blocked(x, z);
     CharacterModel.crude = settings.quality === 'ult';
+    this.setViewDistance(settings.viewDist ?? 'normal');
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : settings.quality === 'low' ? 14 : 8;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
@@ -3472,8 +3478,8 @@ export class Game implements World, ItemHost {
       const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
       // On your driveway: drive into the garage instead of getting out.
       this.interactTarget = this.house?.garage && this.drive.atGarage(car.x, car.z)
-        ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park() }
-        : { kind: `carout${car.uid}`, label: car.def?.kind === 'tank' ? 'Get out · W/S drive · A/D turn · mouse/Q/E aim · click/F cannon · right-click MG' : `Get out · W/S drive · A/D steer · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit() };
+        ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park(), key: 'KeyE' }
+        : { kind: `carout${car.uid}`, label: car.def?.kind === 'tank' ? 'Get out · W/S drive · A/D turn · mouse or Q/R aim · click/F cannon · right-click MG' : `Get out · W/S drive · A/D steer · Space drift · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit(), key: 'KeyE' };
       this.handleTarget(dt, this.interactTarget);
       return;
     }
@@ -3870,13 +3876,23 @@ export class Game implements World, ItemHost {
       this.lastInteractKey = key;
       this.holdT = 0;
       this.events.emit('interact', target ? { label: target.label, hold: target.hold } : null);
-      this.floaters.prompt(target ? target.anchor : null, target ? `<b>${this.input.isTouch ? '●' : 'Space'}</b> ${target.label}` : '');
+      this.floaters.prompt(target ? target.anchor : null, target ? `<b>${this.input.isTouch ? '●' : target.key === 'KeyE' ? 'E' : 'Space'}</b> ${target.label}` : '');
     }
     const blocked = this.modalOpen;
-    // In a tank, F fires the main gun instead.
-    const fKey = !this.drive.driving?.def?.cannon;
-    const pressing = !blocked && (this.input.down('Space') || (fKey && this.input.down('KeyF')) || this.actionHeld);
-    const pressed = !blocked && (this.input.hit('Space') || (fKey && this.input.hit('KeyF')) || this.actionPressed);
+    const input = this.input;
+    let pressing: boolean;
+    let pressed: boolean;
+    if (target?.key) {
+      // Behind the wheel Space is the handbrake: E gets you out (and the E press is used up).
+      pressing = !blocked && (input.down(target.key) || this.actionHeld);
+      pressed = !blocked && (input.hit(target.key) || this.actionPressed);
+      if (pressed) input.consume(target.key);
+    } else {
+      // In a tank, F fires the main gun instead.
+      const fKey = !this.drive.driving?.def?.cannon;
+      pressing = !blocked && (input.down('Space') || (fKey && input.down('KeyF')) || this.actionHeld);
+      pressed = !blocked && (input.hit('Space') || (fKey && input.hit('KeyF')) || this.actionPressed);
+    }
     this.actionPressed = false;
     if (target) {
       if (target.whileHeld) {
@@ -5022,6 +5038,15 @@ export class Game implements World, ItemHost {
   /** Your crosshair settings (checked). */
   get reticle(): ReticleOpts {
     return (this.settings.reticle = sanitizeReticle(this.settings.reticle));
+  }
+
+  /** Near / Normal / Far: how far buildings, trees and street furniture are drawn in full. */
+  setViewDistance(v: ViewDist): void {
+    this.settings.viewDist = v;
+    VIEW.scale = viewScale(v);
+    const cam = this.renderer.camera;
+    cam.far = 2600 * Math.max(1, VIEW.scale);
+    cam.updateProjectionMatrix();
   }
 
   setQuality(q: Quality): void {

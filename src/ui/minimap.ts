@@ -180,7 +180,24 @@ export class Minimap {
     this.t = 0;
   }
 
+  private rects = new Map<string, { x0: number; z0: number; x1: number; z1: number }>();
+  private rectsFor: StreetLot[] | null = null;
+
+  /** A building's rectangle on the map (cached: the city has over a thousand lots). */
   private lotRect(lot: StreetLot): { x0: number; z0: number; x1: number; z1: number } {
+    const st = this.game.street;
+    if (this.rectsFor !== st.lots) {
+      this.rectsFor = st.lots;
+      this.rects.clear();
+    }
+    const hit = this.rects.get(lot.id);
+    if (hit) return hit;
+    const r = this.computeRect(lot);
+    this.rects.set(lot.id, r);
+    return r;
+  }
+
+  private computeRect(lot: StreetLot): { x0: number; z0: number; x1: number; z1: number } {
     const st = this.game.street;
     let w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, lot.info.width))].w;
     let d = START_DEPTH + Math.max(0, lot.info.depth) * DEPTH_STEP;

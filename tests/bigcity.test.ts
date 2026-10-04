@@ -102,3 +102,38 @@ describe('the tank and the armory', () => {
     expect(armoryRefillLeft(now - ARMORY_COOLDOWN_MS - 1, now)).toBe(0);
   });
 });
+
+import { avenueName, cityX, cityZ, RESIDENTIAL_ROWS } from '../src/world/city';
+import { VIEW_DISTANCES, viewScale } from '../src/world/viewDistance';
+
+describe('the even bigger city', () => {
+  it('is about 2.6 km by 2 km with twelve named streets, Central Park in the middle', () => {
+    const [x0, x1] = cityX(MIN_COLS);
+    const [z0, z1] = cityZ();
+    expect(x1 - x0).toBeGreaterThan(2500);
+    expect(z1 - z0).toBeGreaterThan(1900);
+    expect(STREET_NAMES).toHaveLength(12);
+    // The park sits between the middle two streets and the middle blocks.
+    expect(PARK_STREET).toBe(Math.floor((STREET_ROWS - 1) / 2));
+    const r = parkRect();
+    expect(Math.abs((r.x0 + r.x1) / 2 - (x0 + x1) / 2)).toBeLessThan(200);
+    for (const row of RESIDENTIAL_ROWS) expect(row).toBeLessThan(STREET_ROWS);
+  });
+
+  it('names every avenue with the right ordinal', () => {
+    expect(avenueName(0)).toBe('1st Ave');
+    expect(avenueName(1)).toBe('2nd Ave');
+    expect(avenueName(2)).toBe('3rd Ave');
+    expect(avenueName(10)).toBe('11th Ave');
+    expect(avenueName(11)).toBe('12th Ave');
+    expect(avenueName(20)).toBe('21st Ave');
+  });
+
+  it('has a view distance setting: Near draws less, Far more', () => {
+    expect(VIEW_DISTANCES.map((v) => v.id)).toEqual(['near', 'normal', 'far']);
+    expect(viewScale('near')).toBeLessThan(1);
+    expect(viewScale('normal')).toBe(1);
+    expect(viewScale('far')).toBeGreaterThan(1);
+    expect(viewScale(undefined)).toBe(1);
+  });
+});

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { VIEW } from '../world/viewDistance';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
@@ -151,8 +152,9 @@ export class Renderer {
     if (this.bloom) this.bloom.strength = 0.5 + night * 0.3;
     const fog = this.scene.fog as THREE.Fog;
     fog.color.copy(L.fog);
-    fog.near = L.fogNear;
-    fog.far = L.fogFar;
+    // The view distance setting pushes the haze back (or pulls it in).
+    fog.near = L.fogNear * VIEW.scale;
+    fog.far = L.fogFar * VIEW.scale;
     const want = indoor > 0.5 ? c.setRGB(-14, 26, 10) : c.setRGB(L.dir.x, L.dir.y, L.dir.z);
     const d = new THREE.Vector3(want.r, want.g, want.b).normalize();
     if (d.distanceToSquared(this.sunDir) > 0.0004) {

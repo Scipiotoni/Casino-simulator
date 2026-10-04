@@ -11,6 +11,7 @@ import { cityX, cityZ } from './city';
 import { RING } from './outskirts';
 import { instancedChunks, place } from './nature';
 import { audio } from '../core/audio';
+import { VIEW } from './viewDistance';
 
 /** Half size of the base (metres) and the gate's half width. */
 export const BASE_HW = 150;
@@ -1038,7 +1039,7 @@ export class MilitaryBase {
     const h = this.host;
     const p = h.player();
     const dist = Math.hypot(p.x - this.cx, p.z - this.cz);
-    this.group.visible = dist < 480;
+    this.group.visible = dist < 480 * Math.max(1, VIEW.scale);
     if (dist > 200) for (const so of this.soldiers) so.model.root.visible = false;
     if (!this.group.visible && this.alarmT <= 0) return;
     if (this.radar) this.radar.rotation.y += dt * 0.8;
