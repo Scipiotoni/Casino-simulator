@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   OFFLINE_COOLDOWN_MS, ONLINE_COOLDOWN_MS, applyRobbery, cleanRecords, cooldownMs, dialParams, doorStages, drillParams, failFine, guardFine, hackParams,
   heistTake, houseCooldown, lockoutMs, maxTake, pickParams, runQuality, safeCut, timelockSeconds, vaultStages, waitText, type HeistRecord,
+  NPC_REFILL_MS, npcRefillLeft, npcStash, shareTake,
 } from '../src/game/heistRules';
+import { heistFines, npcHouseSnapshot } from '../src/game/heist';
 import { DOOR_BASE, Grid, layoutRect } from '../src/world/grid';
 import { DOOR_TYPES, doorsInEncoded } from '../src/world/walls';
 import { sanitizeHouse } from '../src/game/house';
@@ -36,6 +38,56 @@ describe('heist take', () => {
     expect(runQuality([1, 0.5])).toBe(0.75);
     expect(runQuality([0, 0])).toBe(0.25);
     expect(runQuality([5, -2])).toBe(0.5);
+  });
+});
+
+describe('Uncle Sal (the NPC house)', () => {
+  it('holds a little cash that grows with your level, capped', () => {
+    expect(npcStash(1)).toBe(3000);
+    expect(npcStash(5)).toBe(7400);
+    expect(npcStash(0)).toBe(3000);
+    expect(npcStash(200)).toBe(25_000);
+    expect(npcStash(Number.NaN)).toBe(3000);
+  });
+
+  it('a perfect run takes all of it', () => {
+    expect(shareTake(5000, 1, 1)).toBe(5000);
+    expect(shareTake(5000, 1, 0.6)).toBe(3000);
+    expect(shareTake(5000, 2, 1)).toBe(5000);
+  });
+
+  it('refills 15 minutes after you rob it', () => {
+    const now = Date.now();
+    expect(NPC_REFILL_MS).toBe(15 * 60_000);
+    expect(npcRefillLeft(undefined, now)).toBe(0);
+    expect(npcRefillLeft(now - 5 * 60_000, now)).toBe(10 * 60_000);
+    expect(npcRefillLeft(now - 16 * 60_000, now)).toBe(0);
+    // A clock that jumped back can't make you wait longer than one refill.
+    expect(npcRefillLeft(now + 3600_000, now)).toBe(NPC_REFILL_MS);
+  });
+
+  it('losing at Uncle Sal’s costs little, however rich you are', () => {
+    const snap = npcHouseSnapshot(0);
+    const sal = { pid: 'npc', owner: 'Uncle Sal', snap, vault: 7400, tier: 1, online: false, npc: true, share: 1, fineCap: 1480 };
+    expect(heistFines(sal, 10_000_000)).toEqual({ fail: 1480, ko: 2960 });
+    expect(heistFines(sal, 1000).fail).toBeLessThanOrEqual(1000);
+    // A player's house keeps the normal fines.
+    const player = { ...sal, npc: false, fineCap: undefined };
+    expect(heistFines(player, 10_000_000)).toEqual({ fail: 100_000, ko: 250_000 });
+  });
+
+  it('his floor plan has a vault behind a deadbolt door, one watchman and a camera', () => {
+    const snap = npcHouseSnapshot(3);
+    const g = new Grid(0, snap.layout);
+    g.decodeWalls(snap.walls![0]);
+    expect(g.doors()).toEqual([{ x: 24, z: 31, type: 1 }]);
+    expect(g.doorRun(24, 31)).toBe('x');
+    expect(snap.items.filter((i) => i.id === 'vault')).toHaveLength(1);
+    expect(snap.items.some((i) => i.id === 'cctv')).toBe(true);
+    expect(snap.staff.map((s) => s.role)).toEqual(['security']);
+    // Paint covers the whole lot.
+    const r = g.rect;
+    expect(snap.paint[0]).toBe(`3:${(r.x1 - r.x0 + 1) * (r.z1 - r.z0 + 1)}`);
   });
 });
 

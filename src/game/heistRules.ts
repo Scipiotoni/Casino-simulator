@@ -67,18 +67,43 @@ export function safeCut(safes: number): number {
 }
 
 /**
- * What a heist takes: the vault times the most you may take (10% offline, 50% online),
- * times how well you played the minigames (0..1), less what the floor safes hide.
+ * What a heist takes: the vault times the most you may take (`share`), times how well you
+ * played the minigames (0..1), less what the floor safes hide.
  */
-export function heistTake(vault: number, online: boolean, quality: number, safes = 0): number {
+export function shareTake(vault: number, share: number, quality: number, safes = 0): number {
   if (!Number.isFinite(vault) || vault <= 0) return 0;
   const q = Math.max(0, Math.min(1, Number.isFinite(quality) ? quality : 0));
-  return Math.max(0, Math.floor(vault * (online ? ONLINE_SHARE : OFFLINE_SHARE) * q * safeCut(safes)));
+  const sh = Math.max(0, Math.min(1, Number.isFinite(share) ? share : 0));
+  return Math.max(0, Math.floor(vault * sh * q * safeCut(safes)));
+}
+
+/** A player's house: at most 10% of the vault while the owner is offline, 50% while they're online. */
+export function heistTake(vault: number, online: boolean, quality: number, safes = 0): number {
+  return shareTake(vault, online ? ONLINE_SHARE : OFFLINE_SHARE, quality, safes);
 }
 
 /** The most a heist could take right now (a perfect run). */
 export function maxTake(vault: number, online: boolean, safes = 0): number {
   return heistTake(vault, online, 1, safes);
+}
+
+/**
+ * Uncle Sal's house, the NPC house anyone can rob: a little cash (more as your casino grows)
+ * that a perfect run takes all of. Each player has their own Uncle Sal: it refills 15 minutes
+ * after you rob it.
+ */
+export const NPC_REFILL_MS = 15 * 60 * 1000;
+
+/** What Uncle Sal keeps at home when it's full: $3,000 at casino level 1, up to $25,000. */
+export function npcStash(level: number): number {
+  const l = Math.max(1, Math.floor(Number.isFinite(level) ? level : 1));
+  return Math.min(25_000, Math.round((3000 + 1100 * (l - 1)) / 100) * 100);
+}
+
+/** How long until Uncle Sal's stash is back after a robbery at `robbedAt` (0 = ready). */
+export function npcRefillLeft(robbedAt: number | undefined, now = Date.now()): number {
+  if (!robbedAt || !Number.isFinite(robbedAt)) return 0;
+  return Math.max(0, Math.min(NPC_REFILL_MS, robbedAt + NPC_REFILL_MS - now));
 }
 
 /** Quality of a run from its minigame scores (each 0..1): the average, never below a floor for a win. */

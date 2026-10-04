@@ -45,6 +45,12 @@ const SPECIALS: { id: string; slot: SlotRef; name: string; tagline: string; styl
   { id: 'shop:cars', slot: { row: 2, col: 1, side: 0 }, name: 'Velocity Motors', tagline: 'SUPERCARS · MUSCLE · LIMOS', style: 'dealer', color: 0x2fe6ff },
 ];
 
+/** Uncle Sal's house on Palm Avenue: an NPC house anyone can rob (each player has their own Sal). */
+export const NPC_OWNER = 'npc';
+export const NPC_HOUSE_ID = 'npc:house';
+export const NPC_HOUSE_LOOK = { name: "Uncle Sal's House", signFont: 'bungee', signColor: 0xffc53d, wallColor: 0xd9c7a0, trimColor: 0x5a3a1a };
+const NPC_HOUSE_SLOT: SlotRef = { row: 1, col: 1, side: 0 };
+
 /**
  * Every building of the city: casinos, hotels and houses of the players, the rival, the gun
  * shop and the filler buildings in between. Lots sit in slots (street row, column, side);
@@ -118,6 +124,12 @@ export class Street {
       take(lot, sp.slot);
       out.push(lot);
     }
+    const sal: StreetLot = {
+      id: NPC_HOUSE_ID, kind: 'house', houseOf: NPC_OWNER, owner: 'Uncle Sal', order: 0, online: false,
+      info: { look: { ...NPC_HOUSE_LOOK }, width: 0, depth: 1, floors: 1, style: 'house', tagline: '' },
+    };
+    take(sal, NPC_HOUSE_SLOT);
+    out.push(sal);
     let next = 0;
     for (const c of casinos) {
       while (taken(strip(next))) next++;

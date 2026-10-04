@@ -62,6 +62,8 @@ export interface NetState {
   heistSeen?: Record<string, number>;
   /** Houses you were thrown out of after a failed heist: owner id → epoch ms you may try again. */
   heistLock?: Record<string, number>;
+  /** When you last robbed Uncle Sal's house (the NPC house refills after a while). */
+  npcRobbed?: number;
   /** Gifts you sent (kept in your ledger until they expire). */
   gifts?: import('./social').GiftOut[];
   /** Gifts you opened: gift id → when. */

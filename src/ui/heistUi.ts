@@ -5,9 +5,10 @@ import { h, clear } from './dom';
 import { audio } from '../core/audio';
 import { formatMoney } from '../core/math';
 import { vaultTier } from '../game/house';
+import { heistFines } from '../game/heist';
 import { DOOR_TYPES, doorType, doorsInEncoded } from '../world/walls';
 import {
-  type Stage, cooldownMs, dialParams, drillParams, failFine, guardFine, hackParams, lockoutMs, pickParams, timelockSeconds, vaultStages, waitText,
+  type Stage, NPC_REFILL_MS, cooldownMs, dialParams, drillParams, hackParams, lockoutMs, pickParams, timelockSeconds, vaultStages, waitText,
 } from '../game/heistRules';
 
 /** One minigame on screen: it reports a score (0..1) when beaten, or why it was lost. */
@@ -605,7 +606,7 @@ function describeSecurity(g: Game, lot: StreetLot): HTMLElement {
   const staff = (role: string) => snap.staff.filter((s) => s.role === role).length;
   const doors = (snap.walls ?? []).flatMap((w) => doorsInEncoded(w)).filter((t) => (DOOR_TYPES[t]?.lock ?? 0) > 0);
   const rows: [string, number, string][] = [
-    ['💂', staff('security'), 'bodyguard'],
+    ['💂', staff('security'), pv.target.npc ? 'night watchman' : 'bodyguard'],
     ['🚪', staff('doorman'), 'gate guard'],
     ['🐕', count('doghouse'), 'guard dog'],
     ['🔴', count('laser'), 'laser grid'],
@@ -634,9 +635,12 @@ function openHeistAsk(g: Game, modals: Modals, lot: StreetLot): void {
   if (!pv) return;
   const t = pv.target;
   const tier = vaultTier(t.tier);
+  const fines = heistFines(t, g.money);
   const body = h('div', { class: 'stack heist-ask' });
   body.append(
-    h('p', { class: 'lead', html: `<b>${lot.owner}</b> is ${t.online ? '<span class="pos">● online</span>: you can take up to <b>50%</b> of the vault, but they can come home and fight you' : '<span class="muted">○ offline</span>: you can take up to <b>10%</b> of the vault'}.` }),
+    h('p', { class: 'lead', html: t.npc
+      ? `<b>${lot.owner}</b> keeps a little cash at home. A perfect run takes <b>all of it</b>, and it’s back ${waitText(NPC_REFILL_MS)} after you rob him. His night watchman is no pushover, but he’s no bodyguard either.`
+      : `<b>${lot.owner}</b> is ${t.online ? '<span class="pos">● online</span>: you can take up to <b>50%</b> of the vault, but they can come home and fight you' : '<span class="muted">○ offline</span>: you can take up to <b>10%</b> of the vault'}.` }),
     h('div', { class: 'card-stats' },
       h('div', { class: 'kv' }, h('span', { text: 'Vault' }), h('b', { text: `${tier?.name ?? 'Vault'} · ${formatMoney(t.vault)}` })),
       h('div', { class: 'kv' }, h('span', { text: 'A perfect run takes' }), h('b', { class: 'pos', text: formatMoney(pv.max) })),
@@ -645,7 +649,9 @@ function openHeistAsk(g: Game, modals: Modals, lot: StreetLot): void {
     ),
     h('div', { class: 'field-label', text: 'What you’re up against' }),
     describeSecurity(g, lot),
-    h('p', { class: 'muted small', text: `How well you play the minigames decides how much you take. Lose one and you pay ${formatMoney(failFine(g.money, t.tier))} and get thrown out for ${waitText(lockoutMs(t.tier))}. The guards are very strong and shoot to kill: if they knock you out they take ${formatMoney(guardFine(g.money, t.tier))}. Get out the front door with the cash and it’s yours, and the house is off limits to everyone for ${waitText(cooldownMs(t.online))}.` }),
+    h('p', { class: 'muted small', text: t.npc
+      ? `How well you play the minigames decides how much you take. Lose one and you pay ${formatMoney(fines.fail)} and get thrown out for ${waitText(lockoutMs(t.tier))}. If the watchman knocks you out he takes ${formatMoney(fines.ko)}. Get out the front door with the cash and it’s yours. A good place to practise before you rob a real player.`
+      : `How well you play the minigames decides how much you take. Lose one and you pay ${formatMoney(fines.fail)} and get thrown out for ${waitText(lockoutMs(t.tier))}. The guards are very strong and shoot to kill: if they knock you out they take ${formatMoney(fines.ko)}. Get out the front door with the cash and it’s yours, and the house is off limits to everyone for ${waitText(cooldownMs(t.online))}.` }),
   );
   const foot = h('div', { class: 'btn-row' },
     h('button', { class: 'btn', text: 'Not today', onClick: () => modals.close() }),
@@ -719,7 +725,7 @@ export function initHeistUi(g: Game, modals: Modals, root: HTMLElement): { updat
       const vault = v.phase === 'locked' ? `🔐 ${v.vaultTierName}: locked`
         : v.phase === 'timelock' ? `⏳ Time lock ${Math.ceil(v.timelock)} s` : v.phase === 'open' ? '💰 Vault open: grab the cash' : `💰 ${formatMoney(v.loot)}: get out the front door!`;
       const dogs = v.dogs.length ? ` · 🐕 ${v.dogs.filter((d) => d.ko <= 0).length}/${v.dogs.length}` : '';
-      panel.innerHTML = `<b>🦹 Heist · ${v.target.owner}'s house ${v.online ? '<i class="pos">● online</i>' : '<i>○ offline</i>'}</b>`
+      panel.innerHTML = `<b>🦹 Heist · ${v.target.owner}'s house ${v.target.npc ? '' : v.online ? '<i class="pos">● online</i>' : '<i>○ offline</i>'}</b>`
         + `<span>${v.siren > 0 ? '🚨 ALARM' : v.alarmed ? '🚨 Alarm raised' : '🤫 Quiet'} · 💂 ${v.guardsUp}/${v.guards.length}${dogs}</span>`
         + `<span>${vault}</span>`
         + (v.phase === 'timelock' ? `<span class="hh-bar"><i style="width:${Math.round(v.timelockProgress * 100)}%"></i></span>` : '')

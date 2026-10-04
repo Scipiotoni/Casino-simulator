@@ -9,12 +9,14 @@ import { gunDef } from './guns';
 import { findPath, smoothPath } from '../world/pathfinding';
 import { CENTER_X, DOOR_TILES, FACADE_Z } from '../world/grid';
 import { doorType } from '../world/walls';
+import { NPC_HOUSE_LOOK } from '../world/street';
 import { audio } from '../core/audio';
 import { clamp, dampAngle, formatMoney } from '../core/math';
 import { mat } from '../render/materials';
 import { vaultTier } from './house';
 import {
-  type HeistRecord, type Stage, MAX_RECORDS, cleanRecords, doorStages, failFine, guardFine, heistTake, lockoutMs, maxTake, runQuality, timelockSeconds, vaultStages, waitText,
+  type HeistRecord, type Stage, MAX_RECORDS, OFFLINE_SHARE, ONLINE_SHARE, NPC_REFILL_MS, cleanRecords, doorStages, failFine, guardFine, lockoutMs, runQuality, shareTake,
+  timelockSeconds, vaultStages, waitText,
 } from './heistRules';
 
 /** Another player's house you could rob, as the street knows it. */
@@ -27,15 +29,58 @@ export interface HouseTarget {
   tier: number;
   /** Is the owner playing right now (a bigger take, but they can come home and fight)? */
   online: boolean;
+  /** Uncle Sal's NPC house: robberies stay private (each player has their own Sal) and it refills. */
+  npc?: boolean;
+  /** Most of the vault a perfect run takes (default: 10% offline, 50% online). */
+  share?: number;
+  /** Most a lost minigame can cost here (a knockout up to twice that). Uncle Sal's fines stay small, like his stash. */
+  fineCap?: number;
 }
 
-type GuardRole = 'bodyguard' | 'gate' | 'response';
+/** What losing costs at this house: a fine for a lost minigame, and the guards' cut for a knockout. */
+export function heistFines(t: HouseTarget, cash: number): { fail: number; ko: number } {
+  const tier = Math.max(1, t.tier);
+  const fail = failFine(cash, tier);
+  const ko = guardFine(cash, tier);
+  if (t.fineCap === undefined) return { fail, ko };
+  return { fail: Math.min(fail, t.fineCap), ko: Math.min(ko, t.fineCap * 2) };
+}
+
+type GuardRole = 'bodyguard' | 'gate' | 'response' | 'watchman';
+
+/**
+ * Uncle Sal's house: a cosy front room, a deadbolt door into the back room with his Steel
+ * Safe Room, one night watchman and a camera. Small lot: 14 tiles wide (x 17..30), 16 deep
+ * (z 24..39), with the wall across at z = 31.
+ */
+export function npcHouseSnapshot(floorStyle: number): CasinoSnapshot {
+  const it = (id: string, tx: number, tz: number, rot = 0, color = 0xffffff) => ({
+    id, tx, tz, rot, level: 1, color, broken: false, stats: { plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 },
+  });
+  return {
+    name: NPC_HOUSE_LOOK.name, look: { ...NPC_HOUSE_LOOK }, layout: { width: 0, depth: 1 }, floors: 1,
+    paint: [`${floorStyle}:224`],
+    // Cream walls across the house, a deadbolt door (lock 1) in the middle.
+    walls: ['0:98,2:7,201:1,2:6,0:112'],
+    items: [
+      // Front room
+      it('sofa', 18, 36, 2, 0x8a1030), it('coffeetable', 18, 34), it('tvwall', 18, 32), it('plantbig', 17, 38), it('plantbig', 30, 32),
+      it('kitchen', 27, 32), it('diningtable', 26, 35), it('cctv', 29, 38, 2),
+      // Back room: the safe room
+      it('vault', 22, 25), it('kingbed', 27, 24, 0, 0x1f2748), it('nightstand', 26, 24), it('bookshelf', 18, 24), it('armchair', 18, 27), it('floorlamp', 17, 24),
+    ],
+    staff: [{ role: 'security', name: 'Vinnie', look: randomStaffAppearance('security') }],
+    rating: 3,
+  };
+}
 
 /** Guards are tough: lots of health, quick and accurate. Don't take them on lightly. */
 const GUARD_STATS: Record<GuardRole, { hp: number; dmg: number; cool: number; gun: string; speed: number; title: string; color: number }> = {
   bodyguard: { hp: 420, dmg: 15, cool: 0.62, gun: 'smg', speed: 1.9, title: 'bodyguard', color: 0x17151f },
   gate: { hp: 320, dmg: 13, cool: 0.8, gun: 'deagle', speed: 1.8, title: 'gate guard', color: 0x5a0f24 },
   response: { hp: 520, dmg: 18, cool: 0.55, gun: 'rifle', speed: 2.1, title: 'armed response guard', color: 0x1f2b3a },
+  // Uncle Sal's night watchman: a real fight, but not a wall of muscle.
+  watchman: { hp: 170, dmg: 8, cool: 1.1, gun: 'pistol', speed: 1.6, title: 'night watchman', color: 0x2b3a5a },
 };
 
 /** Seconds a knocked-out guard stays down before getting back up (angry, half health). */
@@ -455,7 +500,7 @@ export class Heist {
     const vz = this.vault?.cz ?? FACADE_Z - 6;
     looks.security.forEach((look, i) => {
       const [x, z] = spotNear(vx, vz + 1.5, 2 + i);
-      this.addGuard('bodyguard', look, x, z, this.vault?.floor ?? 0);
+      this.addGuard(target.npc ? 'watchman' : 'bodyguard', look, x, z, this.vault?.floor ?? 0);
     });
     looks.doorman.forEach((look, i) => {
       const [x, z] = spotNear(CENTER_X + (i ? 1.6 : -1.6), FACADE_Z - 2, 1);
@@ -524,7 +569,12 @@ export class Heist {
 
   /** The most this run could take (a perfect run, given the floor safes). */
   get maxTake(): number {
-    return maxTake(this.target.vault, this.online, this.safes);
+    return shareTake(this.target.vault, this.share, 1, this.safes);
+  }
+
+  /** Most of the vault a perfect run takes. */
+  get share(): number {
+    return this.target.share ?? (this.online ? ONLINE_SHARE : OFFLINE_SHARE);
   }
 
   get guardsUp(): number {
@@ -669,7 +719,7 @@ export class Heist {
   grab(): void {
     const g = this.g;
     if (this.over || this.phase !== 'open') return;
-    this.loot = Math.max(1, heistTake(this.target.vault, this.online, this.quality, this.safes));
+    this.loot = Math.max(1, shareTake(this.target.vault, this.share, this.quality, this.safes));
     this.phase = 'looted';
     const v = this.vault;
     if (v) g.effects.coinFlight(new THREE.Vector3(v.cx, 1.2, v.cz), () => g.playerPos.clone().setY(1.1), 14, () => audio.play('coin', { volume: 0.4 }));
@@ -752,7 +802,7 @@ export class Heist {
     const g = this.g;
     if (this.over) return;
     this.over = true;
-    const fine = failFine(g.money, this.tier);
+    const fine = heistFines(this.target, g.money).fail;
     if (fine > 0) g.spend(fine, 'robbed');
     this.lockout();
     audio.play('busted');
@@ -766,7 +816,7 @@ export class Heist {
     if (this.over) return 0;
     this.downed = true;
     this.loot = 0;
-    const fine = guardFine(g.money, this.tier);
+    const fine = heistFines(this.target, g.money).ko;
     this.lockout();
     g.events.emit('heist', undefined);
     return fine;
@@ -784,15 +834,21 @@ export class Heist {
     if (this.over) return;
     this.over = true;
     if (this.loot > 0) {
-      const rec: HeistRecord = { i: Math.random().toString(36).slice(2, 12), v: this.target.pid, by: g.player.name.slice(0, 20), t: Date.now(), a: this.loot, on: this.online ? 1 : 0 };
-      g.net.heists = [rec, ...cleanRecords(g.net.heists ?? [])].slice(0, MAX_RECORDS);
+      if (this.target.npc) {
+        // Uncle Sal restocks for you alone: nothing to publish.
+        g.net.npcRobbed = Date.now();
+      } else {
+        const rec: HeistRecord = { i: Math.random().toString(36).slice(2, 12), v: this.target.pid, by: g.player.name.slice(0, 20), t: Date.now(), a: this.loot, on: this.online ? 1 : 0 };
+        g.net.heists = [rec, ...cleanRecords(g.net.heists ?? [])].slice(0, MAX_RECORDS);
+      }
       g.addMoney(this.loot, 'loot');
       g.stats.looted += this.loot;
       g.stats.heists = (g.stats.heists ?? 0) + 1;
       g.stats.heistLoot = (g.stats.heistLoot ?? 0) + this.loot;
       audio.play('jackpot');
       g.effects.confetti(g.player.x, 2, g.player.z, 60, 0.8);
-      g.notify(`🦹 Heist complete! You got away with ${formatMoney(this.loot)} from ${this.target.owner}'s vault.${this.alarmed ? ' The alarm called the police: lose them!' : ''}`, 'money');
+      const back = this.target.npc ? ` His stash is back in ${waitText(NPC_REFILL_MS)}.` : '';
+      g.notify(`🦹 Heist complete! You got away with ${formatMoney(this.loot)} from ${this.target.owner}'s vault.${this.alarmed ? ' The alarm called the police: lose them!' : ''}${back}`, 'money');
       if (this.alarmed) g.street.police.crime(3.2);
       g.requestSave();
     } else g.notify(`You slipped out of ${this.target.owner}'s house empty-handed.`, 'info');

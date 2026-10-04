@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Street, type StreetLot } from '../src/world/street';
+import { NPC_HOUSE_ID, NPC_OWNER, Street, type StreetLot } from '../src/world/street';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0 } from '../src/world/grid';
 import {
   AVE_W, BLOCK_COLS, MAX_DEPTH, MIN_COLS, ROW_GAP, STREET_ROWS, avenueMid, colX, fillerFor, globalToSlot, onRoadNetwork, slotAt, slotToGlobal, streetZ,
@@ -66,8 +66,19 @@ describe('the city street', () => {
     const keys = new Set(st.lots.map((l) => JSON.stringify(st.placeOf(l.id))));
     expect(keys.size).toBe(st.lots.length);
     expect(st.lots.length).toBe(STREET_ROWS * st.cols * 2);
-    expect(st.lots.filter((l) => l.kind === 'filler').length).toBe(st.lots.length - 8);
+    // 6 player buildings, the gun shop, the car dealer and Uncle Sal's house.
+    expect(st.lots.filter((l) => l.kind === 'filler').length).toBe(st.lots.length - 9);
     expect(st.get('shop:cars')?.info.style).toBe('dealer');
+  });
+
+  it('Uncle Sal’s NPC house stands on Palm Avenue, robbable like a player’s house', () => {
+    const sal = st.get(NPC_HOUSE_ID);
+    expect(sal?.kind).toBe('house');
+    expect(sal?.houseOf).toBe(NPC_OWNER);
+    expect(st.placeOf(NPC_HOUSE_ID).row).toBe(1);
+    // Player houses still find a spot of their own.
+    expect(JSON.stringify(st.placeOf('house'))).not.toBe(JSON.stringify(st.placeOf(NPC_HOUSE_ID)));
+    expect(JSON.stringify(st.placeOf('p1~house'))).not.toBe(JSON.stringify(st.placeOf(NPC_HOUSE_ID)));
   });
 
   it('puts houses on Palm Avenue behind their casinos', () => {

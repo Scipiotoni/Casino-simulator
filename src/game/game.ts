@@ -11,7 +11,7 @@ import {
 } from '../world/grid';
 import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
-import { Street, type StreetLot } from '../world/street';
+import { NPC_OWNER, Street, type StreetLot } from '../world/street';
 import { MAX_DEPTH_STEPS, openGround } from '../world/city';
 import { MilitaryBase } from '../world/militaryBase';
 import { buildCar, carDef } from '../world/vehicles';
@@ -57,8 +57,10 @@ import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
 import { FISTS, SLOTS, autoSlot, hasWeapon } from './guns';
 import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
-import { Heist, type HouseTarget } from './heist';
-import { type HeistRecord, RECORD_TTL_MS, applyRobbery, cleanRecords, houseCooldown, maxTake, waitText } from './heistRules';
+import { Heist, type HouseTarget, npcHouseSnapshot } from './heist';
+import {
+  type HeistRecord, OFFLINE_SHARE, ONLINE_SHARE, RECORD_TTL_MS, applyRobbery, cleanRecords, houseCooldown, npcRefillLeft, npcStash, shareTake, waitText,
+} from './heistRules';
 import { Driving, type GarageState, emptyGarage, sanitizeGarage, shotDamage } from './driving';
 import { type Activity, activityFor, PRACTICE_LABEL, punchPay } from './activities';
 
@@ -1531,6 +1533,25 @@ export class Game implements World, ItemHost {
     return houseCooldown(pid, [...(this.heistRecords?.() ?? []), ...cleanRecords(this.net.heists ?? [])]);
   }
 
+  /** Uncle Sal's floor plan (made once a session). */
+  private npcSnap: CasinoSnapshot | null = null;
+
+  /** Uncle Sal's house as a heist target: his stash when it's full, nothing while it refills. */
+  private npcTarget(): HouseTarget {
+    this.npcSnap ??= npcHouseSnapshot(Math.max(0, FLOOR_STYLES.findIndex((f) => f.id === 'parquet')));
+    const full = npcStash(this.homeLevel);
+    const ready = npcRefillLeft(this.net.npcRobbed) <= 0;
+    return {
+      pid: NPC_OWNER, owner: 'Uncle Sal', snap: this.npcSnap, vault: ready ? full : 0, tier: 1, online: false, npc: true, share: 1,
+      fineCap: Math.round(full * 0.2),
+    };
+  }
+
+  /** Another player's house, or Uncle Sal's, as a heist target. */
+  heistTarget(pid: string): HouseTarget | null {
+    return pid === NPC_OWNER ? this.npcTarget() : this.houseTarget?.(pid) ?? null;
+  }
+
   /** Why you can't break into this house right now (null = go ahead). */
   heistBlock(lot: StreetLot): string | null {
     const pid = lot.houseOf;
@@ -1540,7 +1561,9 @@ export class Game implements World, ItemHost {
     if (ban > now) return `${lot.owner} blacklisted you: their bodyguards won’t let you near the house for ${waitText(ban - now)}.`;
     const lock = this.net.heistLock?.[pid] ?? 0;
     if (lock > now) return `${lot.owner}’s guards remember your face. Try this house again in ${waitText(lock - now)}.`;
-    const t = this.houseTarget?.(pid);
+    const refill = pid === NPC_OWNER ? npcRefillLeft(this.net.npcRobbed) : 0;
+    if (refill > 0) return `🕒 Uncle Sal is still restocking after your last visit. Come back in ${waitText(refill)}.`;
+    const t = this.heistTarget(pid);
     if (!t) return `${lot.owner}’s house is locked up tight right now.`;
     if (!t.tier || !t.snap.items.some((i) => i.id === 'vault')) return `${lot.owner}’s house has no vault: nothing worth stealing.`;
     if (t.vault < 100) return `${lot.owner}’s vault is empty: nothing worth stealing.`;
@@ -1555,10 +1578,10 @@ export class Game implements World, ItemHost {
 
   /** What breaking into this house could be worth: the target and the most a perfect run takes. */
   heistPreview(lot: StreetLot): { target: HouseTarget; max: number; safes: number } | null {
-    const t = lot.houseOf && lot.houseOf !== 'me' ? this.houseTarget?.(lot.houseOf) : null;
+    const t = lot.houseOf && lot.houseOf !== 'me' ? this.heistTarget(lot.houseOf) : null;
     if (!t) return null;
     const safes = t.snap.items.filter((i) => i.id === 'safe').length;
-    return { target: t, max: maxTake(t.vault, t.online, safes), safes };
+    return { target: t, max: shareTake(t.vault, t.share ?? (t.online ? ONLINE_SHARE : OFFLINE_SHARE), 1, safes), safes };
   }
 
   /** The heist is over: clean up, and if you were thrown out, land on the pavement outside. */
@@ -1796,7 +1819,7 @@ export class Game implements World, ItemHost {
     if (lot.kind === 'rival') return generateRival(this.rival);
     if (lot.kind === 'player') return this.playerLot?.(lot.id) ?? null;
     if (lot.kind === 'hotel' && lot.hotelOf) return this.playerHotel?.(lot.hotelOf, lot.id.split('hotel:')[1] ?? '') ?? null;
-    if (lot.kind === 'house' && lot.houseOf && lot.houseOf !== 'me') return this.houseTarget?.(lot.houseOf)?.snap ?? null;
+    if (lot.kind === 'house' && lot.houseOf && lot.houseOf !== 'me') return this.heistTarget(lot.houseOf)?.snap ?? null;
     return null;
   }
 
@@ -1876,7 +1899,7 @@ export class Game implements World, ItemHost {
     this.street.activeId = lot.id;
     this.shiftPlayer(at.x, FACADE_Z - 1.5);
     if (robbing) {
-      const target = this.houseTarget?.(lot.houseOf!);
+      const target = this.heistTarget(lot.houseOf!);
       if (target) this.heist = new Heist(this, target);
       audio.play('vaultClunk', { pitch: 1.6 });
       const h = this.heist;
@@ -3706,7 +3729,9 @@ export class Game implements World, ItemHost {
             const block = this.entryBlock(lot);
             const robbable = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
             const robbedBy = robbable && block ? this.houseCooldownOf(lot.houseOf!) : null;
-            const label = robbedBy?.last && robbedBy.until > Date.now()
+            const salLeft = lot.houseOf === NPC_OWNER ? npcRefillLeft(this.net.npcRobbed) : 0;
+            const label = salLeft > 0 ? `🕒 ${lot.owner}'s house · restocked in ${waitText(salLeft)}`
+              : robbedBy?.last && robbedBy.until > Date.now()
               ? `🚨 ${lot.owner}'s house · robbed by ${robbedBy.last.by} · safe for ${waitText(robbedBy.until - Date.now())}`
               : block ? `🚫 ${lot.kind === 'house' ? `${lot.owner}'s house` : lot.info.look.name}`
               : robbable ? `🦹 Break into ${lot.owner}'s house`
