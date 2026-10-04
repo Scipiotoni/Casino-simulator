@@ -283,6 +283,88 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
       muzzle = new THREE.Vector3(0, 0.042, 0.37);
       break;
     }
+    case 'launcher': {
+      // Grenade launcher: a fat revolving cylinder, a short wide barrel, folding stock.
+      barrel(0.032, 0.26, 0.05, 0.17, dark, 16);
+      const cylr = cyl(g, 0.058, 0.058, 0.14, body, 0, 0.045, 0.08, 14);
+      cylr.rotation.x = Math.PI / 2;
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        const ch = cyl(g, 0.016, 0.016, 0.142, black, Math.cos(a) * 0.036, 0.045 + Math.sin(a) * 0.036, 0.08, 8);
+        ch.rotation.x = Math.PI / 2;
+      }
+      B(body, 0.04, 0.05, 0.12, 0, 0.03, -0.04);
+      B(polymer, 0.03, 0.06, 0.06, 0, -0.02, 0.26); // fore grip
+      rail(0.105, 0.0, 0.16);
+      grip(polymer, null, -0.06, -0.06, 0.11, 0.3);
+      trigger(-0.01, -0.012);
+      B(steel, 0.008, 0.008, 0.2, -0.022, 0.03, -0.18);
+      B(steel, 0.008, 0.008, 0.2, 0.022, 0.03, -0.18);
+      B(polymer, 0.05, 0.07, 0.02, 0, 0.02, -0.28);
+      muzzle = new THREE.Vector3(0, 0.05, 0.44);
+      break;
+    }
+    case 'rocket': {
+      // Shoulder-fired tube with a rocket poking out the front.
+      const tube = cyl(g, 0.055, 0.055, 0.95, body, 0, 0.06, 0.05, 16);
+      tube.rotation.x = Math.PI / 2;
+      for (const z of [-0.4, 0.5]) {
+        const ring = cyl(g, 0.064, 0.064, 0.05, dark, 0, 0.06, z, 16);
+        ring.rotation.x = Math.PI / 2;
+      }
+      const warhead = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 12), mat(0x6b7a3a, { rough: 0.5 }));
+      warhead.rotation.x = Math.PI / 2;
+      warhead.position.set(0, 0.06, 0.6);
+      g.add(warhead);
+      B(dark, 0.04, 0.05, 0.12, 0, 0.12, 0.08); // sight box
+      sph(g, 0.006, glow(0xff4d4d, 2), 0, 0.15, 0.13, 6, 4);
+      B(polymer, 0.035, 0.1, 0.05, 0, -0.04, 0.0, 0.2);
+      B(polymer, 0.035, 0.09, 0.05, 0, -0.035, 0.22, 0.1);
+      trigger(0.03, -0.01);
+      muzzle = new THREE.Vector3(0, 0.06, 0.68);
+      break;
+    }
+    case 'railgun': {
+      // Twin rails with glowing coils between them.
+      B(body, 0.06, 0.08, 0.28, 0, 0.035, 0.0);
+      for (const sx of [-1, 1]) B(steel, 0.012, 0.03, 0.6, sx * 0.03, 0.05, 0.42);
+      for (let i = 0; i < 6; i++) {
+        const coil = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.008, 6, 16), glow(def.tracer, 2.2));
+        coil.position.set(0, 0.05, 0.18 + i * 0.08);
+        g.add(coil);
+      }
+      const core = cyl(g, 0.006, 0.006, 0.6, glow(def.tracer, 3), 0, 0.05, 0.42, 6);
+      core.rotation.x = Math.PI / 2;
+      scope(0.11, 0.02, 0.18, 0.018);
+      const cell = cyl(g, 0.02, 0.02, 0.1, glow(0x39ff88, 1.6), 0, -0.02, -0.08, 10);
+      cell.rotation.x = Math.PI / 2;
+      grip(polymer, null, -0.06, -0.05, 0.11, 0.3);
+      trigger(0.0, -0.012);
+      B(body, 0.04, 0.07, 0.2, 0, 0.012, -0.22);
+      muzzle = new THREE.Vector3(0, 0.05, 0.74);
+      break;
+    }
+    case 'flamer': {
+      // Fuel tanks under a long nozzle with a pilot light.
+      for (const sx of [-1, 1]) {
+        const tank = cyl(g, 0.035, 0.035, 0.24, body, sx * 0.04, -0.02, 0.02, 12);
+        tank.rotation.x = Math.PI / 2;
+      }
+      B(dark, 0.06, 0.05, 0.3, 0, 0.04, 0.1);
+      barrel(0.018, 0.34, 0.045, 0.24, steel);
+      const nozzle = cyl(g, 0.03, 0.022, 0.06, dark, 0, 0.045, 0.6, 12);
+      nozzle.rotation.x = Math.PI / 2;
+      sph(g, 0.01, glow(0x4aa8ff, 3), 0, 0.02, 0.62, 6, 4); // pilot light
+      const hose = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.008, 6, 12, Math.PI), black);
+      hose.rotation.set(0, Math.PI / 2, 0);
+      hose.position.set(0, 0.0, -0.06);
+      g.add(hose);
+      grip(polymer, null, -0.06, -0.04, 0.11, 0.3);
+      B(polymer, 0.03, 0.08, 0.04, 0, -0.01, 0.3);
+      trigger(0.0, -0.012);
+      muzzle = new THREE.Vector3(0, 0.045, 0.64);
+      break;
+    }
     case 'knuckles': {
       B(body, 0.095, 0.032, 0.03, 0, 0.015, 0.06);
       for (let i = 0; i < 4; i++) {

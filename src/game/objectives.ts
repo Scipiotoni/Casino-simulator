@@ -78,6 +78,8 @@ export interface LifetimeStats {
   /** Cars taken out of traffic. */
   carsStolen: number;
   carsParked?: number;
+  /** Other players you've knocked out. */
+  pvpKos?: number;
   /** Cash earned hitting the punching bag. */
   earnedPunching?: number;
   /** Cars wrecked (blown up) and vehicles driven out of the military base. */

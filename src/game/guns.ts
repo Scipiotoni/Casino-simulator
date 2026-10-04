@@ -4,6 +4,7 @@
  * someone out and you take some of the cash they carry.
  */
 export type GunKind = 'pistol' | 'revolver' | 'smg' | 'shotgun' | 'rifle' | 'sniper' | 'minigun' | 'laser' | 'paint' | 'confetti' | 'cannon'
+  | 'launcher' | 'rocket' | 'railgun' | 'flamer'
   | 'knuckles' | 'bat' | 'golf' | 'katana' | 'hammer';
 
 export interface GunDef {
@@ -35,6 +36,23 @@ export interface GunDef {
   adsFov: number;
   /** A melee weapon: swings instead of shooting (no ammo, short reach = range). */
   melee?: boolean;
+  /** Rounds fired per trigger pull (burst rifles), this many seconds apart. */
+  burst?: number;
+  burstGap?: number;
+  /** Hold to charge (seconds to full power); releasing fires. Damage grows with the charge. */
+  charge?: number;
+  /** Goes through people (up to this many) instead of stopping at the first. */
+  pierce?: number;
+  /** Fires a projectile (m/s, gravity m/s²) instead of a bullet. */
+  projectile?: { speed: number; gravity: number };
+  /** Explodes where it lands: radius (m) and power (damage at the centre). */
+  explosive?: { radius: number; power: number };
+  /** A short cone of fire instead of bullets. */
+  flame?: boolean;
+  /** Headshot multiplier (default ×2; the sniper knocks out with one). */
+  headMul?: number;
+  /** How hard it kicks the view up per shot (radians; default by type). */
+  kick?: number;
   blurb: string;
 }
 
@@ -49,6 +67,15 @@ export const GUNS: GunDef[] = [
   { id: 'sniper', name: 'Sniper Rifle', kind: 'sniper', price: 45000, unlock: 8, rate: 0.8, auto: false, mag: 5, reload: 2.6, pellets: 1, spread: 0, range: 200, color: 0x2a3a2a, tracer: 0xfff2c8, twoHand: true, dmg: 95, adsFov: 14, blurb: 'Pinpoint precise: the bullet goes exactly where the crosshair is. One shot to the head knocks anyone out.' },
   { id: 'goldcannon', name: 'Golden Hand Cannon', kind: 'cannon', price: 75000, unlock: 9, rate: 1.5, auto: false, mag: 7, reload: 1.8, pellets: 1, spread: 0.01, range: 60, color: 0xf2b632, tracer: 0xffc53d, twoHand: false, dmg: 70, adsFov: 48, blurb: 'Solid gold, ridiculous kick, enormous bang.' },
   { id: 'laser', name: 'Laser Blaster', kind: 'laser', price: 120000, unlock: 11, rate: 6, auto: true, mag: 40, reload: 1.5, pellets: 1, spread: 0.01, range: 80, color: 0xe9e1d3, tracer: 0x2fe6ff, twoHand: true, dmg: 20, adsFov: 45, blurb: 'Pew pew. Cyan beams straight out of a sci-fi movie.' },
+  { id: 'deagle', name: 'Desert Eagle', kind: 'pistol', price: 11000, unlock: 4, rate: 1.8, auto: false, mag: 7, reload: 1.5, pellets: 1, spread: 0.014, range: 55, color: 0x8c9099, tracer: 0xffd27a, twoHand: false, dmg: 52, headMul: 2.5, kick: 0.07, adsFov: 50, blurb: 'A heavy hand cannon. Big kick, ×2.5 headshots: land your first shot.' },
+  { id: 'tommy', name: 'Tommy Gun', kind: 'smg', price: 22000, unlock: 6, rate: 10, auto: true, mag: 50, reload: 2.2, pellets: 1, spread: 0.065, range: 40, color: 0x6b4422, tracer: 0xffd27a, twoHand: true, dmg: 13, adsFov: 55, blurb: 'Fifty-round drum, gangster style. Climbs fast: pull it down.' },
+  { id: 'burst', name: 'Burst Rifle', kind: 'rifle', price: 38000, unlock: 8, rate: 2.6, auto: false, burst: 3, burstGap: 0.065, mag: 30, reload: 2, pellets: 1, spread: 0.014, range: 75, color: 0x3a4a5a, tracer: 0xffd27a, twoHand: true, dmg: 25, adsFov: 44, blurb: 'Three rounds per pull, tight and quick. Rewards a steady aim.' },
+  { id: 'dmr', name: 'Marksman Rifle', kind: 'sniper', price: 60000, unlock: 9, rate: 2.2, auto: false, mag: 10, reload: 2.2, pellets: 1, spread: 0.004, range: 140, color: 0x5a5d66, tracer: 0xfff2c8, twoHand: true, dmg: 58, headMul: 2.2, kick: 0.045, adsFov: 26, blurb: 'Semi-auto and scoped: fast follow-ups for those who can track a target.' },
+  { id: 'lmg', name: 'Light Machine Gun', kind: 'rifle', price: 90000, unlock: 10, rate: 9.5, auto: true, mag: 100, reload: 4, pellets: 1, spread: 0.05, range: 65, color: 0x2c2f26, tracer: 0xffb45a, twoHand: true, dmg: 18, kick: 0.011, adsFov: 50, blurb: 'A hundred rounds of suppression. Slow to reload: don’t run dry mid-fight.' },
+  { id: 'gl', name: 'Grenade Launcher', kind: 'launcher', price: 110000, unlock: 10, rate: 0.9, auto: false, mag: 6, reload: 3, pellets: 1, spread: 0.01, range: 60, color: 0x4a4f3a, tracer: 0xffc53d, twoHand: true, dmg: 0, projectile: { speed: 26, gravity: 14 }, explosive: { radius: 4.5, power: 80 }, kick: 0.05, adsFov: 55, blurb: 'Lobs grenades in an arc that blow up on impact. Lead your target, mind the splash.' },
+  { id: 'flamer', name: 'Flamethrower', kind: 'flamer', price: 180000, unlock: 12, rate: 14, auto: true, mag: 120, reload: 3, pellets: 1, spread: 0.3, range: 9, color: 0xc8102e, tracer: 0xff8a1f, twoHand: true, dmg: 4, flame: true, kick: 0, adsFov: 60, blurb: 'A roaring cone of fire, nine metres long. Get close and keep it on them.' },
+  { id: 'rpg', name: 'Rocket Launcher', kind: 'rocket', price: 300000, unlock: 14, rate: 0.5, auto: false, mag: 1, reload: 3.2, pellets: 1, spread: 0.004, range: 140, color: 0x3d4a2a, tracer: 0xffc53d, twoHand: true, dmg: 0, projectile: { speed: 42, gravity: 0 }, explosive: { radius: 6, power: 140 }, kick: 0.09, adsFov: 45, blurb: 'One rocket, a huge blast. Wrecks cars. Hit what you aim at, not your feet.' },
+  { id: 'railgun', name: 'Railgun', kind: 'railgun', price: 400000, unlock: 15, rate: 0.8, auto: false, mag: 5, reload: 2.6, pellets: 1, spread: 0, range: 180, color: 0x1b2748, tracer: 0x9b7bff, twoHand: true, dmg: 120, charge: 1.1, pierce: 3, headMul: 2, kick: 0.08, adsFov: 30, blurb: 'Hold to charge, release to fire a beam that goes through up to three people. Full charge is deadly.' },
   { id: 'minigun', name: 'Minigun', kind: 'minigun', price: 250000, unlock: 13, rate: 20, auto: true, mag: 200, reload: 3.2, pellets: 1, spread: 0.07, range: 60, color: 0x3a3c44, tracer: 0xffb45a, twoHand: true, dmg: 10, adsFov: 55, blurb: 'Six spinning barrels and two hundred rounds.' },
 ];
 
@@ -60,6 +87,88 @@ GUNS.push(
   { id: 'katana', name: 'Katana', kind: 'katana', price: 15000, unlock: 5, rate: 2.2, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.7, range: 2.6, color: 0xe8eef6, tracer: 0xffffff, twoHand: true, dmg: 45, adsFov: 60, melee: true, blurb: 'A gleaming blade. Fast and deadly.' },
   { id: 'hammer', name: 'Sledgehammer', kind: 'hammer', price: 6000, unlock: 3, rate: 0.8, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.6, range: 2.4, color: 0x5a5d66, tracer: 0xffffff, twoHand: true, dmg: 70, adsFov: 60, melee: true, blurb: 'Slow, heavy, devastating.' },
 );
+
+// ------------------------------------------------------------------ skill: accuracy, recoil, falloff
+
+/**
+ * Damage with distance: full power out to 35% of the gun's range, then down to 55% at the
+ * edge. (Melee, flames and blasts don't fall off.)
+ */
+export function falloff(d: GunDef, dist: number): number {
+  if (d.melee || d.flame || d.explosive) return 1;
+  const near = d.range * 0.35;
+  if (dist <= near) return 1;
+  return Math.max(0.55, 1 - ((dist - near) / Math.max(1, d.range - near)) * 0.45);
+}
+
+/** Headshot multiplier. */
+export function headMul(d: GunDef): number {
+  return d.headMul ?? 2;
+}
+
+/** How hard each shot kicks the view up (radians). */
+export function kickOf(d: GunDef): number {
+  if (d.kick !== undefined) return d.kick;
+  switch (d.kind) {
+    case 'cannon':
+    case 'sniper':
+      return 0.06;
+    case 'shotgun':
+      return 0.055;
+    case 'revolver':
+      return 0.045;
+    case 'pistol':
+      return 0.028;
+    case 'rifle':
+      return 0.016;
+    case 'smg':
+      return 0.013;
+    case 'minigun':
+    case 'laser':
+    case 'paint':
+      return 0.006;
+    default:
+      return 0.03;
+  }
+}
+
+/**
+ * The recoil of the n-th shot in a spray (0 = first): the view climbs a bit more with every
+ * shot and wanders side to side in a fixed pattern for each gun, so you can learn to pull
+ * against it. Returns [up, sideways] in radians.
+ */
+export function recoilStep(d: GunDef, n: number): [number, number] {
+  const k = kickOf(d);
+  const up = k * (1 + Math.min(n, 10) * 0.08);
+  // Each gun drifts its own way: a slow sway plus a little kick that alternates.
+  const seed = d.id.length * 1.7 + d.rate;
+  const side = k * (0.55 * Math.sin(n * 0.55 + seed) + 0.25 * (n % 2 ? 1 : -1)) * Math.min(1, n / 3);
+  return [up, side];
+}
+
+/**
+ * How wide shots spread (a multiplier on the gun's spread). The first shot of a burst, aimed
+ * and standing still, is pinpoint; every shot fired in quick succession blooms it open;
+ * moving and jumping around makes it worse.
+ */
+export function spreadMul(d: GunDef, spray: number, moveSpeed: number, aiming: boolean): number {
+  if (d.melee || d.flame) return 1;
+  const first = spray < 0.5 && moveSpeed < 1;
+  const base = aiming ? 0.35 : 0.9;
+  const bloom = 1 + Math.min(spray, 12) * (d.auto ? 0.16 : 0.3);
+  const move = 1 + Math.min(1.6, (moveSpeed / 4) * 1.4) * (aiming ? 0.6 : 1);
+  return (first ? 0.15 : base) * bloom * move;
+}
+
+/**
+ * Active reload: press reload again while the marker crosses the sweet spot and the magazine
+ * snaps in at once (with a damage bonus); miss it and you fumble. Returns where the sweet
+ * spot is (fractions of the reload).
+ */
+export const PERFECT_WINDOW: [number, number] = [0.42, 0.58];
+export function reloadPress(progress: number): 'perfect' | 'fumble' {
+  return progress >= PERFECT_WINDOW[0] && progress <= PERFECT_WINDOW[1] ? 'perfect' : 'fumble';
+}
 
 /** Number of weapon slots (keys 1–5). */
 export const SLOTS = 5;
@@ -170,7 +279,8 @@ export function defaultGunMods(): GunMods {
 export function gunTakes(def: GunDef): { sight: boolean; muzzle: boolean; mag: boolean; laser: boolean } {
   if (def.melee) return { sight: false, muzzle: false, mag: false, laser: false };
   const toy = def.kind === 'paint' || def.kind === 'confetti' || def.kind === 'laser';
-  return { sight: def.kind !== 'sniper' && def.kind !== 'minigun', muzzle: !toy && def.kind !== 'minigun', mag: def.kind !== 'laser' && def.kind !== 'minigun', laser: true };
+  const heavy = def.kind === 'minigun' || def.kind === 'rocket' || def.kind === 'flamer' || def.kind === 'railgun' || def.kind === 'launcher';
+  return { sight: def.kind !== 'sniper' && def.kind !== 'minigun' && def.kind !== 'flamer' && def.kind !== 'rocket', muzzle: !toy && !heavy, mag: def.kind !== 'laser' && !heavy, laser: def.kind !== 'flamer' };
 }
 
 export function sanitizeGunMods(def: GunDef, raw: unknown): GunMods {

@@ -12,8 +12,8 @@ export class Player {
   x: number;
   z: number;
   yaw = Math.PI;
-  private vx = 0;
-  private vz = 0;
+  vx = 0;
+  vz = 0;
   emote: Pose | null = null;
   private emoteT = 0;
   readonly pos = new THREE.Vector3();
@@ -154,6 +154,18 @@ export class Player {
     m.root.rotation.y = this.yaw;
     m.update(dt);
     this.pos.set(this.x, 0, this.z);
+  }
+
+  /** Shove the player (a dodge roll), sliding along walls the way walking does. */
+  shove(dx: number, dz: number, walk: (tx: number, tz: number) => boolean): void {
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / 0.15));
+    for (let i = 0; i < steps; i++) {
+      const sx = dx / steps;
+      const sz = dz / steps;
+      if (!this.blocked(walk, this.x + sx, this.z)) this.x += sx;
+      if (!this.blocked(walk, this.x, this.z + sz)) this.z += sz;
+    }
+    this.yaw = Math.atan2(dx, dz);
   }
 
   /** If a new machine landed on top of us, hop to the nearest free tile. */

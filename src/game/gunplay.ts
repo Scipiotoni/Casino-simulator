@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Game } from './game';
-import { type GunDef, type TunedGun, gunDef, gunModsOf, tunedGun } from './guns';
+import { type GunDef, type TunedGun, falloff, gunDef, gunModsOf, headMul, recoilStep, reloadPress, spreadMul, tunedGun } from './guns';
 import { type Optic, buildGun } from '../items/models/guns';
 import { type ReticleOpts, drawReticle, reticleKey } from '../ui/reticle';
 import { audio, type SfxName } from '../core/audio';
@@ -22,6 +22,19 @@ interface Splat {
 }
 
 const SPLAT_COLORS = [0xff4d9a, 0x39ff88, 0x2fe6ff, 0xffc53d, 0xb77bff, 0xff8a1f];
+
+/** A grenade or rocket in flight (world frame). */
+interface Projectile {
+  pos: THREE.Vector3;
+  vel: THREE.Vector3;
+  d: GunDef;
+  mesh: THREE.Object3D;
+  life: number;
+  mul: number;
+}
+
+/** Things a bullet already went through (railgun). */
+type Pierced = Set<unknown>;
 
 /** The gun on screen in first person: your hand around the grip, sway, recoil and reloads. */
 interface ViewModel {
@@ -94,6 +107,26 @@ export class GunPlay {
   private bobT = 0;
   /** Bloom of the crosshair from firing and moving (0..1). */
   spreadK = 0;
+  /** Shots fired in quick succession: accuracy blooms and recoil climbs with it. */
+  spray = 0;
+  private sinceShot = 9;
+  /** Rounds left in the current burst (burst rifle), and the gap to the next. */
+  private burstLeft = 0;
+  private burstT = 0;
+  /** Railgun charge held so far (seconds). */
+  chargeT = 0;
+  /** The current reload's full length, and whether you've tried the active reload yet. */
+  reloadDur = 0;
+  reloadTried = false;
+  /** A perfectly timed reload: this magazine hits 15% harder. */
+  perfectMag = false;
+  /** How the last active reload went (for the HUD), and when (performance.now ms). */
+  reloadResult: { kind: 'perfect' | 'fumble'; at: number } | null = null;
+  /** Damage multiplier of the shot being fired (railgun charge). */
+  private shotMul = 1;
+  private projectiles: Projectile[] = [];
+  /** Explosions you set off recently (global frame), so other players see them too. */
+  booms: { i: string; x: number; z: number; r: number; t: number }[] = [];
 
   constructor(private g: Game) {
     this.flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: softDotTexture(), color: 0xffd27a, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
@@ -170,12 +203,69 @@ export class GunPlay {
     this.adsTouch = false;
   }
 
+  /** Reload; pressed again during a reload it's the active reload (time it for a perfect one). */
   reload(): void {
     const d = this.def;
-    if (!d || this.reloading > 0 || this.ammoOf(d.id) >= d.mag) return;
-    this.reloading = d.reload;
+    if (!d || d.melee) return;
+    if (this.reloading > 0) {
+      this.activeReload(d);
+      return;
+    }
+    if (this.ammoOf(d.id) >= d.mag) return;
+    this.reloading = this.reloadDur = d.reload;
+    this.reloadTried = false;
+    this.perfectMag = false;
+    this.burstLeft = 0;
+    this.chargeT = 0;
     audio.play('reload');
     this.g.events.emit('guns', undefined);
+  }
+
+  /** A different weapon in hand: the old one's reload, burst, charge and spray are dropped. */
+  switched(): void {
+    this.reloading = 0;
+    this.reloadDur = 0;
+    this.burstLeft = 0;
+    this.chargeT = 0;
+    this.spray = 0;
+    this.perfectMag = false;
+  }
+
+  /** Where the reload is (0..1), or -1 when not reloading. */
+  get reloadProgress(): number {
+    return this.reloading > 0 && this.reloadDur > 0 ? 1 - this.reloading / this.reloadDur : -1;
+  }
+
+  /** Hit the sweet spot and the magazine snaps in now (and hits harder); miss and you fumble it. */
+  private activeReload(d: TunedGun): void {
+    if (this.reloadTried || this.reloadDur <= 0) return;
+    this.reloadTried = true;
+    const p = this.g.player;
+    const at = new THREE.Vector3(p.x, p.model.height + 0.7, p.z);
+    if (reloadPress(this.reloadProgress) === 'perfect') {
+      this.reloading = 0;
+      this.ammo.set(d.id, d.mag);
+      this.perfectMag = true;
+      audio.play('reload', { pitch: 1.5 });
+      audio.play('coin', { volume: 0.6 });
+      this.g.floaters.text(at, '⚡ PERFECT RELOAD', 'good', 1.1, 0.9);
+      this.reloadResult = { kind: 'perfect', at: performance.now() };
+    } else {
+      const extra = d.reload * 0.45;
+      this.reloading += extra;
+      this.reloadDur += extra;
+      audio.play('empty');
+      this.g.floaters.text(at, 'Fumbled!', 'bad', 1, 0.8);
+      this.reloadResult = { kind: 'fumble', at: performance.now() };
+    }
+    this.g.events.emit('guns', undefined);
+  }
+
+  /** Damage of one hit after headshot, distance, charge and a perfect reload. */
+  private dmgOf(d: GunDef, head: boolean, dist: number): number {
+    const base = hitDamage(d, head);
+    if (base >= 999) return base;
+    return Math.round(base * falloff(d, dist) * this.shotMul * (this.perfectMag ? 1.15 : 1));
   }
 
   private syncHeld(): void {
@@ -380,7 +470,10 @@ export class GunPlay {
     this.firePressed = false;
     if (!this.drawn) this.adsTouch = false;
     const moving = Math.min(1, g.player.speed / 4);
-    this.spreadK = Math.max(moving * 0.6, this.spreadK - dt * 2.2);
+    // Let the trigger rest and the gun settles: bloom and recoil reset.
+    this.sinceShot += dt;
+    if (this.sinceShot > Math.max(0.22, 1.5 / (d?.rate ?? 4))) this.spray = Math.max(0, this.spray - dt * 9);
+    this.spreadK = Math.min(1, Math.max(moving * 0.6, this.spray / 8, this.spreadK - dt * 2.2));
     if (g.cam.mode === 'first' && d) {
       // Scopes zoom with the mouse wheel (or + / -) while you look through them.
       const scope = this.vm?.optic === 'scope' || d.kind === 'sniper';
@@ -407,16 +500,55 @@ export class GunPlay {
     // A click during the cooldown isn't lost: it fires as soon as the gun is ready.
     if (pressed) this.queued = 0.25;
     else this.queued = Math.max(0, this.queued - dt);
-    const want = pressed || (this.queued > 0 && this.cool <= 0 && this.reloading <= 0);
-    if (d && (want || (d.auto && held))) {
-      if (this.cool <= 0 && this.reloading <= 0) this.queued = 0;
-      if (!this.canShoot) {
+    const rolling = g.combat.rolling;
+    const ready = this.cool <= 0 && this.reloading <= 0 && !rolling;
+    const want = pressed || (this.queued > 0 && ready);
+    this.burstT = Math.max(0, this.burstT - dt);
+    if (d?.charge) {
+      // Railgun: hold to charge, let go to fire. The longer the charge, the harder it hits.
+      this.queued = 0;
+      if (held && this.canShoot && ready) {
+        if (this.ammoOf(d.id) <= 0) {
+          if (pressed) {
+            audio.play('empty');
+            this.reload();
+          }
+        } else {
+          if (this.chargeT === 0) audio.play('charge');
+          this.chargeT = Math.min(d.charge, this.chargeT + dt);
+        }
+      } else if (this.chargeT > 0) {
+        const k = this.chargeT / d.charge;
+        this.chargeT = 0;
+        if (k > 0.12 && this.canShoot && !rolling) {
+          this.shotMul = 0.25 + 0.75 * k;
+          this.fire(d);
+          this.shotMul = 1;
+        }
+      }
+    } else if (d?.burst && !d.melee) {
+      // Burst rifle: every pull fires a short burst.
+      if (want && ready && this.burstLeft <= 0) {
+        this.queued = 0;
+        if (this.canShoot) this.burstLeft = d.burst;
+      }
+      if (this.burstLeft > 0 && this.burstT <= 0 && this.reloading <= 0 && this.canShoot && !rolling) {
+        this.fire(d);
+        this.burstLeft = this.ammoOf(d.id) > 0 && this.reloading <= 0 ? this.burstLeft - 1 : 0;
+        this.burstT = d.burstGap ?? 0.07;
+        this.cool = this.burstLeft > 0 ? 0 : 1 / d.rate;
+      }
+    } else if (d && (want || (d.auto && held))) {
+      if (ready) this.queued = 0;
+      if (rolling) {
+        // Mid-roll: hold your fire.
+      } else if (!this.canShoot) {
         this.queued = 0;
         if (pressed && this.warnT <= 0) {
           this.warnT = 2;
           g.notify(g.inside ? 'Guns stay holstered indoors: step out onto the street to shoot.' : 'You can only shoot out on the street.', 'bad');
         }
-      } else if (this.cool <= 0 && this.reloading <= 0) {
+      } else if (ready) {
         if (d.melee) this.swing(d);
         else if (d.kind === 'minigun' && this.spinV < 12) {
           // Barrels spin up first.
@@ -448,11 +580,16 @@ export class GunPlay {
         this.splats.splice(i, 1);
       }
     }
+    this.updateProjectiles(dt);
     // The street moves with you when you change buildings: drop old marks.
     if (this.lastActive !== g.street.activeId) {
       this.lastActive = g.street.activeId;
       for (const s of this.splats) s.life = Math.min(s.life, 0.01);
+      for (const pr of this.projectiles) pr.mesh.removeFromParent();
+      this.projectiles = [];
     }
+    const now = Date.now();
+    this.booms = this.booms.filter((b) => now - b.t < 4000);
   }
 
   private lastActive = '';
@@ -496,7 +633,7 @@ export class GunPlay {
       muzzle = this.vm.gun.localToWorld(this.vm.muzzle.clone());
     } else muzzle = this.held ? this.held.group.localToWorld(this.held.muzzle.clone()) : new THREE.Vector3(p.x + Math.sin(yaw) * 0.6, 1.3, p.z + Math.cos(yaw) * 0.6);
     // Muzzle flash
-    if (d.kind !== 'paint') {
+    if (d.kind !== 'paint' && d.kind !== 'flamer') {
       this.flash.position.copy(muzzle);
       const s = (d.kind === 'laser' ? 0.5 : heavy ? 1.1 : 0.7) * (fp ? 0.45 : 1);
       this.flash.scale.set(s, s, s);
@@ -504,7 +641,8 @@ export class GunPlay {
       this.flashT = 0.05;
     }
     const sfx: SfxName = d.kind === 'laser' ? 'laser' : d.kind === 'paint' ? 'paintball' : d.kind === 'confetti' ? 'confettiGun' : d.kind === 'shotgun' ? 'shotgun'
-      : d.kind === 'smg' || d.kind === 'minigun' || d.kind === 'rifle' ? 'smg' : d.kind === 'cannon' || d.kind === 'sniper' || d.kind === 'revolver' ? 'gunHeavy' : 'gunshot';
+      : d.kind === 'flamer' ? 'flame' : d.kind === 'railgun' ? 'rail' : d.kind === 'rocket' ? 'cannon' : d.kind === 'launcher' ? 'launch'
+        : d.kind === 'smg' || d.kind === 'minigun' || d.kind === 'rifle' ? 'smg' : d.kind === 'cannon' || d.kind === 'sniper' || d.kind === 'revolver' || d.id === 'deagle' ? 'gunHeavy' : 'gunshot';
     audio.play(sfx, d.quiet ? { pitch: 1.5 + Math.random() * 0.1, volume: 0.3 } : { pitch: 0.94 + Math.random() * 0.12 });
     // Where the bullets start and which way they go.
     const origin = fp ? g.renderer.camera.position.clone() : muzzle.clone();
@@ -517,18 +655,36 @@ export class GunPlay {
       ray.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), g.renderer.camera);
       base = ray.ray.direction.clone().normalize();
     }
+    // Accuracy is skill: the first aimed shot from a standstill is pinpoint, every shot in a
+    // spray blooms it open, and moving makes it worse. Through a sight it stays tighter.
+    const sighted = fp && this.opticSight !== null && d.pellets === 1;
+    const aimed = fp && this.aiming;
+    let acc = spreadMul(d, this.spray, g.player.speed, aimed) * (aimed ? d.adsAcc : d.hipAcc);
+    if (sighted) acc *= 0.35;
     if (fp) {
-      // Recoil: the view kicks up (aimed shots kick less), the gun punches back.
-      const kick = (heavy ? 0.055 : d.auto ? 0.014 : 0.03) * (this.aiming ? 0.6 : 1) * d.kickMul;
-      g.cam.kick += kick;
-      g.cam.kickYaw += (Math.random() - 0.5) * kick * 0.6;
+      // Recoil climbs with every shot in a spray and drifts in each gun's own pattern. Part of
+      // it stays: pull the mouse down against it to keep on target.
+      const [up, side] = recoilStep(d, this.spray);
+      const k = (aimed ? 0.65 : 1) * d.kickMul;
+      g.cam.kick += up * k * 0.6;
+      g.cam.kickYaw += side * k * 0.5;
+      g.cam.pitch += up * k * 0.4;
+      g.cam.lookYaw += side * k * 0.5;
       this.vmKick = Math.min(1, this.vmKick + (heavy ? 1 : 0.5));
       g.cam.shake(heavy ? 0.05 : 0.012);
-    } else g.cam.shake(d.kind === 'cannon' ? 0.1 : d.kind === 'shotgun' || d.kind === 'sniper' ? 0.07 : 0.025);
-    // Accuracy: aimed shots are tight, running and spraying open it up.
-    // Through a sight the bullet goes where the crosshair is (shotgun pellets still spread).
-    const sighted = fp && this.opticSight !== null && d.pellets === 1;
-    const acc = sighted ? 0.04 : (fp ? (this.aiming ? 0.25 * d.adsAcc : 0.85 * d.hipAcc) * (1 + this.spreadK * 1.2) : d.hipAcc);
+    } else g.cam.shake(d.kind === 'cannon' || d.kind === 'rocket' ? 0.1 : d.kind === 'shotgun' || d.kind === 'sniper' ? 0.07 : 0.025);
+    this.spray += 1;
+    this.sinceShot = 0;
+    if (d.flame) {
+      this.flameTick(d, muzzle, yaw, fp ? base : null);
+      this.afterShot(d);
+      return;
+    }
+    if (d.projectile) {
+      this.launch(d, muzzle, base, fp);
+      this.afterShot(d);
+      return;
+    }
     for (let i = 0; i < d.pellets; i++) {
       const dir = base.clone();
       const sp = d.pellets > 1 ? d.spread * Math.max(0.7, acc) : d.spread * acc;
@@ -540,12 +696,26 @@ export class GunPlay {
         dir.applyAxisAngle(side, ap);
       }
       dir.normalize();
-      this.shootRay(d, origin, dir, muzzle, !fp);
+      if (d.pierce) {
+        // Railgun: one beam through up to `pierce` people.
+        const done: Pierced = new Set();
+        let end: THREE.Vector3 | null = null;
+        for (let k = 0; k < d.pierce; k++) {
+          const r = this.shootRay(d, origin, dir, muzzle, !fp, done, false);
+          end = r.at;
+          if (!r.person) break;
+        }
+        if (end) this.tracer(d, muzzle, end);
+      } else this.shootRay(d, origin, dir, muzzle, !fp);
     }
+    this.afterShot(d);
+  }
+
+  private afterShot(d: TunedGun): void {
     this.spreadK = Math.min(1, this.spreadK + (d.auto ? 0.12 : 0.35));
     // A suppressed shot doesn't send everyone running.
     if (!d.quiet) this.scareCrowd();
-    g.events.emit('guns', undefined);
+    this.g.events.emit('guns', undefined);
     if (this.ammoOf(d.id) <= 0) this.reload();
   }
 
@@ -554,7 +724,7 @@ export class GunPlay {
    * it meets. `flat` (top-down and third-person views) ignores heights, so whatever you
    * point at in the picture is what you hit.
    */
-  private shootRay(d: GunDef, o: THREE.Vector3, dir: THREE.Vector3, muzzle: THREE.Vector3, flat: boolean): void {
+  private shootRay(d: GunDef, o: THREE.Vector3, dir: THREE.Vector3, muzzle: THREE.Vector3, flat: boolean, done?: Pierced, drawTracer = true): { at: THREE.Vector3; person: boolean } {
     const g = this.g;
     const st = g.street;
     const city = st.city;
@@ -596,8 +766,8 @@ export class GunPlay {
         const dy = flat ? 0 : Math.abs(yAt(t) - tg.home.y);
         if (Math.hypot(dxy, dy) < r + (flat ? 0 : 0.05) && t < best.t) best = { kind: 'target', t, target: tg };
       }
-      // Cars.
-      const car = g.drive.raycast(og.x, og.z, hx, hz, best.t * hlen);
+      // Cars (a railgun beam goes straight through them).
+      const car = done ? null : g.drive.raycast(og.x, og.z, hx, hz, best.t * hlen);
       if (car) {
         const t = car.t / hlen;
         const y = yAt(t);
@@ -606,6 +776,7 @@ export class GunPlay {
       }
       // Soldiers at the military base (tower guards stand up high).
       for (const c of g.base.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
+        if (done?.has(c.soldier)) continue;
         const t = c.s / hlen;
         const y = yAt(t) - c.soldier.y;
         const h = c.soldier.model.height;
@@ -616,6 +787,7 @@ export class GunPlay {
       }
       // People on the sidewalks.
       for (const c of st.crowd.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
+        if (done?.has(c.ped)) continue;
         const t = c.s / hlen;
         const y = yAt(t);
         const h = c.ped.model.height;
@@ -626,6 +798,7 @@ export class GunPlay {
       }
       // The police.
       for (const c of st.police.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
+        if (done?.has(c.cop)) continue;
         const t = c.s / hlen;
         const y = yAt(t);
         const h = c.cop.model.height;
@@ -638,6 +811,7 @@ export class GunPlay {
       const wx = dir.x / hlen;
       const wz = dir.z / hlen;
       for (const r of g.combat.remoteTargets()) {
+        if (done?.has(r.pid)) continue;
         const px = r.x - o.x;
         const pz = r.z - o.z;
         const s = px * wx + pz * wz;
@@ -653,6 +827,13 @@ export class GunPlay {
     const t = best.t;
     const hit = new THREE.Vector3(o.x + dir.x * t, flat ? muzzle.y : o.y + dir.y * t, o.z + dir.z * t);
     const fx = g.effects;
+    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player';
+    if (done) {
+      if (best.kind === 'ped') done.add(best.ped);
+      else if (best.kind === 'cop') done.add(best.cop);
+      else if (best.kind === 'soldier') done.add(best.soldier);
+      else if (best.kind === 'player') done.add(best.pid);
+    }
     switch (best.kind) {
       case 'car': {
         const tr = best.tg.traffic;
@@ -691,7 +872,7 @@ export class GunPlay {
         break;
       }
       case 'ped': {
-        const dmg = hitDamage(d, best.head);
+        const dmg = this.dmgOf(d, best.head, t);
         if (flat) hit.y = 1.2;
         if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
         if (dmg <= 0) break;
@@ -704,7 +885,7 @@ export class GunPlay {
         break;
       }
       case 'player': {
-        const dmg = hitDamage(d, best.head);
+        const dmg = this.dmgOf(d, best.head, t);
         if (flat) hit.y = 1.2;
         if (dmg <= 0) break;
         fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
@@ -715,7 +896,7 @@ export class GunPlay {
         break;
       }
       case 'soldier': {
-        const dmg = hitDamage(d, best.head);
+        const dmg = this.dmgOf(d, best.head, t);
         if (flat) hit.y = best.soldier.y + 1.2;
         if (dmg <= 0) break;
         const ko = g.base.damage(best.soldier, dmg);
@@ -726,7 +907,7 @@ export class GunPlay {
         break;
       }
       case 'cop': {
-        const dmg = hitDamage(d, best.head);
+        const dmg = this.dmgOf(d, best.head, t);
         if (flat) hit.y = 1.2;
         if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
         if (dmg <= 0) break;
@@ -758,7 +939,185 @@ export class GunPlay {
         break;
     }
     if (d.kind === 'confetti') fx.confetti(hit.x, Math.max(1, hit.y), hit.z, 70, 0.9);
-    this.tracer(d, muzzle, hit);
+    if (drawTracer) this.tracer(d, muzzle, hit);
+    return { at: hit, person };
+  }
+
+  // ------------------------------------------------------------------ flames, grenades, rockets
+
+  /** One tick of the flamethrower: everyone in the cone in front of you burns. */
+  private flameTick(d: TunedGun, muzzle: THREE.Vector3, yaw: number, look: THREE.Vector3 | null): void {
+    const g = this.g;
+    const st = g.street;
+    const p = g.player;
+    const og = st.worldToGlobal(p.x, p.z);
+    const flip = st.placeOf(st.activeId).side === 1;
+    const gdx = (flip ? -1 : 1) * Math.sin(yaw);
+    const gdz = (flip ? -1 : 1) * Math.cos(yaw);
+    const reach = d.range;
+    const cone = Math.cos(0.32);
+    const inCone = (dx: number, dz: number) => {
+      const dist = Math.hypot(dx, dz);
+      return dist < reach && (dist < 0.6 || (dx * gdx + dz * gdz) / dist > cone);
+    };
+    const show = this.shots % 4 === 0;
+    const fx = g.effects;
+    const dir = look ? look.clone() : new THREE.Vector3(Math.sin(yaw), -0.04, Math.cos(yaw));
+    // In first person the flames start a little ahead of the nozzle (not in your face).
+    const o = look ? muzzle.clone().addScaledVector(dir.clone().normalize(), 0.9) : muzzle;
+    fx.jet(o.x, o.y, o.z, dir.x, dir.y, dir.z, reach);
+    const at = (gx: number, gz: number) => {
+      const w = st.globalToWorld(gx, gz);
+      return new THREE.Vector3(w.x, 1.2, w.z);
+    };
+    const dmg = Math.round(d.dmg * (this.perfectMag ? 1.15 : 1));
+    for (const ped of st.crowd.around(og.x, og.z, reach)) {
+      if (!inCone(ped.x - og.x, ped.z - og.z)) continue;
+      const r = st.crowd.damage(ped, dmg, gdx, gdz);
+      st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      if (show) g.floaters.text(at(ped.x, ped.z).setY(1.7), `🔥${dmg * 4}`, 'dmg', 0.8, 0.6);
+      g.combat.landed(false, r.ko);
+      if (r.ko) g.onStreetKnockout(r.cash, at(ped.x, ped.z));
+    }
+    for (const o of st.police.officers) {
+      if (o.ko > 0 || o.leaving > 0 || !inCone(o.x - og.x, o.z - og.z)) continue;
+      const ko = st.police.damage(o, dmg);
+      g.combat.landed(false, ko);
+      if (ko) g.stats.knockouts++;
+    }
+    for (const so of g.base.soldiers) {
+      if (so.ko > 0 || so.y > 1 || !inCone(so.x - og.x, so.z - og.z)) continue;
+      const ko = g.base.damage(so, dmg);
+      g.combat.landed(false, ko);
+      if (ko) g.stats.knockouts++;
+    }
+    for (const r of g.combat.remoteTargets()) {
+      const rg = st.worldToGlobal(r.x, r.z);
+      if (!inCone(rg.x - og.x, rg.z - og.z)) continue;
+      g.combat.onHitRemote?.(r.pid, dmg);
+      st.police.crime(HEAT.hitPerson);
+      if (show) g.floaters.text(new THREE.Vector3(r.x, 1.7, r.z), `🔥${dmg * 4}`, 'dmg', 0.8, 0.6);
+      g.combat.landed(false, false);
+    }
+    for (const c of st.city.traffic) {
+      if (!c.root.visible || !inCone(c.x - og.x, c.z - og.z)) continue;
+      g.drive.hurtTraffic(c, dmg * 1.2, true);
+    }
+    for (const v of g.drive.vehicles) {
+      if (v === g.drive.driving || !inCone(v.x - og.x, v.z - og.z)) continue;
+      g.drive.damage(v, dmg * 1.2 * v.armor, true);
+    }
+    for (const tg of st.city.targets) {
+      if (!tg.alive || !inCone(tg.home.x - og.x, tg.home.z - og.z)) continue;
+      st.city.hitTarget(tg, gdx, gdz);
+      g.onTargetHit();
+    }
+  }
+
+  /** Fire a grenade or rocket from the muzzle. */
+  private launch(d: TunedGun, muzzle: THREE.Vector3, base: THREE.Vector3, fp: boolean): void {
+    const pr = d.projectile!;
+    const vel = base.clone().normalize().multiplyScalar(pr.speed);
+    if (!fp) {
+      // Top-down and third person: grenades lob in an arc, rockets fly level.
+      vel.y = pr.gravity > 0 ? 5.5 : 0;
+    } else if (pr.gravity > 0) vel.y += 1.5;
+    let mesh: THREE.Object3D;
+    if (d.kind === 'rocket') {
+      const grp = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.42, 10), mat(0x6b7a3a, { rough: 0.5 }));
+      body.rotation.x = Math.PI / 2;
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.14, 10), mat(0x3a3c36, { rough: 0.5 }));
+      tip.rotation.x = Math.PI / 2;
+      tip.position.z = 0.28;
+      const glowM = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffb040, toneMapped: false }));
+      glowM.position.z = -0.24;
+      grp.add(body, tip, glowM);
+      mesh = grp;
+    } else {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), mat(0x4a4f3a, { rough: 0.6 }));
+    }
+    mesh.position.copy(muzzle);
+    this.group.add(mesh);
+    this.projectiles.push({ pos: muzzle.clone(), vel, d, mesh, life: 0, mul: this.perfectMag ? 1.15 : 1 });
+  }
+
+  private updateProjectiles(dt: number): void {
+    const g = this.g;
+    for (let i = this.projectiles.length - 1; i >= 0; i--) {
+      const p = this.projectiles[i];
+      const pr = p.d.projectile!;
+      p.life += dt;
+      const steps = Math.max(1, Math.ceil((p.vel.length() * dt) / 0.4));
+      let boom: THREE.Vector3 | null = null;
+      for (let k = 0; k < steps && !boom; k++) {
+        const prev = p.pos.clone();
+        p.vel.y -= (pr.gravity * dt) / steps;
+        p.pos.addScaledVector(p.vel, dt / steps);
+        if (this.projectileHits(prev, p.pos)) boom = p.pos.y <= 0.1 ? p.pos.clone().setY(0.15) : prev;
+      }
+      if (!boom && p.life > 5) boom = p.pos.clone();
+      p.mesh.position.copy(p.pos);
+      p.mesh.lookAt(p.pos.clone().add(p.vel));
+      // Trails: rockets burn and smoke, grenades leave a wisp.
+      if (p.d.kind === 'rocket') {
+        g.effects.fire(p.pos.x, p.pos.y, p.pos.z, 0.4);
+        if (Math.random() < 0.6) g.effects.soot(p.pos.x, p.pos.y, p.pos.z, 0);
+      } else if (Math.random() < 0.35) g.effects.soot(p.pos.x, p.pos.y, p.pos.z, 0);
+      if (boom) {
+        p.mesh.removeFromParent();
+        this.projectiles.splice(i, 1);
+        this.explodeAt(boom, p.d, p.mul);
+      }
+    }
+  }
+
+  /** Did a projectile flying from a to b (world) hit the ground, a wall, a car or someone? */
+  private projectileHits(a: THREE.Vector3, b: THREE.Vector3): boolean {
+    const g = this.g;
+    const st = g.street;
+    if (b.y <= 0.1) return true;
+    if (b.y < 60 && !st.isOutdoors(b.x, b.z)) return true;
+    if (b.y > 2.4) return false;
+    const ga = st.worldToGlobal(a.x, a.z);
+    const gb = st.worldToGlobal(b.x, b.z);
+    const len = Math.hypot(gb.x - ga.x, gb.z - ga.z);
+    if (len < 1e-4) return false;
+    const hx = (gb.x - ga.x) / len;
+    const hz = (gb.z - ga.z) / len;
+    const reach = len + 0.3;
+    if (st.crowd.raycast(ga.x - hx * 0.3, ga.z - hz * 0.3, hx, hz, reach).length) return true;
+    if (st.police.raycast(ga.x - hx * 0.3, ga.z - hz * 0.3, hx, hz, reach).length) return true;
+    if (g.base.raycast(ga.x - hx * 0.3, ga.z - hz * 0.3, hx, hz, reach).some((c) => b.y > c.soldier.y && b.y < c.soldier.y + 2)) return true;
+    if (b.y < 1.8 && g.drive.raycast(ga.x, ga.z, hx, hz, len)) return true;
+    for (const r of g.combat.remoteTargets()) if (Math.hypot(r.x - b.x, r.z - b.z) < 0.55 && b.y < r.y + 2) return true;
+    return false;
+  }
+
+  /** A grenade or rocket goes off (world frame): blast damage all round, you included. */
+  private explodeAt(w: THREE.Vector3, d: GunDef, mul: number): void {
+    const g = this.g;
+    const st = g.street;
+    const ex = d.explosive!;
+    g.effects.explosion(w.x, Math.max(0.3, w.y), w.z, ex.radius / 5);
+    audio.playAt('explosion', w.x, w.z, 1.4);
+    const pd = Math.hypot(g.player.x - w.x, g.player.z - w.z);
+    g.cam.shake(Math.max(0.04, 0.45 - pd / 40));
+    const gp = st.worldToGlobal(w.x, w.z);
+    const power = ex.power * mul;
+    g.drive.blast(gp.x, gp.z, ex.radius, power, true);
+    for (const r of g.combat.remoteTargets()) {
+      const dist = Math.hypot(r.x - w.x, r.z - w.z);
+      if (dist >= ex.radius) continue;
+      const dmg = Math.round(power * (1 - dist / ex.radius));
+      if (dmg <= 0) continue;
+      g.combat.onHitRemote?.(r.pid, dmg);
+      g.floaters.text(new THREE.Vector3(r.x, 1.8, r.z), `💥${dmg}`, 'dmg head', 1, 0.8);
+      g.combat.landed(false, false);
+    }
+    st.police.crime(HEAT.hitPerson, false);
+    this.booms.push({ i: Math.random().toString(36).slice(2, 9), x: Math.round(gp.x * 10) / 10, z: Math.round(gp.z * 10) / 10, r: ex.radius, t: Date.now() });
+    if (this.booms.length > 6) this.booms.shift();
   }
 
   /**
@@ -863,12 +1222,12 @@ export class GunPlay {
     g.events.emit('guns', undefined);
   }
 
-  /** A police bullet (world frame). */
-  enemyTracer(a: THREE.Vector3, b: THREE.Vector3): void {
+  /** A police (or another player's) bullet (world frame). */
+  enemyTracer(a: THREE.Vector3, b: THREE.Vector3, color = 0xffb45a): void {
     const len = a.distanceTo(b);
     if (len < 0.2) return;
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.025, len), new THREE.MeshBasicMaterial({
-      color: 0xffb45a, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+      color, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
     }));
     m.position.copy(a).lerp(b, 0.5);
     m.lookAt(b);
@@ -879,7 +1238,7 @@ export class GunPlay {
   private tracer(d: GunDef, a: THREE.Vector3, b: THREE.Vector3): void {
     const len = a.distanceTo(b);
     if (len < 0.2) return;
-    const thick = d.kind === 'laser' ? 0.06 : d.kind === 'paint' || d.kind === 'confetti' ? 0.09 : 0.025;
+    const thick = d.kind === 'railgun' ? 0.1 : d.kind === 'laser' ? 0.06 : d.kind === 'paint' || d.kind === 'confetti' ? 0.09 : 0.025;
     const geo = new THREE.BoxGeometry(thick, thick, len);
     const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
       color: d.kind === 'paint' ? SPLAT_COLORS[Math.floor(Math.random() * SPLAT_COLORS.length)] : d.tracer,
@@ -888,7 +1247,7 @@ export class GunPlay {
     m.position.copy(a).lerp(b, 0.5);
     m.lookAt(b);
     this.group.add(m);
-    const life = d.kind === 'laser' ? 0.16 : d.kind === 'paint' || d.kind === 'confetti' ? 0.12 : 0.06;
+    const life = d.kind === 'railgun' ? 0.35 : d.kind === 'laser' ? 0.16 : d.kind === 'paint' || d.kind === 'confetti' ? 0.12 : 0.06;
     this.tracers.push({ mesh: m, life, max: life });
   }
 
@@ -932,6 +1291,11 @@ export class GunPlay {
   reset(): void {
     this.ammo.clear();
     this.reloading = 0;
+    this.spray = 0;
+    this.chargeT = 0;
+    this.burstLeft = 0;
+    for (const p of this.projectiles) p.mesh.removeFromParent();
+    this.projectiles = [];
     this.syncHeld();
   }
 }
@@ -955,8 +1319,15 @@ function reticleTexture(o: ReticleOpts): THREE.CanvasTexture {
   return t;
 }
 
-/** Damage of one bullet: headshots do double, and a sniper round to the head always knocks out. */
+/** Damage of one bullet: headshots do more (×2 for most guns), and a sniper round to the head always knocks out. */
 export function hitDamage(d: GunDef, head: boolean): number {
-  if (head && d.kind === 'sniper') return 999;
-  return d.dmg * (head ? 2 : 1);
+  if (head && d.id === 'sniper') return 999;
+  return d.dmg * (head ? headMul(d) : 1);
+}
+
+/** Another player's shot as you see it: a tracer from their gun (world frame). */
+export function remoteShotEnd(x: number, z: number, yaw: number, range: number, outdoors: (x: number, z: number) => boolean): THREE.Vector3 {
+  let t = 1;
+  for (; t < range; t += 0.5) if (!outdoors(x + Math.sin(yaw) * t, z + Math.cos(yaw) * t)) break;
+  return new THREE.Vector3(x + Math.sin(yaw) * t, 1.25, z + Math.cos(yaw) * t);
 }

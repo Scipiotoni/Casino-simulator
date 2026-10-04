@@ -55,7 +55,7 @@ import {
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
 import { SLOTS, autoSlot } from './guns';
-import { Combat } from './combat';
+import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
 import { Driving, type GarageState, emptyGarage, sanitizeGarage, shotDamage } from './driving';
 import { type Activity, activityFor, PRACTICE_LABEL, punchPay } from './activities';
 
@@ -331,6 +331,8 @@ export class Game implements World, ItemHost {
   actionHeld = false;
   actionPressed = false;
   modalOpen = false;
+  /** The touch ROLL button was tapped. */
+  rollRequest = false;
   /** HUD hidden for screenshots: no prompts, hovers or click selection. */
   photoMode = false;
   private lastFrame = performance.now();
@@ -1366,6 +1368,8 @@ export class Game implements World, ItemHost {
   /** Draw a gun you own, or holster (null). */
   equipGun(id: string | null): void {
     if (id && !this.guns.owned.includes(id)) return;
+    // Switching weapons drops whatever the last one was doing (a reload, a burst, a charge).
+    if (id !== this.guns.equipped) this.gunplay.switched();
     this.guns = { ...this.guns, equipped: id };
     audio.play(id ? 'reload' : 'click');
     this.events.emit('guns', undefined);
@@ -3975,7 +3979,22 @@ export class Game implements World, ItemHost {
         ix *= 0.55;
         iz *= 0.55;
       }
+      // Dodge roll (C, or the ROLL button): the way you're moving, or straight ahead.
+      const wantRoll = (input.hit('KeyC') || this.rollRequest) && !this.modalOpen;
+      this.rollRequest = false;
+      if (wantRoll && !this.drive.driving && !this.player.seat && !this.inside && this.player.floor === 0) {
+        const p = this.player;
+        const moving = Math.hypot(p.vx, p.vz) > 0.6;
+        const yaw = first ? this.cam.lookYaw : p.yaw;
+        this.combat.roll(moving ? p.vx : Math.sin(yaw), moving ? p.vz : Math.cos(yaw));
+      }
+      const c = this.combat;
+      if (c.rolling) ix = iz = 0;
+      this.player.model.roll = c.rolling ? 1 - c.rollT / ROLL_TIME : 0;
+      const rp = this.gunplay.reloadProgress;
+      this.player.model.reloadK = rp >= 0 ? rp : 0;
       this.player.update(dt, ix, iz, sprint && !this.gunplay.aiming, this.cam.basis(), this.playerWalk, third, first ? this.cam.lookYaw : null);
+      if (c.rolling) this.player.shove(c.rollDir.x * ROLL_SPEED * dt, c.rollDir.z * ROLL_SPEED * dt, this.playerWalk);
     } else {
       this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third, first && !this.player.seat && this.combat.ko <= 0 ? this.cam.lookYaw : null);
     }
@@ -3991,7 +4010,8 @@ export class Game implements World, ItemHost {
     if (first) {
       const ko = this.combat.ko > 0;
       const st = this.player.seat;
-      const eyeY = ko ? 0.35 : st && this.activity?.act.spot === 'lie' ? st.height + 0.35 : st?.sit ? st.height + 0.8 : this.player.model.height + 0.04;
+      const rollDip = this.combat.rolling ? Math.sin((1 - this.combat.rollT / ROLL_TIME) * Math.PI) * 0.95 : 0;
+      const eyeY = ko ? 0.35 : st && this.activity?.act.spot === 'lie' ? st.height + 0.35 : st?.sit ? st.height + 0.8 : this.player.model.height + 0.04 - rollDip;
       this.cam.eye.set(this.player.x, eyeY, this.player.z);
       this.cam.bobSpeed = this.player.seat || ko ? 0 : this.player.speed;
       if (ko) this.player.model.root.visible = false;

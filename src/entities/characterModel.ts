@@ -843,6 +843,10 @@ export class CharacterModel {
   flinch = 0;
   /** A melee swing (1 = arms raised, falling to 0 as it lands). */
   swing = 0;
+  /** A dodge roll in progress (0 = none, 0..1 through the roll); set by the owner each frame. */
+  roll = 0;
+  /** Reloading (0 = no, 0..1 through it): gun tipped, the other hand swaps the magazine. */
+  reloadK = 0;
   /** A punch being thrown (decays by itself); `jabLeft` picks the arm. */
   jab = 0;
   jabLeft = false;
@@ -1228,6 +1232,17 @@ export class CharacterModel {
       T.bodyRz = this.jabLeft ? 0.12 : -0.12;
       this.jab = Math.max(0, this.jab - dt * 4);
     }
+    if (this.reloadK > 0 && this.aim > 0) {
+      // Gun tipped in and down; the free hand drops to the belt for a fresh magazine and slaps it home.
+      const T = this.target;
+      const u = this.reloadK;
+      T.armRx = -1.05 - Math.sin(u * Math.PI) * 0.25;
+      T.armRz = 0.25;
+      const dip = Math.sin(Math.min(1, u * 1.5) * Math.PI);
+      T.armLx = -1.25 + dip * 1.05;
+      T.armLz = 0.4 - dip * 0.25;
+      T.headRx = 0.28;
+    }
     if (this.flinch > 0) {
       const T = this.target;
       T.bodyRx -= this.flinch * 0.35;
@@ -1251,6 +1266,23 @@ export class CharacterModel {
       this.body.rotation.z += Math.sin(this.t * 2.1) * 0.13 * w;
       this.body.position.x = Math.sin(this.t * 1.3 + 0.7) * 0.06 * w;
       this.headPivot.rotation.z += Math.sin(this.t * 1.6 + 1.2) * 0.2 * w;
+    }
+    if (this.roll > 0) {
+      // Tucked forward roll: knees up, arms in, the whole body turning over around its middle.
+      const a = this.roll * Math.PI * 2;
+      const c = 0.55;
+      const tuck = Math.sin(Math.min(1, this.roll * 1.2) * Math.PI);
+      this.legL.rotation.x = this.legR.rotation.x = -1.7 * tuck;
+      this.armL.rotation.set(-2.3 * tuck, 0, 0.3);
+      this.armR.rotation.set(-2.3 * tuck, 0, -0.3);
+      this.headPivot.rotation.x = 0.6 * tuck;
+      this.body.scale.y = 1 - tuck * 0.35;
+      this.body.rotation.x = a;
+      this.body.position.y = c - c * Math.cos(a);
+      this.body.position.z = -c * Math.sin(a);
+    } else if (this.body.position.z !== 0 || this.body.scale.y !== 1) {
+      this.body.position.z = 0;
+      this.body.scale.y = 1;
     }
     if (this.pose === 'celebrate') this.spin += dt * 9;
     else this.spin = damp(this.spin, Math.round(this.spin / (Math.PI * 2)) * Math.PI * 2, 6, dt);

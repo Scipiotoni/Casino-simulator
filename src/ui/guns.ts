@@ -25,7 +25,8 @@ export function openGunShop(game: Game, modals: Modals): void {
       const locked = !owned && level() < d.unlock;
       const mods = owned ? gunModsOf(g.guns, d.id) : null;
       const t = tunedGun(d, mods);
-      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${d.auto ? 'Full auto' : 'Semi-auto'} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''} · ${d.dmg} damage · range ${Math.round(t.range)} m`;
+        const kind = d.flame ? 'Flame cone' : d.explosive ? `Explosive (${d.explosive.power} blast, ${d.explosive.radius} m)` : d.charge ? 'Charge shot · pierces 3' : d.burst ? `${d.burst}-round burst` : d.auto ? 'Full auto' : 'Semi-auto';
+      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${kind} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''}${d.dmg ? ` · ${d.dmg} damage` : ''}${d.headMul && d.headMul !== 2 ? ` · ×${d.headMul} headshots` : ''} · range ${Math.round(t.range)} m`;
       const fitted = mods ? gunModsSummary(mods) : '';
       const slotRow = h('div', { class: 'slot-row' });
       if (owned) {
@@ -73,6 +74,7 @@ export class GunBar {
   private fire: HTMLButtonElement;
   private swap: HTMLButtonElement;
   private ads: HTMLButtonElement;
+  private roll: HTMLButtonElement;
   private hint = h('div', { class: 'gb-hint' });
   private slotsEl = h('div', { class: 'gb-slots' });
   private reloadBtn!: HTMLButtonElement;
@@ -101,6 +103,10 @@ export class GunBar {
         g.equipGun(i + 1 >= owned.length ? null : owned[i + 1]);
       },
     }) as HTMLButtonElement;
+    this.roll = h('button', {
+      class: 'gb-roll', text: 'ROLL', 'aria-label': 'Dodge roll',
+      onClick: () => { g.rollRequest = true; },
+    }) as HTMLButtonElement;
     this.ads = h('button', {
       class: 'gb-ads', text: 'AIM', 'aria-label': 'Aim down the sights',
       onClick: () => { g.gunplay.adsTouch = !g.gunplay.adsTouch; this.key = ''; },
@@ -110,6 +116,7 @@ export class GunBar {
       h('div', { class: 'gb-info' }, this.name, this.ammo, this.hint),
       (this.reloadBtn = h('button', { class: 'gb-btn', text: '⟳', title: 'Reload (R)', 'aria-label': 'Reload', onClick: () => g.gunplay.reload() }) as HTMLButtonElement),
       this.swap,
+      this.roll,
       this.ads,
       this.fire,
     );
@@ -126,14 +133,14 @@ export class GunBar {
     const gp = g.gunplay;
     const out = gp.canShoot;
     const fp = g.cam.mode === 'first';
-    const key = `${has}|${d?.id}|${gp.def ? JSON.stringify(gp.def.mods) : ''}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${out}|${g.input.isTouch}|${fp}|${gp.adsTouch}|${g.guns.slots.join(',')}`;
+    const key = `${has}|${d?.id}|${gp.def ? JSON.stringify(gp.def.mods) : ''}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${gp.perfectMag}|${out}|${g.input.isTouch}|${fp}|${gp.adsTouch}|${g.guns.slots.join(',')}`;
     if (key === this.key) return;
     this.key = key;
     this.el.hidden = !has;
     if (!has) return;
     this.el.classList.toggle('armed', !!d && out);
     this.name.textContent = d ? `${d.melee ? '🏏' : '🔫'} ${d.name}` : '🔫 Holstered';
-    this.ammo.textContent = d ? (d.melee ? 'Melee' : gp.reloading > 0 ? 'Reloading…' : `${gp.ammoOf(d.id)} / ${gp.def?.mag ?? d.mag}`) : '1–5 to draw';
+    this.ammo.textContent = d ? (d.melee ? 'Melee' : gp.reloading > 0 ? 'Reloading… (R again to time it)' : `${gp.perfectMag ? '⚡ ' : ''}${gp.ammoOf(d.id)} / ${gp.def?.mag ?? d.mag}`) : '1–5 to draw';
     // The five slots: click to draw, the number key does the same.
     this.slotsEl.replaceChildren(...g.guns.slots.map((id, k) => {
       const sd = gunDef(id);
@@ -145,10 +152,11 @@ export class GunBar {
       }, h('b', { text: String(k + 1) }), h('img', { src: sd ? gunThumb(sd, sm) : '', alt: '', hidden: !sd }));
     }));
     this.hint.textContent = !d ? '' : out
-      ? (d.melee ? (g.input.isTouch ? 'Tap FIRE to swing' : 'Click to swing') : g.input.isTouch ? (fp ? 'Drag to look · Hold FIRE' : 'Hold FIRE') : fp ? 'Click shoot · Right-click aim · R reload' : 'Click to shoot · R reload · V first person')
+      ? (d.melee ? (g.input.isTouch ? 'Tap FIRE to swing' : 'Click to swing · C roll') : g.input.isTouch ? (fp ? 'Drag to look · Hold FIRE' : 'Hold FIRE') : d.charge ? 'Hold to charge, release to fire · C roll' : fp ? 'Click shoot · Right-click aim · R reload · C roll' : 'Click to shoot · R reload · C roll · V first person')
       : 'Street only';
     this.fire.hidden = !g.input.isTouch || !d || !out;
     this.ads.hidden = !g.input.isTouch || !d || !out || !fp;
+    this.roll.hidden = !g.input.isTouch || !out;
     this.ads.classList.toggle('on', gp.adsTouch);
     this.reloadBtn.hidden = !d || !!d.melee;
   }

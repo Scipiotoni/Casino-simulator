@@ -118,6 +118,8 @@ export class Effects {
   private firePool: Pool;
   /** Thick black smoke from wrecks and explosions. */
   private sootPool: Pool;
+  /** Flamethrower flames: softer, so a stream of them doesn't white out. */
+  private flamePool: Pool;
   private blasts: { mesh: THREE.Mesh; t: number; size: number }[] = [];
   private coinMesh: THREE.InstancedMesh;
   private coins: FlyingCoin[] = [];
@@ -149,7 +151,10 @@ export class Effects {
     this.firePool = new Pool(new THREE.IcosahedronGeometry(0.3, 1), fireMat, 260, -10);
     const sootMat = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.62, roughness: 1, depthWrite: false });
     this.sootPool = new Pool(new THREE.IcosahedronGeometry(0.35, 1), sootMat, 220, -10);
-    this.group.add(this.confettiPool.mesh, this.sparklePool.mesh, this.smokePool.mesh, this.firePool.mesh, this.sootPool.mesh, this.coinMesh);
+    const flameMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.42, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+    this.flamePool = new Pool(new THREE.IcosahedronGeometry(0.3, 1), flameMat, 200, -10);
+    this.group.add(this.confettiPool.mesh, this.sparklePool.mesh, this.smokePool.mesh, this.firePool.mesh, this.sootPool.mesh, this.flamePool.mesh, this.coinMesh);
+    this.flamePool.mesh.renderOrder = 6;
     this.firePool.mesh.renderOrder = 6;
     this.sparklePool.mesh.renderOrder = 5;
   }
@@ -267,6 +272,26 @@ export class Effects {
     });
   }
 
+  /** A jet of flame from a nozzle along (dx, dy, dz), reaching about `len` metres. */
+  jet(x: number, y: number, z: number, dx: number, dy: number, dz: number, len: number): void {
+    if (this.muted) return;
+    const n = this.reducedMotion ? 2 : 4;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    for (let i = 0; i < n; i++) {
+      this.flamePool.spawn((p) => {
+        p.p.set(x, y, z);
+        const sp = len * 2.4 * (0.75 + Math.random() * 0.5);
+        p.v.set((dx / l) * sp + (Math.random() - 0.5) * 2.2, (dy / l) * sp + 0.4 + Math.random() * 1.2, (dz / l) * sp + (Math.random() - 0.5) * 2.2);
+        p.max = 0.32 + Math.random() * 0.14;
+        p.size = 0.22 + Math.random() * 0.3;
+        p.grow = 3.2;
+        p.drag = 1.6;
+        p.color.setHex(Math.random() < 0.2 ? 0xffc060 : Math.random() < 0.6 ? 0xff7a1a : 0xe0400c).multiplyScalar(0.9);
+      });
+    }
+    if (Math.random() < 0.3) this.soot(x + (dx / l) * len * 0.7, y + 0.6, z + (dz / l) * len * 0.7, 1);
+  }
+
   /** Dark smoke rising from a damaged engine or a wreck. */
   soot(x: number, y: number, z: number, dark = 1): void {
     if (this.muted) return;
@@ -318,6 +343,7 @@ export class Effects {
     this.smokePool.update(dt);
     this.firePool.update(dt);
     this.sootPool.update(dt);
+    this.flamePool.update(dt);
     for (let i = this.blasts.length - 1; i >= 0; i--) {
       const b = this.blasts[i];
       b.t += dt;

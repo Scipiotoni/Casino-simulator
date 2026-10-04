@@ -5390,3 +5390,151 @@ p.small {
   align-items: center;
   gap: 6px;
 }
+
+/* Active reload: hit R again while the marker is in the gold zone */
+.active-reload {
+  left: 50%;
+  top: calc(50% + 56px);
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+.active-reload .ar-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+.active-reload .ar-track {
+  position: relative;
+  width: 160px;
+  height: 10px;
+  border-radius: 99px;
+  background: rgba(23, 21, 31, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  overflow: hidden;
+}
+.active-reload .ar-sweet {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, #ffd24a, #ffb000);
+  box-shadow: 0 0 8px rgba(255, 210, 74, 0.8);
+}
+.active-reload .ar-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 4px #fff;
+}
+.active-reload.tried .ar-label {
+  opacity: 0;
+}
+.active-reload.perfect .ar-track {
+  border-color: #ffd24a;
+  box-shadow: 0 0 14px rgba(255, 210, 74, 0.9);
+}
+.active-reload.fumble .ar-track {
+  border-color: #ff4d5e;
+  box-shadow: 0 0 12px rgba(255, 77, 94, 0.8);
+}
+
+/* Railgun charge */
+.charge-meter {
+  left: 50%;
+  top: calc(50% + 34px);
+  transform: translateX(-50%);
+  width: 120px;
+  height: 6px;
+  border-radius: 99px;
+  background: rgba(23, 21, 31, 0.7);
+  overflow: hidden;
+}
+.charge-meter i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #6a2cc2, #9b7bff);
+}
+.charge-meter.full i {
+  background: #d9c8ff;
+  box-shadow: 0 0 10px #9b7bff;
+}
+
+/* Kill feed and call-outs */
+.kill-feed {
+  right: 16px;
+  top: calc(var(--safe-top, 0px) + 92px);
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  max-width: min(320px, 60vw);
+}
+.kf-line {
+  padding: 3px 10px;
+  border-radius: 8px;
+  background: rgba(23, 21, 31, 0.78);
+  color: #f4f1ea;
+  font-size: 12px;
+  font-weight: 700;
+  animation: kf-in 0.2s ease-out;
+}
+.kf-line.mine {
+  background: rgba(200, 16, 46, 0.85);
+  color: #fff;
+}
+@keyframes kf-in {
+  from { transform: translateX(20px); opacity: 0; }
+}
+.ko-banner {
+  left: 50%;
+  top: 28%;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 2px;
+}
+.ko-banner b {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 6vw, 52px);
+  color: #ffd24a;
+  -webkit-text-stroke: 2px #3a0d1a;
+  text-shadow: 0 4px 0 #c8102e, 0 0 24px rgba(255, 77, 94, 0.7);
+  letter-spacing: 1px;
+}
+.ko-banner span {
+  font-size: 13px;
+  font-weight: 800;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+.ko-banner.show b {
+  animation: banner-pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+@keyframes banner-pop {
+  from { transform: scale(2.2); opacity: 0; }
+}
+.gb-roll {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(47, 230, 255, 0.18);
+  border: 2px solid rgba(47, 230, 255, 0.6);
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: #fff;
+  touch-action: none;
+}
+.net-label.bounty {
+  box-shadow: 0 0 0 2px #ffd24a, 0 0 14px rgba(255, 210, 74, 0.7);
+}
+@media (max-width: 700px) {
+  .kill-feed {
+    top: calc(var(--safe-top, 0px) + 130px);
+    right: 8px;
+  }
+}

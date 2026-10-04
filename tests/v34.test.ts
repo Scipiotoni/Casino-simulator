@@ -212,3 +212,89 @@ describe('engine sound: real combustion pulses', () => {
     expect(atPeriod).toBeGreaterThan(0);
   });
 });
+
+import { GUNS, falloff, gunDef, recoilStep, reloadPress, spreadMul } from '../src/game/guns';
+import { hitDamage } from '../src/game/gunplay';
+import { bountyFor, multiLabel, streakLabel } from '../src/game/combat';
+import { buildGun } from '../src/items/models/guns';
+import { sampleSnaps } from '../src/net/net';
+
+describe('skill-based gunplay', () => {
+  const rifle = gunDef('rifle')!;
+  it('the first aimed shot is pinpoint; spraying and running bloom it open', () => {
+    const first = spreadMul(rifle, 0, 0, true);
+    const spray = spreadMul(rifle, 8, 0, true);
+    const running = spreadMul(rifle, 0, 6, false);
+    expect(first).toBeLessThan(0.2);
+    expect(spray).toBeGreaterThan(first * 4);
+    expect(running).toBeGreaterThan(spreadMul(rifle, 0, 0, false));
+  });
+
+  it('recoil climbs through a spray in a fixed, learnable pattern', () => {
+    const a = recoilStep(rifle, 0);
+    const b = recoilStep(rifle, 8);
+    expect(b[0]).toBeGreaterThan(a[0]);
+    expect(recoilStep(rifle, 5)).toEqual(recoilStep(rifle, 5));
+  });
+
+  it('damage falls off with distance; headshots hit harder; the sniper still one-shots heads', () => {
+    expect(falloff(rifle, 5)).toBe(1);
+    expect(falloff(rifle, rifle.range)).toBeCloseTo(0.55, 2);
+    expect(falloff(gunDef('gl')!, 50)).toBe(1);
+    expect(hitDamage(gunDef('deagle')!, true)).toBe(130);
+    expect(hitDamage(gunDef('sniper')!, true)).toBe(999);
+    // The marksman rifle is a sniper-type gun but not a one-shot.
+    expect(hitDamage(gunDef('dmr')!, true)).toBeLessThan(999);
+  });
+
+  it('active reload: only the sweet spot is perfect', () => {
+    expect(reloadPress(0.5)).toBe('perfect');
+    expect(reloadPress(0.2)).toBe('fumble');
+    expect(reloadPress(0.9)).toBe('fumble');
+  });
+
+  it('multi-KOs, streaks and bounties', () => {
+    expect(multiLabel(1)).toBeNull();
+    expect(multiLabel(2)).toBe('DOUBLE KO');
+    expect(multiLabel(6)).toBe('RAMPAGE');
+    expect(streakLabel(3)).toBe('KILLING SPREE');
+    expect(bountyFor(2)).toBe(0);
+    expect(bountyFor(4)).toBe(10_000);
+  });
+});
+
+describe('more guns', () => {
+  it('nine new weapons, each with a model and a muzzle', () => {
+    for (const id of ['deagle', 'tommy', 'burst', 'dmr', 'lmg', 'gl', 'flamer', 'rpg', 'railgun']) {
+      const d = gunDef(id)!;
+      expect(d).toBeTruthy();
+      const b = buildGun(d);
+      expect(b.group.children.length).toBeGreaterThan(4);
+      expect(b.muzzle.z).toBeGreaterThan(0.1);
+    }
+    expect(new Set(GUNS.map((g) => g.id)).size).toBe(GUNS.length);
+    expect(gunDef('burst')!.burst).toBe(3);
+    expect(gunDef('railgun')!.charge).toBeGreaterThan(0);
+    expect(gunDef('rpg')!.explosive!.radius).toBeGreaterThan(gunDef('gl')!.explosive!.radius);
+  });
+});
+
+describe('smooth movement of other players', () => {
+  const buf = [
+    { t: 1000, x: 0, z: 0, yaw: 0 },
+    { t: 1100, x: 1, z: 0, yaw: 0 },
+    { t: 1200, x: 2, z: 0, yaw: 0 },
+  ];
+  it('plays back between updates', () => {
+    expect(sampleSnaps(buf, 1150)!.x).toBeCloseTo(1.5);
+    expect(sampleSnaps(buf, 900)!.x).toBe(0);
+  });
+  it('glides a little past the last update, then waits', () => {
+    expect(sampleSnaps(buf, 1250)!.x).toBeCloseTo(2.5);
+    expect(sampleSnaps(buf, 5000)!.x).toBeCloseTo(4.5);
+  });
+  it('turns the short way round', () => {
+    const b = [{ t: 0, x: 0, z: 0, yaw: 3.0 }, { t: 100, x: 0, z: 0, yaw: -3.0 }];
+    expect(Math.abs(sampleSnaps(b, 50)!.yaw)).toBeGreaterThan(3);
+  });
+});

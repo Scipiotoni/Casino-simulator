@@ -25,6 +25,28 @@ export function bustFine(cash: number, stars: number): number {
   return Math.max(0, Math.min(KO_MAX_LOSS, Math.floor(Math.max(0, cash) * 0.05 * s) + 250 * s, Math.floor(Math.max(0, cash))));
 }
 
+/** A dodge roll: how long it lasts, how much of it you can't be hit, and the wait before the next. */
+export const ROLL_TIME = 0.42;
+export const ROLL_IFRAMES = 0.32;
+export const ROLL_COOLDOWN = 0.9;
+export const ROLL_SPEED = 9;
+
+/** Knockouts landed close together. */
+export function multiLabel(n: number): string | null {
+  if (n < 2) return null;
+  return n === 2 ? 'DOUBLE KO' : n === 3 ? 'TRIPLE KO' : n === 4 ? 'QUAD KO' : 'RAMPAGE';
+}
+
+/** Players knocked out in a row without going down yourself. */
+export function streakLabel(n: number): string | null {
+  return n === 3 ? 'KILLING SPREE' : n === 5 ? 'UNSTOPPABLE' : n === 7 ? 'GODLIKE' : n === 10 ? 'LEGENDARY' : null;
+}
+
+/** The price on a player's head: from a 3-player streak, more for every one after. */
+export function bountyFor(streak: number): number {
+  return streak >= 3 ? 2500 * streak : 0;
+}
+
 /** Another player you could hit, in the world frame you're looking at. */
 export interface RemoteTarget {
   pid: string;
@@ -66,6 +88,49 @@ export class Combat {
   onLoot: ((pid: string, amount: number) => void) | null = null;
   onHitRemote: ((pid: string, dmg: number) => void) | null = null;
   remoteTargets: () => RemoteTarget[] = () => [];
+  /** Dodge roll: seconds left, cooldown, how many so far (others see it), and which way. */
+  rollT = 0;
+  rollCd = 0;
+  rolls = 0;
+  rollDir = { x: 0, z: 1 };
+  /** Knockouts landed in quick succession. */
+  private multiN = 0;
+  private multiT = 0;
+  /** Players knocked out since you last went down (a streak puts a bounty on you). */
+  streak = 0;
+  /** Recent knockouts for the kill feed (newest last). */
+  feed: { text: string; t: number; mine: boolean }[] = [];
+  /** A big call-out in the middle of the screen (DOUBLE KO, KILLING SPREE…). */
+  banner: { text: string; sub: string; t: number } | null = null;
+  /** Your recent player knockouts, sent to everyone's kill feed: id, victim, weapon. */
+  kos: { i: string; v: string; w: string; t: number }[] = [];
+
+  /** Mid-roll. */
+  get rolling(): boolean {
+    return this.rollT > 0;
+  }
+
+  /** Dodge roll in a direction (world frame). False if you can't right now. */
+  roll(dx: number, dz: number): boolean {
+    if (this.rollT > 0 || this.rollCd > 0 || this.ko > 0) return false;
+    const l = Math.hypot(dx, dz) || 1;
+    this.rollDir = { x: dx / l, z: dz / l };
+    this.rollT = ROLL_TIME;
+    this.rollCd = ROLL_COOLDOWN;
+    this.rolls++;
+    audio.play('roll');
+    return true;
+  }
+
+  /** Add a line to the kill feed. */
+  addFeed(text: string, mine: boolean): void {
+    this.feed.push({ text, t: performance.now(), mine });
+    if (this.feed.length > 6) this.feed.shift();
+  }
+
+  private callout(text: string, sub = ''): void {
+    this.banner = { text, sub, t: performance.now() };
+  }
   /** You're protected (blinking) right after waking up. */
   get safe(): boolean {
     return this.protect > 0 || this.ko > 0;
@@ -88,6 +153,16 @@ export class Combat {
     const g = this.g;
     this.flash = Math.max(0, this.flash - dt * 1.6);
     this.sinceHurt += dt;
+    if (this.rollT > 0) this.rollT = Math.max(0, this.rollT - dt);
+    else this.rollCd = Math.max(0, this.rollCd - dt);
+    if (this.multiT > 0) {
+      this.multiT -= dt;
+      if (this.multiT <= 0) this.multiN = 0;
+    }
+    const now = performance.now();
+    this.feed = this.feed.filter((f) => now - f.t < 7000);
+    const wall = Date.now();
+    this.kos = this.kos.filter((k) => wall - k.t < 10_000);
     if (this.protect > 0) this.protect = Math.max(0, this.protect - dt);
     if (this.ko > 0) {
       this.ko -= dt;
@@ -112,6 +187,12 @@ export class Combat {
   damage(dmg: number, fromPid: string, fromName: string, fromX?: number, fromZ?: number): void {
     const g = this.g;
     if (dmg <= 0 || this.safe || !this.exposed) return;
+    // Mid-roll you're untouchable: timing your dodge is the counter to a big shot.
+    if (this.rollT > ROLL_TIME - ROLL_IFRAMES) {
+      audio.play('dodge');
+      g.floaters.text(g.player.model.root.position.clone().setY(g.player.model.height + 0.6), 'DODGED', 'good', 0.9, 0.6);
+      return;
+    }
     this.hp = Math.max(0, this.hp - dmg);
     this.sinceHurt = 0;
     this.flash = Math.min(1, this.flash + 0.35 + dmg / 120);
@@ -132,6 +213,10 @@ export class Combat {
     const g = this.g;
     this.ko = KO_SECONDS;
     this.hp = 0;
+    this.rollT = 0;
+    if (this.streak >= 3) g.notify(`Your ${this.streak}-knockout streak is over.`, 'bad');
+    this.streak = 0;
+    if (fromPid !== 'world' && fromPid !== 'police') this.addFeed(`${fromName} ➜ you`, false);
     // Knocked out at the wheel: the car stops and you're pulled out onto open ground beside it.
     if (g.drive.driving) {
       g.drive.driving.speed = 0;
@@ -182,11 +267,37 @@ export class Combat {
     this.g.events.emit('combat', undefined);
   }
 
-  /** A shot of yours landed on somebody. */
-  landed(head: boolean, ko: boolean): void {
+  /**
+   * A shot of yours landed on somebody. A knockout counts toward a multi-KO; knocking out
+   * another player (`victim`) also builds your streak and goes in everyone's kill feed.
+   */
+  landed(head: boolean, ko: boolean, victim?: string): void {
+    const g = this.g;
     this.mark = { t: performance.now(), head, ko };
     audio.play(head ? 'headshot' : 'hitmarker');
-    this.g.events.emit('combat', undefined);
+    if (ko) {
+      this.multiN++;
+      this.multiT = 4;
+      const m = multiLabel(this.multiN);
+      if (m) {
+        this.callout(m);
+        audio.play('multikill');
+      }
+    }
+    if (ko && victim) {
+      this.streak++;
+      g.stats.pvpKos = (g.stats.pvpKos ?? 0) + 1;
+      const w = g.gunplay.def?.name ?? 'fists';
+      this.addFeed(`You ➜ ${victim} · ${w}`, true);
+      this.kos.push({ i: Math.random().toString(36).slice(2, 9), v: victim.slice(0, 20), w: w.slice(0, 24), t: Date.now() });
+      if (this.kos.length > 4) this.kos.shift();
+      const st = streakLabel(this.streak);
+      if (st) {
+        this.callout(st, `${this.streak} in a row · ${formatMoney(bountyFor(this.streak))} bounty on your head`);
+        audio.play('streak');
+      }
+    }
+    g.events.emit('combat', undefined);
   }
 
   /** Cash from someone you knocked out. */
@@ -209,5 +320,10 @@ export class Combat {
     this.flash = 0;
     this.hitFrom = null;
     this.mark = null;
+    this.rollT = 0;
+    this.rollCd = 0;
+    this.streak = 0;
+    this.feed = [];
+    this.banner = null;
   }
 }

@@ -13,7 +13,8 @@ export type SfxName =
   | 'carAlarm' | 'honk' | 'balloon' | 'ricochet' | 'keyBeep' | 'keyError' | 'vaultClunk' | 'vaultHiss' | 'vaultWheel' | 'alarm'
   | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat' | 'siren' | 'whiz' | 'busted'
   | 'thud' | 'drumhit' | 'cymbal' | 'strum' | 'piano' | 'clack' | 'shutter' | 'blip' | 'splash' | 'sizzle'
-  | 'crash' | 'explosion' | 'backfire' | 'turbo' | 'shift' | 'ignition' | 'metalHit' | 'cannon';
+  | 'crash' | 'explosion' | 'backfire' | 'turbo' | 'shift' | 'ignition' | 'metalHit' | 'cannon'
+  | 'flame' | 'charge' | 'rail' | 'launch' | 'roll' | 'dodge' | 'multikill' | 'streak';
 
 /** How a car's engine sounds: pitch, rumble, rasp, whine. */
 export type EngineProfile = 'four' | 'v8' | 'sport' | 'diesel' | 'electric' | 'buggy' | 'tank';
@@ -660,6 +661,43 @@ class AudioEngine {
         for (let i = 0; i < 5; i++) this.tone(48 * p, t + i * 0.09, 0.07, { type: 'sawtooth', gain: 0.08, filter: 600, dest });
         this.tone(40 * p, t + 0.45, 0.4, { type: 'sawtooth', gain: 0.14, freqEnd: 70 * p, filter: 900, dest });
         break;
+      case 'flame':
+        // A roaring rush of burning fuel.
+        this.noise(t, 0.16, { type: 'bandpass', freq: 500 * p, q: 0.6, gain: 0.22, attack: 0.02, dest });
+        this.noise(t, 0.12, { type: 'lowpass', freq: 260, gain: 0.25, attack: 0.02, dest });
+        break;
+      case 'charge':
+        // Capacitors winding up.
+        this.tone(180 * p, t, 1.0, { type: 'sawtooth', gain: 0.05, freqEnd: 1400 * p, filter: 2400, attack: 0.05, dest });
+        this.tone(360 * p, t, 1.0, { type: 'sine', gain: 0.05, freqEnd: 2800 * p, attack: 0.05, dest });
+        break;
+      case 'rail':
+        // A crack and a ringing zap.
+        this.noise(t, 0.08, { type: 'highpass', freq: 2500, gain: 0.4, attack: 0.002, dest });
+        this.tone(1800 * p, t, 0.45, { type: 'square', gain: 0.08, freqEnd: 120, filter: 5000, dest });
+        this.tone(90 * p, t, 0.35, { type: 'sine', gain: 0.6, freqEnd: 40, dest });
+        break;
+      case 'launch':
+        // A hollow thump out of a wide barrel.
+        this.tone(110 * p, t, 0.22, { type: 'sine', gain: 0.6, freqEnd: 45, dest });
+        this.noise(t, 0.12, { type: 'lowpass', freq: 900, gain: 0.35, attack: 0.003, dest });
+        break;
+      case 'roll':
+        this.noise(t, 0.3, { type: 'bandpass', freq: 400, freqEnd: 900, q: 0.8, gain: 0.18, attack: 0.03, dest });
+        this.tone(80 * p, t + 0.28, 0.1, { type: 'sine', gain: 0.25, freqEnd: 50, dest });
+        break;
+      case 'dodge':
+        this.tone(900 * p, t, 0.12, { type: 'sine', gain: 0.12, freqEnd: 1700 * p, dest });
+        this.noise(t, 0.12, { type: 'highpass', freq: 3000, gain: 0.08, dest });
+        break;
+      case 'multikill':
+        for (let i = 0; i < 3; i++) this.tone(midi(72 + i * 4) * p, t + i * 0.07, 0.18, { type: 'square', gain: 0.06, filter: 4000, dest });
+        this.tone(midi(84) * p, t + 0.21, 0.4, { type: 'sawtooth', gain: 0.07, filter: 3000, dest });
+        break;
+      case 'streak':
+        for (let i = 0; i < 4; i++) this.tone(midi(67 + [0, 4, 7, 12][i]) * p, t + i * 0.09, 0.3, { type: 'square', gain: 0.07, filter: 3500, dest });
+        this.tone(55 * p, t, 0.6, { type: 'sine', gain: 0.4, freqEnd: 40, dest });
+        break;
       case 'alarm':
         for (let i = 0; i < 6; i++) this.tone(i % 2 ? 660 : 880, t + i * 0.25, 0.23, { type: 'sawtooth', gain: 0.06, filter: 2500, dest });
         break;
@@ -1030,7 +1068,7 @@ const PROGRESSION: { root: number; tones: number[] }[] = [
 ];
 
 const MIN_GAP: Partial<Record<SfxName, number>> = {
-  explosion: 0.08, crash: 0.12, backfire: 0.07, turbo: 0.4, metalHit: 0.03,
+  flame: 0.1, charge: 0.5, explosion: 0.08, crash: 0.12, backfire: 0.07, turbo: 0.4, metalHit: 0.03,
   smg: 0.04, ping: 0.03, glass: 0.06, honk: 1, carAlarm: 1.2, alarm: 1.4, keyBeep: 0.02, siren: 1, whiz: 0.08,
   coin: 0.05, spin: 0.12, tick: 0.05, win: 0.15, chips: 0.1, cards: 0.08, dice: 0.2, paint: 0.06, click: 0.03,
 };

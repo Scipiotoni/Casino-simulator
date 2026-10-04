@@ -2,6 +2,7 @@ import type { Game } from '../game/game';
 import { h } from './dom';
 import { formatMoney } from '../core/math';
 import { MAX_HP } from '../game/combat';
+import { PERFECT_WINDOW } from '../game/guns';
 import { drawReticle, reticleKey } from './reticle';
 
 /**
@@ -35,12 +36,25 @@ export class CombatHud {
   private speedoKey = '';
   private wp = h('button', { class: 'wp-hud', hidden: true, title: 'Clear the waypoint' });
   private wpKey = '';
+  /** Active reload: a bar with the sweet spot; the marker runs across it. */
+  private reloadFill = h('i', { class: 'ar-mark' });
+  private reloadEl = h('div', { class: 'active-reload', hidden: true },
+    h('span', { class: 'ar-label', text: 'R again in the gold zone' }),
+    h('div', { class: 'ar-track' }, h('b', { class: 'ar-sweet', style: `left:${PERFECT_WINDOW[0] * 100}%;width:${(PERFECT_WINDOW[1] - PERFECT_WINDOW[0]) * 100}%` }), this.reloadFill));
+  /** Railgun charge. */
+  private chargeFill = h('i');
+  private chargeEl = h('div', { class: 'charge-meter', hidden: true }, this.chargeFill);
+  /** Kill feed (top right) and big call-outs (DOUBLE KO, KILLING SPREE…). */
+  private feedEl = h('div', { class: 'kill-feed' });
+  private feedKey = '';
+  private bannerEl = h('div', { class: 'ko-banner', hidden: true });
+  private bannerT = -1;
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Move the mouse to look around</b><span>Click to lock the mouse in for smooth 360° turning · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl);
     this.wp.addEventListener('click', () => game.clearWaypoint());
     // The tank's fire button (redrawn with the speedo, so listen on the speedo itself).
     this.speedo.addEventListener('pointerdown', (e) => {
@@ -108,6 +122,39 @@ export class CombatHud {
       this.cross.classList.toggle('armed', armed);
       this.cross.classList.toggle('ads', gp.aiming);
     }
+    // Active reload bar (and how the last try went).
+    const rp = playing ? gp.reloadProgress : -1;
+    const rr = gp.reloadResult;
+    const flashRes = rr && performance.now() - rr.at < 600 ? rr.kind : '';
+    this.reloadEl.hidden = rp < 0 && !flashRes;
+    if (!this.reloadEl.hidden) {
+      this.reloadFill.style.left = `${Math.max(0, rp) * 100}%`;
+      this.reloadEl.className = `active-reload${gp.reloadTried ? ' tried' : ''}${flashRes ? ` ${flashRes}` : ''}`;
+    }
+    // Railgun charge
+    const d = gp.def;
+    this.chargeEl.hidden = !(playing && d?.charge && gp.chargeT > 0);
+    if (!this.chargeEl.hidden && d?.charge) {
+      const k = gp.chargeT / d.charge;
+      this.chargeFill.style.width = `${(k * 100).toFixed(0)}%`;
+      this.chargeEl.classList.toggle('full', k >= 1);
+    }
+    // Kill feed
+    const fk = c.feed.map((f) => `${f.t}`).join(',');
+    if (fk !== this.feedKey) {
+      this.feedKey = fk;
+      this.feedEl.replaceChildren(...c.feed.map((f) => h('div', { class: `kf-line${f.mine ? ' mine' : ''}`, text: f.text })));
+    }
+    // Call-outs
+    if (c.banner && c.banner.t !== this.bannerT) {
+      this.bannerT = c.banner.t;
+      this.bannerEl.replaceChildren(h('b', { text: c.banner.text }), c.banner.sub ? h('span', { text: c.banner.sub }) : '');
+      this.bannerEl.hidden = false;
+      this.bannerEl.classList.remove('show');
+      void this.bannerEl.offsetWidth;
+      this.bannerEl.classList.add('show');
+    }
+    if (c.banner && performance.now() - c.banner.t > 2200) this.bannerEl.hidden = true;
     // Hit marker: a quick X (gold for headshots, red for a knockout).
     if (c.mark && c.mark.t !== this.markT) {
       this.markT = c.mark.t;

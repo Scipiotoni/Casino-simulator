@@ -874,6 +874,8 @@ export class Modals {
       ['Door guards', 'Hire a Door Guard (Staff) to stand at the entrance and turn most cheaters away.'],
       ['Blacklist', 'Click another player (or open Menu → Players) and pay your security to keep them out of your casino, hotel and house for a while. Longer bans cost more.'],
       ['Camera', 'V switches between the top-down view and a third-person camera behind you (A/D turn, W/S walk).'],
+      ['Gunfights', 'Skill beats spam: your first aimed shot from a standstill is pinpoint, every shot in a spray blooms wider and climbs (pull the mouse down), and moving hurts accuracy. Damage drops with distance; headshots hit harder. C dodge-rolls (you can\'t be hit mid-roll). While reloading, press R again in the gold zone for an instant reload and +15% damage; miss it and you fumble.'],
+      ['PvP', 'Knock out players in a row for a streak: from three, a bounty goes on your head for whoever ends it. Multi-knockouts, the kill feed and explosions show for everyone.'],
     ];
     const body = h('div', { class: 'help' }, ...tips.map(([k, v]) => h('div', { class: 'help-row' }, h('b', { text: k }), h('span', { text: v }))));
     this.open('How to play', body, { wide: true });
