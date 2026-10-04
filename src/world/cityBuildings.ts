@@ -466,6 +466,79 @@ export function buildFiller(s: THREE.Group, spec: FillerSpec): Built {
       box(s, w * 0.5, 2.4, 0.1, mat(0x2a3440, { emissive: 0xffd9a0, emissiveIntensity: 0.4 }), CENTER_X, 1.4, zF + 0.05);
       break;
     }
+    case 'factory': {
+      const wall = facadeMat('metal', spec.color);
+      texBox(s, w, H, d, wall, CENTER_X, H / 2, zF - d / 2, 10, 10);
+      // Saw-tooth roof lights and two smokestacks.
+      const glass = mat(0x8fb4cf, { rough: 0.2, metal: 0.4, emissive: 0x203040, emissiveIntensity: 0.4 });
+      for (let z = z0 + 3; z < zF - 2; z += 6) {
+        const tooth = box(s, w - 1, 0.18, 3.4, glass, CENTER_X, H + 1.1, z);
+        tooth.rotation.x = -0.6;
+      }
+      box(s, w + 0.3, 0.3, d + 0.3, mat(0x5a5862, { rough: 0.8 }), CENTER_X, H + 0.15, zF - d / 2);
+      const brick = mat(0x8c4a32, { rough: 0.9 });
+      for (const [sx, hh] of [[x0 + 4, 14], [x0 + 9, 11]] as const) {
+        cyl(s, 0.9, 1.2, hh, brick, sx, H + hh / 2, z0 + 5, 12);
+        cyl(s, 1.0, 1.0, 0.5, mat(0x2b2b35), sx, H + hh, z0 + 5, 12);
+      }
+      for (let i = 0; i < 2; i++) box(s, 5, 4, 0.1, mat(0x5b6575, { metal: 0.4 }), x1 - 5 - i * 7, 2, zF + 0.05);
+      // Loading yard out back: pallets and a container.
+      box(s, 6, 2.6, 2.4, mat([0xc8102e, 0x1f4fbf, 0x1e7a46][Math.floor(rnd(3) * 3)], { rough: 0.6, metal: 0.3 }), x0 + 6, 1.3, z0 - 4);
+      const t = plate(spec.name.toUpperCase(), '#1c1f26', hexCss(spec.accent), '800 52px Bungee, "Arial Black", sans-serif');
+      b.textures.push(t);
+      b.keep.push(signMesh(s, t, Math.min(w - 4, 12), 1.6, CENTER_X, H - 1.2, zF + 0.06));
+      break;
+    }
+    case 'hospital': {
+      block(s, spec, 'punched', w, d, H);
+      // White box, a red cross on the roof, an ambulance bay with a canopy.
+      box(s, w + 0.3, 0.5, 0.4, mat(0xf4f1ea, { rough: 0.5 }), CENTER_X, 3.2, zF + 0.2);
+      box(s, 10, 0.3, 4, mat(0xf4f1ea, { rough: 0.6 }), CENTER_X - 6, 3.4, zF + 2);
+      for (const px of [CENTER_X - 10.5, CENTER_X - 1.5]) cyl(s, 0.15, 0.15, 3.4, mat(0xd8d2c6), px, 1.7, zF + 3.6, 8);
+      const red = mat(0xd62a2a, { emissive: 0xd62a2a, emissiveIntensity: 0.8, rough: 0.5 });
+      box(s, 6, 0.2, 1.8, red, CENTER_X, H + 0.55, zF - d / 2);
+      box(s, 1.8, 0.2, 6, red, CENTER_X, H + 0.55, zF - d / 2);
+      const t = plate(spec.name.toUpperCase(), '#f4f1ea', '#d62a2a', '800 50px Nunito, Arial, sans-serif');
+      b.textures.push(t);
+      b.keep.push(signMesh(s, t, Math.min(w - 4, 12), 1.2, CENTER_X, H - 1.6, zF + 0.06));
+      parkedCar(s, CENTER_X - 6, zF + 2.4, 0, 0xf4f1ea);
+      break;
+    }
+    case 'firestation': {
+      const red = facadeMat('brick', 0xa8322a);
+      texBox(s, w, H, d, red, CENTER_X, H / 2, zF - d / 2);
+      box(s, w + 0.4, 0.4, d + 0.4, mat(0x3a3742, { rough: 0.95 }), CENTER_X, H + 0.2, zF - d / 2);
+      // Three engine bays with roll-up doors, and the hose tower.
+      for (let i = 0; i < 3; i++) box(s, 5, 3.6, 0.1, mat(0xd8d2c6, { rough: 0.4, metal: 0.4 }), x0 + 4 + i * 6.5, 1.8, zF + 0.06);
+      box(s, 4, H + 6, 4, red, x1 - 2.5, (H + 6) / 2, z0 + 2.5);
+      const t = plate(spec.name.toUpperCase(), '#14121a', '#ffd23f', '800 52px Bungee, "Arial Black", sans-serif');
+      b.textures.push(t);
+      b.keep.push(signMesh(s, t, Math.min(w - 4, 12), 1.1, CENTER_X, H - 0.9, zF + 0.08));
+      const light = sph(s, 0.25, glow(0xff2a2a, 2.5), x1 - 2.5, H + 6.4, z0 + 2.5, 10, 8);
+      b.keep.push(light);
+      b.update = (_dt, tt) => {
+        (light.material as THREE.MeshStandardMaterial).emissiveIntensity = Math.sin(tt * 4) > 0 ? 2.5 : 0.2;
+      };
+      break;
+    }
+    case 'school': {
+      block(s, spec, 'brick', w, d, H);
+      // A clock over the door, a flagpole and a yellow bus out front.
+      cyl(s, 1.1, 1.1, 0.15, mat(0xf4f1ea, { rough: 0.4 }), CENTER_X, H - 1, zF + 0.1, 24).rotation.x = Math.PI / 2;
+      cyl(s, 0.07, 0.07, 9, mat(0xd8d2c6, { metal: 0.6 }), x0 - 1.5, 4.5, zF - 1, 8);
+      box(s, 1.6, 1.0, 0.04, mat(0x1f4fbf, { rough: 0.6 }), x0 - 0.7, 8.4, zF - 1);
+      const bus = new THREE.Group();
+      box(bus, 2.4, 2.4, 9, mat(0xffc21a, { rough: 0.5 }), 0, 1.5, 0);
+      box(bus, 2.42, 0.7, 7.6, mat(0x1a1a20, { rough: 0.2 }), 0, 2.1, -0.4);
+      bus.position.set(x1 - 3, 0, z0 - 8);
+      s.add(bus);
+      const t = plate(spec.name.toUpperCase(), '#f4efe4', '#7a1f1f', '800 50px Nunito, Arial, sans-serif');
+      b.textures.push(t);
+      b.keep.push(signMesh(s, t, Math.min(w - 4, 12), 1.1, CENTER_X, 3.2, zF + 0.06, false));
+      break;
+    }
+    case 'centralpark':
+      break;
   }
   return b;
 }

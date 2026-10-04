@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CharacterModel } from '../entities/characterModel';
 import { randomCustomerAppearance, touristAppearance, vipAppearance } from '../entities/appearance';
-import { AVE_WALK, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, streetZ } from './city';
+import { AVE_WALK, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from './city';
 
 /** A door on the street people walk in and out of (global frame). */
 export interface DoorSpot {
@@ -253,8 +253,14 @@ export class Crowd {
     if (d > BRAWL_REACH - 0.3) {
       // Close in.
       const step = Math.min(d - (BRAWL_REACH - 0.4), 3.4 * dt);
-      p.x += ((t.x - p.x) / d) * step;
-      p.z += ((t.z - p.z) / d) * step;
+      const sx = ((t.x - p.x) / d) * step;
+      const sz = ((t.z - p.z) / d) * step;
+      // Never through a wall: slide along it if the straight way is blocked.
+      if (openGround(p.x + sx, p.z + sz, this.cols)) {
+        p.x += sx;
+        p.z += sz;
+      } else if (openGround(p.x + sx, p.z, this.cols)) p.x += sx;
+      else if (openGround(p.x, p.z + sz, this.cols)) p.z += sz;
       p.model.moveSpeed = 3.4 / 1.4;
       p.model.setPose('run');
     } else p.model.setPose('idle');

@@ -134,6 +134,7 @@ function fakeHost(over: Partial<BaseHost> = {}): FakeHost {
     toWorld: (x: number, z: number) => ({ x, z }),
     shot: () => undefined,
     tracer: () => undefined,
+    blast: () => undefined,
     spawnVehicle: (id: string) => {
       h.spawned.push(id);
       return h.spawned.length;
@@ -166,7 +167,7 @@ describe('Fort Mojave', () => {
     // Far away: vehicles get parked.
     h.pos = { x: s.cx + 400, z: s.cz };
     base.update(0.1, MIN_COLS, true);
-    expect(h.spawned.sort()).toEqual(['apc', 'jeep', 'jeep', 'stealth', 'tank']);
+    expect(h.spawned.sort()).toEqual(['apc', 'apc', 'jeep', 'jeep', 'jeep', 'stealth', 'tank']);
     // The fence blocks, the gate doesn't.
     expect(base.blocked(s.cx + BASE_HW, s.cz - 20)).toBe(true);
     expect(base.blocked(s.cx + BASE_HW, s.cz)).toBe(false);

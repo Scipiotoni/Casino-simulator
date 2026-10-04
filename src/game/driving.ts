@@ -4,10 +4,11 @@ import { type CarDef, type CarMods, DEALER_CARS, STOLEN_SPECS, buildCar, carDef,
 import { Car, rayBox } from '../world/cityView';
 import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
-import { type ParkedCar, garageTier } from './house';
+import { NO_GARAGE_IDS, type ParkedCar, garageTier } from './house';
 import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from '../world/city';
 import { HEAT } from '../world/police';
 import { audio } from '../core/audio';
+import { canvasTexture, makeCanvas } from '../render/textures';
 import { clamp, damp, formatMoney } from '../core/math';
 import { GEARS, autoGear, drive, gearTop, rpmOf } from './gearbox';
 
@@ -52,6 +53,9 @@ export interface Vehicle {
   turret?: THREE.Object3D;
   muzzle?: THREE.Object3D;
   cannonT?: number;
+  /** A tank's turret angle (relative to the hull), the hull's rock after a shot. */
+  turretYaw?: number;
+  recoil?: number;
   /** Roof lights that flash with the siren. */
   beacons?: THREE.Mesh[];
   /** Parked at the military base (taking it sets off the alarm). */
@@ -106,7 +110,7 @@ export function modsOf(gs: GarageState, id: string): CarMods {
 
 export function sanitizeGarage(raw: unknown): GarageState {
   const r = (raw ?? {}) as Record<string, unknown>;
-  const owned = Array.isArray(r.owned) ? [...new Set(r.owned.filter((x): x is string => typeof x === 'string' && !!carDef(x)))] : [];
+  const owned = Array.isArray(r.owned) ? [...new Set(r.owned.filter((x): x is string => typeof x === 'string' && !!carDef(x) && !NO_GARAGE_IDS.includes(x)))] : [];
   const colors: Record<string, number> = {};
   if (r.colors && typeof r.colors === 'object') {
     for (const [k, v] of Object.entries(r.colors as Record<string, unknown>)) {
@@ -130,6 +134,15 @@ export function sanitizeGarage(raw: unknown): GarageState {
 }
 
 let nextUid = 1;
+
+/** Seconds the tank's cannon takes to reload. */
+const TANK_RELOAD = 2.2;
+/** Track marks kept on the ground at once. */
+const TREAD_MARKS = 600;
+
+function angleDiff(a: number, b: number): number {
+  return ((a - b + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
 
 /**
  * Cars: buy them at Velocity Motors, have them brought to you, steal any car out of the
@@ -159,7 +172,7 @@ export class Driving {
   /** Tyre squeal (0..1), smoothed for the sound. */
   private skid = 0;
   /** Tank shells in flight (global frame). */
-  private shells: { x: number; z: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh }[] = [];
+  private shells: { x: number; z: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh; from?: Vehicle }[] = [];
 
   constructor(private g: Game) {}
 
@@ -323,7 +336,7 @@ export class Driving {
     this.gear = 1;
     if (!this.prevCam) this.prevCam = { mode: g.cam.mode, dist: g.cam.distTarget };
     g.setCameraMode('third', false);
-    g.cam.setThirdDist(v.def?.kind === 'tank' ? 13 : v.length > 6 ? 11 : 8.5);
+    g.cam.setThirdDist(v.def?.kind === 'tank' ? 22 : v.length > 6 ? 11 : 8.5);
     audio.play('doorbell', { pitch: 0.6 });
     audio.play('ignition', { pitch: v.def?.kind === 'tank' ? 0.6 : 1, volume: 0.8 });
     if (v.base) {
@@ -412,7 +425,13 @@ export class Driving {
     this.updateCondition(dt);
     this.updateShells(dt);
     const v = this.driving;
-    g.cam.chase = !!v;
+    // A tank's camera stays up high, so you can see what you're aiming at.
+    g.cam.chase = !!v && v.def?.kind !== 'tank';
+    const tank = v?.def?.kind === 'tank';
+    if (!tank && this.reticle?.visible) {
+      this.reticle.visible = false;
+      if (this.aimLine) this.aimLine.visible = false;
+    }
     if (!v) {
       audio.engine(null);
       return;
@@ -452,8 +471,8 @@ export class Driving {
     }
     for (const b of v.brakeLights) b.scale.y = throttle < 0 && v.speed > 0.5 ? 1.6 : 1;
     if (nitroOn && Math.random() < dt * 6) audio.play('whoosh', { volume: 0.3, pitch: 0.6 });
-    // Gearbox: Q/E shift yourself (switches to manual), Z goes back to automatic.
-    if (!g.modalOpen) {
+    // Gearbox: Q/E shift yourself (switches to manual), Z goes back to automatic. (A tank's Q/E turn its turret.)
+    if (!g.modalOpen && !tank) {
       const up = input.hit('KeyE');
       const down = input.hit('KeyQ');
       if ((up || down) && !this.manual) {
@@ -506,8 +525,11 @@ export class Driving {
     if (this.gear > 0 && v.speed > gearTopNow) v.speed = Math.max(gearTopNow, v.speed - 7 * dt);
     v.speed = clamp(v.speed, -9, top * boost);
     v.steer = damp(v.steer, steer, 8, dt);
-    // Sharper turns at low speed, gentler at high speed.
-    const turn = v.steer * grip * 2.3 * clamp(v.speed / 7, -1, 1) * (1 - Math.min(0.55, Math.abs(v.speed) / (top * 2.2)));
+    // Sharper turns at low speed, gentler at high speed. A tank turns on the spot (one track
+    // forward, one back), standing still or not.
+    const turn = tank
+      ? v.steer * 1.25 * (1 - Math.min(0.3, Math.abs(v.speed) / 50))
+      : v.steer * grip * 2.3 * clamp(v.speed / 7, -1, 1) * (1 - Math.min(0.55, Math.abs(v.speed) / (top * 2.2)));
     v.yaw += turn * dt;
     const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
     const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
@@ -525,6 +547,12 @@ export class Driving {
     for (const c of city.traffic) {
       if (!c.root.visible) continue;
       const d = Math.hypot(c.x - v.x, c.z - v.z);
+      if (tank && d < c.length + v.length && carsTouch(v, c.x, c.z, c.length) && Math.abs(v.speed) > 0.3) {
+        // A tank rolls right over cars: flattened.
+        this.crushTraffic(c);
+        v.speed *= 0.9;
+        continue;
+      }
       if (d < c.length + v.length && carsTouch(v, c.x, c.z, c.length) && Math.abs(v.speed) > 0.5) {
         const away = Math.atan2(v.x - c.x, v.z - c.z);
         v.x += Math.sin(away) * 0.4;
@@ -538,8 +566,13 @@ export class Driving {
       }
     }
     // Other parked cars
-    for (const o of this.vehicles) {
+    for (const o of [...this.vehicles]) {
       if (o === v) continue;
+      if (tank && o.wreck < 0 && o.armor >= 0.5 && carsTouch(v, o.x, o.z, o.length) && Math.abs(v.speed) > 0.3) {
+        this.crushVehicle(o);
+        v.speed *= 0.9;
+        continue;
+      }
       if (carsTouch(v, o.x, o.z, o.length) && Math.abs(v.speed) > 0.5) {
         const away = Math.atan2(v.x - o.x, v.z - o.z);
         v.x += Math.sin(away) * 0.4;
@@ -560,8 +593,8 @@ export class Driving {
       if (fresh) this.hurtCruiser(c, crashDamage(hitSpeed) * (v.armor < 0.5 ? 6 : 1.2), true);
       if (v.armor >= 0.5) v.speed *= -0.25;
     }
-    // People in the way
-    if (Math.abs(v.speed) > 4) {
+    // People in the way (nobody stands up to a tank)
+    if (Math.abs(v.speed) > (tank ? 1.2 : 4)) {
       const fx = Math.sin(v.yaw);
       const fz = Math.cos(v.yaw);
       const hx = v.x + fx * v.length * 0.35 * Math.sign(v.speed);
@@ -598,9 +631,12 @@ export class Driving {
     g.player.yaw = yawW;
     g.cam.followYaw = yawW;
     if (v.turret) {
-      // The turret settles back to face forward; the barrel recoils after a shot.
-      v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - 2.2) * 0.8;
+      // The barrel recoils after a shot; the hull rocks back.
+      v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - (TANK_RELOAD - 0.4)) * 0.8;
+      v.recoil = damp(v.recoil ?? 0, 0, 5, dt);
+      v.root.rotation.x = -(v.recoil ?? 0) * 0.07 + clamp(-throttle * Math.abs(v.speed) * 0.002, -0.025, 0.025);
     }
+    if (tank) this.tankUpdate(v, dt);
     // Engine: a running engine voice that follows the revs and how hard you're on the gas.
     const profile = engineOf(v.def);
     const speedAbs = Math.abs(v.speed);
@@ -646,13 +682,317 @@ export class Driving {
       const ph = Math.floor(performance.now() / 160) % 2 === 0;
       v.beacons?.forEach((b, i) => (b.visible = !this.siren || (i % 2 === 0) === ph));
     } else if (input.hit('KeyC')) audio.play('honk', { pitch: v.armor < 0.5 ? 0.6 : 1 });
-    // Tank: click or F fires the main gun.
+    // Tank: click or F fires the main gun where the reticle is; hold right click for the machine gun.
     if (v.def?.cannon && v.muzzle) {
       v.cannonT = Math.max(0, (v.cannonT ?? 0) - dt);
       const fire = !g.modalOpen && (input.hit('KeyF') || (input.mousePresses > 0 && !input.isTouch) || this.fireRequest);
       this.fireRequest = false;
       if (fire && v.cannonT <= 0) this.fireCannon(v);
+      else if (fire && v.cannonT > 0) audio.play('empty', { volume: 0.5 });
+      this.coaxT = Math.max(0, this.coaxT - dt);
+      if (!g.modalOpen && input.rightHeld && !input.isTouch && this.coaxT <= 0) {
+        this.coaxT = 0.09;
+        this.coaxShot(v);
+      }
     }
+  }
+
+  // ------------------------------------------------------------------ the tank
+
+  private coaxT = 0;
+  /** Aim with the mouse until Q/E is used (then the keys turn the turret). */
+  private aimKeys = false;
+  /** Where the shell would land right now (global), and whether the mouse is pointing there. */
+  private impact = { x: 0, z: 0, mouse: false };
+  private reticle: THREE.Group | null = null;
+  private aimLine: THREE.Mesh | null = null;
+  private treads: THREE.InstancedMesh | null = null;
+  private treadI = 0;
+  private treadDist = 0;
+  private told = false;
+
+  /** World yaw (global frame) the tank's gun points along. */
+  private gunYaw(v: Vehicle): number {
+    return v.yaw + (v.turretYaw ?? 0);
+  }
+
+  /** Muzzle position (global). */
+  private muzzleOf(v: Vehicle): { x: number; z: number } {
+    const a = this.gunYaw(v);
+    // The turret sits 0.3 m behind the hull's centre; the gun reaches 5.35 m beyond it.
+    const tx = v.x - Math.sin(v.yaw) * 0.3;
+    const tz = v.z - Math.cos(v.yaw) * 0.3;
+    return { x: tx + Math.sin(a) * 5.4, z: tz + Math.cos(a) * 5.4 };
+  }
+
+  /** Where the mouse points on the ground (global), or null. */
+  private pointerGround(): { x: number; z: number } | null {
+    const g = this.g;
+    const input = g.input;
+    if (input.isTouch || !input.pointer.over) return null;
+    const { w, h } = g.renderer.size;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), g.renderer.camera);
+    const hit = new THREE.Vector3();
+    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.6), hit)) return null;
+    return g.street.worldToGlobal(hit.x, hit.z);
+  }
+
+  /**
+   * How far a shot along the gun goes (global frame): to the first building, car, person,
+   * soldier or machine, or to `range`.
+   */
+  private shotReach(ox: number, oz: number, fx: number, fz: number, range: number): number {
+    const g = this.g;
+    const st = g.street;
+    let t = 0;
+    for (; t < range; t += 0.8) if (!st.isOpen(ox + fx * t, oz + fz * t)) break;
+    t = Math.min(t, range);
+    const car = this.raycast(ox, oz, fx, fz, t);
+    if (car) t = Math.min(t, car.t);
+    for (const p of st.crowd.raycast(ox, oz, fx, fz, t)) t = Math.min(t, p.s);
+    for (const c of st.police.raycast(ox, oz, fx, fz, t)) t = Math.min(t, c.s);
+    for (const so of g.base.raycast(ox, oz, fx, fz, t)) t = Math.min(t, so.s);
+    for (const m of g.base.raycastMachines(ox, oz, fx, fz, t)) if (m.machine.kind !== 'heli' || m.machine.y < 4) t = Math.min(t, m.s);
+    return Math.max(0.5, t);
+  }
+
+  /** Turn the turret (mouse, Q/E, or onto the nearest threat on touch), and show where it'll hit. */
+  private tankUpdate(v: Vehicle, dt: number): void {
+    const g = this.g;
+    const input = g.input;
+    if (!this.told) {
+      this.told = true;
+      g.notify(input.isTouch ? '🎯 Tank: the turret locks onto targets ahead. Fire button shoots the cannon.' : '🎯 Tank: aim the turret with the mouse (or Q/E), click or F to fire the cannon, hold right click for the machine gun. A/D turn on the spot.', 'info');
+    }
+    let rel = v.turretYaw ?? 0;
+    let want = rel;
+    let aimDist = 140;
+    let mouse = false;
+    const q = !g.modalOpen && input.down('KeyQ');
+    const e = !g.modalOpen && input.down('KeyE');
+    if (q || e) {
+      this.aimKeys = true;
+      want = rel + (q ? 1 : -1) * 0.6;
+    } else {
+      if (input.pointer.moved) this.aimKeys = false;
+      const pg = this.aimKeys ? null : this.pointerGround();
+      if (pg) {
+        const tx = v.x - Math.sin(v.yaw) * 0.3;
+        const tz = v.z - Math.cos(v.yaw) * 0.3;
+        const d = Math.hypot(pg.x - tx, pg.z - tz);
+        if (d > 2) {
+          want = angleDiff(Math.atan2(pg.x - tx, pg.z - tz), v.yaw);
+          aimDist = clamp(d - 5.4, 4, 140);
+          mouse = true;
+        }
+      } else if (input.isTouch) want = this.autoTurret(v);
+    }
+    // The turret traverses at a steady rate (it's heavy).
+    const step = 1.8 * dt;
+    const d = angleDiff(want, rel);
+    rel += Math.abs(d) <= step ? d : Math.sign(d) * step;
+    v.turretYaw = angleDiff(rel, 0);
+    if (v.turret) v.turret.rotation.y = v.turretYaw;
+    // Predicted impact: the reticle on the ground and a faint line from the muzzle.
+    const a = this.gunYaw(v);
+    const fx = Math.sin(a);
+    const fz = Math.cos(a);
+    const m = this.muzzleOf(v);
+    const onTarget = Math.abs(angleDiff(want, rel)) < 0.05;
+    const reach = this.shotReach(m.x, m.z, fx, fz, mouse && onTarget ? aimDist : 140);
+    this.impact = { x: m.x + fx * reach, z: m.z + fz * reach, mouse };
+    this.showReticle(v, m, reach, a);
+    // Tread marks, dust and exhaust.
+    const moved = Math.abs(v.speed) * dt + Math.abs(v.steer) * dt * 1.2;
+    this.treadDist += moved;
+    if (this.treadDist > 0.55) {
+      this.treadDist = 0;
+      this.addTreads(v);
+    }
+    if (Math.abs(v.speed) > 4 && Math.random() < dt * 10) {
+      const bx = v.x - Math.sin(v.yaw) * v.length * 0.45;
+      const bz = v.z - Math.cos(v.yaw) * v.length * 0.45;
+      const w = g.street.globalToWorld(bx + (Math.random() - 0.5) * 2.4, bz + (Math.random() - 0.5) * 2.4);
+      g.effects.dust(w.x, w.z, 0.6);
+    }
+    if (Math.random() < dt * (2 + Math.abs(v.speed) * 0.5)) {
+      const ex = v.x - Math.sin(v.yaw) * v.length * 0.5;
+      const ez = v.z - Math.cos(v.yaw) * v.length * 0.5;
+      const w = g.street.globalToWorld(ex, ez);
+      g.effects.soot(w.x, 1.4, w.z, 0);
+    }
+  }
+
+  /** Touch: swing the turret onto the nearest soldier, machine, cop car or cop ahead. */
+  private autoTurret(v: Vehicle): number {
+    const g = this.g;
+    let best = 0;
+    let bestD = 90;
+    const consider = (x: number, z: number) => {
+      const d = Math.hypot(x - v.x, z - v.z);
+      if (d > bestD || d < 3) return;
+      const rel = angleDiff(Math.atan2(x - v.x, z - v.z), v.yaw);
+      if (Math.abs(rel) > 1.2) return;
+      bestD = d;
+      best = rel;
+    };
+    for (const so of g.base.soldiers) if (so.ko <= 0) consider(so.x, so.z);
+    for (const m of g.base.machines) if (m.dead < 0 && m.kind !== 'fuel') consider(m.x, m.z);
+    for (const c of g.street.police.cruisersNear(v.x, v.z, 90)) consider(c.root.position.x, c.root.position.z);
+    return best;
+  }
+
+  private showReticle(v: Vehicle, m: { x: number; z: number }, reach: number, a: number): void {
+    const g = this.g;
+    if (!this.reticle) {
+      const r = new THREE.Group();
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0x39ff88, transparent: true, opacity: 0.85, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(1.0, 1.3, 36), ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      r.add(ring);
+      for (let i = 0; i < 4; i++) {
+        const tick = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.8), ringMat);
+        tick.rotation.x = -Math.PI / 2;
+        tick.rotation.z = (i * Math.PI) / 2;
+        tick.position.set(Math.sin((i * Math.PI) / 2) * 1.75, 0, Math.cos((i * Math.PI) / 2) * 1.75);
+        r.add(tick);
+      }
+      r.userData.mat = ringMat;
+      this.reticle = r;
+      this.group.add(r);
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 1), new THREE.MeshBasicMaterial({ color: 0x39ff88, transparent: true, opacity: 0.3, depthWrite: false, toneMapped: false }));
+      line.geometry.translate(0, 0, 0.5);
+      this.aimLine = line;
+      this.group.add(line);
+    }
+    const ready = (v.cannonT ?? 0) <= 0;
+    const col = ready ? 0x39ff88 : 0xff5a3a;
+    (this.reticle.userData.mat as THREE.MeshBasicMaterial).color.setHex(col);
+    const k = ready ? 1 : 0.6 + 0.4 * (1 - (v.cannonT ?? 0) / TANK_RELOAD);
+    this.reticle.scale.setScalar(k);
+    this.reticle.position.set(m.x + Math.sin(a) * reach, 0.08, m.z + Math.cos(a) * reach);
+    this.reticle.rotation.y += 0.02;
+    this.reticle.visible = true;
+    if (this.aimLine) {
+      (this.aimLine.material as THREE.MeshBasicMaterial).color.setHex(col);
+      this.aimLine.position.set(m.x, 1.8, m.z);
+      this.aimLine.scale.set(1, 1, reach);
+      this.aimLine.rotation.set(0, a, 0);
+      this.aimLine.rotateX(Math.atan2(1.7, reach));
+      this.aimLine.visible = !g.input.isTouch;
+    }
+  }
+
+  /** Two strips of track marks behind the tank (they fade as new ones replace them). */
+  private addTreads(v: Vehicle): void {
+    if (!this.treads) {
+      const geo = new THREE.PlaneGeometry(0.78, 0.5);
+      geo.rotateX(-Math.PI / 2);
+      const { canvas, ctx } = makeCanvas(32, 32);
+      ctx.fillStyle = 'rgba(0,0,0,0)';
+      ctx.clearRect(0, 0, 32, 32);
+      ctx.fillStyle = 'rgba(30,24,18,0.9)';
+      for (let y = 2; y < 32; y += 8) ctx.fillRect(2, y, 28, 4);
+      const tex = canvasTexture(canvas);
+      const tm = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 }), TREAD_MARKS);
+      const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+      for (let i = 0; i < TREAD_MARKS; i++) tm.setMatrixAt(i, zero);
+      tm.frustumCulled = false;
+      this.treads = tm;
+      this.group.add(tm);
+    }
+    const tm = this.treads;
+    const rx = Math.cos(v.yaw);
+    const rz = -Math.sin(v.yaw);
+    for (const side of [-1, 1]) {
+      const x = v.x + rx * side * 1.45 - Math.sin(v.yaw) * v.length * 0.3;
+      const z = v.z + rz * side * 1.45 - Math.cos(v.yaw) * v.length * 0.3;
+      const m = new THREE.Matrix4().makeRotationY(v.yaw);
+      m.setPosition(x, 0.015, z);
+      tm.setMatrixAt(this.treadI, m);
+      this.treadI = (this.treadI + 1) % TREAD_MARKS;
+    }
+    tm.instanceMatrix.needsUpdate = true;
+  }
+
+  /** A tank rolled over a traffic car: it's flattened (and out of the traffic). */
+  private crushTraffic(c: Car): void {
+    const g = this.g;
+    g.street.city.releaseCar(c);
+    c.root.removeFromParent();
+    c.hazard.visible = false;
+    this.group.add(c.root);
+    const v: Vehicle = {
+      uid: nextUid++, def: null, name: 'car', color: c.color, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(),
+      x: c.x, z: c.z, yaw: c.root.rotation.y, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: false, mods: null, flames: [], brakeLights: [],
+      hp: 0, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
+    };
+    this.vehicles.push(v);
+    this.crushVehicle(v);
+  }
+
+  /** Flatten a car under the tank's tracks. */
+  private crushVehicle(o: Vehicle): void {
+    const g = this.g;
+    if (this.driving === o) return;
+    o.hp = 0;
+    o.wreck = 0;
+    o.burnT = 0;
+    o.speed = 0;
+    o.root.scale.set(1.08, 0.3, 1.02);
+    o.root.position.y = 0;
+    this.noteCondition(o);
+    const w = g.street.globalToWorld(o.x, o.z);
+    audio.playAt('crash', w.x, w.z, 1);
+    audio.playAt('glass', w.x, w.z, 0.7);
+    g.effects.sparkle(w.x, 0.6, w.z, 14, 0xfff2c8, 0.5);
+    g.effects.dust(w.x, w.z, 1);
+    g.cam.shake(0.12);
+    g.street.police.crime(HEAT.wreck);
+    g.stats.carsWrecked = (g.stats.carsWrecked ?? 0) + 1;
+    if (o.owned && o.def) g.notify(`You flattened your own ${o.def.name}! Rebuilding it costs ${formatMoney(repairCost(o.def))}.`, 'bad');
+  }
+
+  /** The tank's machine gun: a quick round along the gun's line. */
+  private coaxShot(v: Vehicle): void {
+    const g = this.g;
+    const st = g.street;
+    const a = this.gunYaw(v) + (Math.random() - 0.5) * 0.04;
+    const fx = Math.sin(a);
+    const fz = Math.cos(a);
+    const m = this.muzzleOf(v);
+    const ox = m.x - fx * 1.6;
+    const oz = m.z - fz * 1.6;
+    const range = 80;
+    let t = 0;
+    for (; t < range; t += 0.6) if (!st.isOpen(ox + fx * t, oz + fz * t)) break;
+    const dmg = 16;
+    const hits: { t: number; hit: () => void }[] = [];
+    const car = this.raycast(ox, oz, fx, fz, t);
+    if (car) hits.push({ t: car.t, hit: () => this.shoot(car, dmg) });
+    const ped = st.crowd.raycast(ox, oz, fx, fz, t)[0];
+    if (ped) hits.push({ t: ped.s, hit: () => {
+      const r = st.crowd.damage(ped.ped, dmg, fx, fz);
+      st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      g.combat.landed(false, r.ko);
+    } });
+    const cop = st.police.raycast(ox, oz, fx, fz, t)[0];
+    if (cop) hits.push({ t: cop.s, hit: () => g.combat.landed(false, st.police.damage(cop.cop, dmg)) });
+    const so = g.base.raycast(ox, oz, fx, fz, t)[0];
+    if (so) hits.push({ t: so.s, hit: () => g.combat.landed(false, g.base.damage(so.soldier, dmg)) });
+    const mc = g.base.raycastMachines(ox, oz, fx, fz, t)[0];
+    if (mc) hits.push({ t: mc.s, hit: () => g.combat.landed(false, g.base.damageMachine(mc.machine, dmg)) });
+    hits.sort((p, q) => p.t - q.t);
+    if (hits[0]) {
+      t = hits[0].t;
+      hits[0].hit();
+    }
+    const a3 = st.globalToWorld(m.x, m.z);
+    const b3 = st.globalToWorld(ox + fx * t, oz + fz * t);
+    g.gunplay.enemyTracer(new THREE.Vector3(a3.x, 1.75, a3.z), new THREE.Vector3(b3.x, hits[0] ? 1.1 : 0.4, b3.z), 0xfff2a8);
+    audio.play('smg', { volume: 0.55, pitch: 0.8 });
+    if (!hits[0]) g.effects.sparkle(b3.x, 0.3, b3.z, 3, 0xffe2a8, 0.2);
   }
 
   /** The HUD's fire button (touch) asks the tank to fire. */
@@ -924,36 +1264,36 @@ export class Driving {
     else if (tg.v) this.damage(tg.v, shotDamage(dmg, tg.v.armor), true);
   }
 
-  /** The tank's main gun: a shell flies down the barrel's line and explodes where it lands. */
+  /** The tank's main gun: a shell flies to where the reticle is and explodes there. */
   private fireCannon(v: Vehicle): void {
     const g = this.g;
     const st = g.street;
-    v.cannonT = 2.6;
-    const fx = Math.sin(v.yaw);
-    const fz = Math.cos(v.yaw);
-    const mx = v.x + fx * (v.length / 2 + 1.8);
-    const mz = v.z + fz * (v.length / 2 + 1.8);
-    // Where it lands: the first building, car, person or the end of its range.
-    let t = 0;
-    const range = 140;
-    for (; t < range; t += 0.8) {
-      const w = st.globalToWorld(mx + fx * t, mz + fz * t);
-      if (!st.isOutdoors(w.x, w.z)) break;
+    v.cannonT = TANK_RELOAD;
+    v.recoil = 1;
+    const a = this.gunYaw(v);
+    const fx = Math.sin(a);
+    const fz = Math.cos(a);
+    const m = this.muzzleOf(v);
+    const tx = this.impact.x;
+    const tz = this.impact.z;
+    const t = Math.hypot(tx - m.x, tz - m.z);
+    const wm = st.globalToWorld(m.x, m.z);
+    g.effects.explosion(wm.x, 1.8, wm.z, 0.35);
+    g.effects.smoke(wm.x, 1.8, wm.z, 4);
+    // The blast kicks up dust all round the tank.
+    for (let i = 0; i < 4; i++) {
+      const w = st.globalToWorld(v.x + (Math.random() - 0.5) * 6, v.z + (Math.random() - 0.5) * 6);
+      g.effects.dust(w.x, w.z, 1);
     }
-    const car = this.raycast(mx, mz, fx, fz, t);
-    if (car) t = Math.min(t, car.t);
-    for (const p of st.crowd.raycast(mx, mz, fx, fz, t)) t = Math.min(t, p.s);
-    for (const c of st.police.raycast(mx, mz, fx, fz, t)) t = Math.min(t, c.s);
-    for (const so of g.base.raycast(mx, mz, fx, fz, t)) t = Math.min(t, so.s);
-    const wm = st.globalToWorld(mx, mz);
-    g.effects.explosion(wm.x, 2.0, wm.z, 0.35);
     audio.play('cannon');
-    g.cam.shake(0.22);
-    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd28a, toneMapped: false }));
-    shell.position.set(wm.x, 2.0, wm.z);
+    g.cam.shake(0.3);
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd28a, toneMapped: false }));
+    shell.position.set(wm.x, 1.8, wm.z);
     g.effects.group.add(shell);
-    this.shells.push({ x: mx, z: mz, tx: mx + fx * t, tz: mz + fz * t, t: 0, dur: Math.max(0.05, t / 180), mesh: shell });
-    v.speed -= 1.5;
+    this.shells.push({ x: m.x, z: m.z, tx, tz, t: 0, dur: Math.max(0.05, t / 160), mesh: shell, from: v });
+    v.speed -= Math.cos(v.turretYaw ?? 0) * 1.5;
+    void fx;
+    void fz;
   }
 
   private updateShells(dt: number): void {
@@ -963,7 +1303,7 @@ export class Driving {
       s.t += dt;
       const u = Math.min(1, s.t / s.dur);
       const w = st.globalToWorld(s.x + (s.tx - s.x) * u, s.z + (s.tz - s.z) * u);
-      s.mesh.position.set(w.x, 2.0 - u * 1.2, w.z);
+      s.mesh.position.set(w.x, 1.8 + Math.sin(u * Math.PI) * Math.min(4, s.dur * 6) - u * 1.2, w.z);
       if (u >= 1) {
         s.mesh.removeFromParent();
         s.mesh.geometry.dispose();
@@ -972,7 +1312,7 @@ export class Driving {
         this.g.effects.explosion(e.x, 0.8, e.z, 1.2);
         audio.playAt('explosion', e.x, e.z, 1.4);
         this.g.cam.shake(0.12);
-        this.blast(s.tx, s.tz, 8, 260, true);
+        this.blast(s.tx, s.tz, 8, 260, true, s.from);
       }
     }
   }
@@ -1117,6 +1457,7 @@ export class Driving {
     }
     g.spend(next.price, 'expand');
     h.garage = next.tier;
+    g.refreshStreet();
     g.events.emit('house', undefined);
     audio.play('levelup');
     g.notify(`${next.name} built next to your house: room for ${next.cap} cars. Drive up to the door and press Space to park.`, 'good');
@@ -1130,6 +1471,11 @@ export class Driving {
     const v = this.driving;
     const h = g.house;
     const t = h ? garageTier(h.garage) : null;
+    if (v?.def && NO_GARAGE_IDS.includes(v.def.id)) {
+      audio.play('error');
+      g.notify(`The ${v.name} won't go in your garage: the army would come looking for it. Enjoy it out on the streets while it lasts!`, 'bad');
+      return false;
+    }
     if (!v || !h) return false;
     if (!t) {
       audio.play('error');

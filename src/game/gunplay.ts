@@ -64,6 +64,7 @@ type Hit =
   | { kind: 'target'; t: number; target: import('../world/cityView').Target }
   | { kind: 'car'; t: number; tg: import('./driving').CarTarget }
   | { kind: 'soldier'; t: number; soldier: import('../world/militaryBase').Soldier; head: boolean }
+  | { kind: 'machine'; t: number; machine: import('../world/militaryBase').Machine }
   | { kind: 'ped'; t: number; ped: Ped; head: boolean }
   | { kind: 'cop'; t: number; cop: Officer; head: boolean }
   | { kind: 'player'; t: number; pid: string; name: string; head: boolean }
@@ -828,6 +829,15 @@ export class GunPlay {
           break;
         }
       }
+      // The base's machine-gun nests, its tank, the helicopter and the fuel tanks.
+      for (const c of g.base.raycastMachines(og.x, og.z, hx, hz, best.t * hlen)) {
+        const t = c.s / hlen;
+        const y = yAt(t);
+        if (t < best.t && (flat || (y > c.y0 && y < c.y1))) {
+          best = { kind: 'machine', t, machine: c.machine };
+          break;
+        }
+      }
       // People on the sidewalks.
       for (const c of st.crowd.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
         if (done?.has(c.ped)) continue;
@@ -960,6 +970,19 @@ export class GunPlay {
         g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
         g.combat.landed(best.head, ko);
         if (ko) g.stats.knockouts++;
+        break;
+      }
+      case 'machine': {
+        const m = best.machine;
+        if (flat) hit.y = m.y;
+        if (d.dmg <= 0) break;
+        const dmg = Math.max(1, Math.round(d.dmg * m.armor));
+        const gone = g.base.damageMachine(m, d.dmg);
+        audio.playAt('metalHit', hit.x, hit.z, 0.7);
+        fx.sparkle(hit.x, hit.y, hit.z, 8, 0xfff2c8, 0.4);
+        g.floaters.text(hit.clone().setY(hit.y + 0.6), `${dmg}`, 'dmg', 0.8, 0.6);
+        if (Math.random() < 0.3) audio.playAt('ricochet', hit.x, hit.z, 0.5);
+        g.combat.landed(false, gone);
         break;
       }
       case 'guard': {

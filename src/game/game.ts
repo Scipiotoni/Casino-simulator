@@ -13,7 +13,7 @@ import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
 import { NPC_OWNER, Street, type StreetLot } from '../world/street';
 import { MAX_DEPTH_STEPS, openGround } from '../world/city';
-import { MilitaryBase } from '../world/militaryBase';
+import { MilitaryBase, armoryPayroll, armoryRefillLeft } from '../world/militaryBase';
 import { buildCar, carDef } from '../world/vehicles';
 import { HEAT as POLICE_HEAT } from '../world/police';
 import { Sky } from '../world/sky';
@@ -443,6 +443,7 @@ export class Game implements World, ItemHost {
         return {
           x: pg.x, z: pg.z, exposed: this.combat.exposed && this.combat.ko <= 0, height: this.player.model.height,
           car: car ? { x: car.x, z: car.z, uid: car.uid, armor: car.armor } : null,
+          speed: car ? Math.abs(car.speed) : this.player.speed,
         };
       },
       lineOfSight: (ax, az, bx, bz) => st().police.lineOfSight(ax, az, bx, bz),
@@ -461,6 +462,14 @@ export class Game implements World, ItemHost {
         const a = st().globalToWorld(ax, az);
         const b = st().globalToWorld(bx, bz);
         this.gunplay.enemyTracer(new THREE.Vector3(a.x, ay, a.z), new THREE.Vector3(b.x, by, b.z));
+      },
+      blast: (x, z, radius, power, size) => {
+        const w = st().globalToWorld(x, z);
+        this.effects.explosion(w.x, 0.8, w.z, size);
+        audio.playAt('explosion', w.x, w.z, 1.4);
+        const pg = this.drive.driving ?? st().worldToGlobal(this.player.x, this.player.z);
+        this.cam.shake(Math.max(0.04, 0.4 - Math.hypot(pg.x - x, pg.z - z) / 50));
+        this.drive.blast(x, z, radius, power, false);
       },
       spawnVehicle: (id, x, z, yaw) => {
         const def = carDef(id);
@@ -1782,7 +1791,7 @@ export class Game implements World, ItemHost {
     if (hi) {
       lots.push({
         id: 'house', kind: 'house', houseOf: 'me', owner: this.player.name, order: 0, online: true,
-        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '', ownGarage: true },
+        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '', ownGarage: true, garage: garageTier(this.house?.garage ?? 0)?.depth ?? 0 },
       });
     }
     this.street.setLots(lots);
@@ -3464,7 +3473,7 @@ export class Game implements World, ItemHost {
       // On your driveway: drive into the garage instead of getting out.
       this.interactTarget = this.house?.garage && this.drive.atGarage(car.x, car.z)
         ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park() }
-        : { kind: `carout${car.uid}`, label: `Get out · W/S drive · A/D steer · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit() };
+        : { kind: `carout${car.uid}`, label: car.def?.kind === 'tank' ? 'Get out · W/S drive · A/D turn · mouse/Q/E aim · click/F cannon · right-click MG' : `Get out · W/S drive · A/D steer · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit() };
       this.handleTarget(dt, this.interactTarget);
       return;
     }
@@ -3711,12 +3720,26 @@ export class Game implements World, ItemHost {
         act: () => this.goToFloor(to),
       };
     }
+    // Fort Mojave's armory: crack it for the army payroll (and the whole base comes after you).
+    if (!target && !this.inside && !this.drive.driving) {
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      if (this.base.atArmory(pg.x, pg.z)) {
+        const left = armoryRefillLeft(this.net.armoryRaided);
+        const door = this.base.armoryDoor;
+        const aw = this.street.globalToWorld(door.x, door.z);
+        target = {
+          kind: 'armory', label: left > 0 ? `🔒 Armory cleaned out · restocked in ${waitText(left)}` : `💰 Raid the armory (${formatMoney(armoryPayroll(this.homeLevel))})`, hold: left <= 0,
+          anchor: () => new THREE.Vector3(aw.x, 3.2, aw.z),
+          act: () => this.raidArmory(),
+        };
+      }
+    }
     // Out on the street: the doors of the other casinos
     if (!target && !this.inside) {
       const lot = this.street.lotAt(p.x, p.z);
       if (lot && lot.id !== this.street.activeId && lot.kind !== 'filler') {
         const l = this.street.map(this.street.activeId, lot.id, p.x, p.z);
-        if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2) {
+        if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2 && l.z > FACADE_Z - 0.5) {
           const a = this.street.toActive(lot.id, CENTER_X, FACADE_Z + 0.8);
           if (lot.kind === 'shop') {
             const cars = lot.info.style === 'dealer';
@@ -3748,6 +3771,96 @@ export class Game implements World, ItemHost {
     if (this.photoMode) target = null;
     this.interactTarget = target;
     this.handleTarget(dt, target);
+  }
+
+  private pushOutT = 0;
+  private pushNoteT = 0;
+
+  /**
+   * A building grew (or appeared) where you stand outside, or your car got wedged in one: you
+   * get moved to the nearest open ground instead of being stuck in its walls.
+   */
+  private pushOutOfBuildings(): void {
+    this.pushNoteT = Math.max(0, this.pushNoteT - 0.2);
+    if (this.state !== 'playing' || this.inside || this.player.floor > 0 || this.photoMode) return;
+    const st = this.street;
+    const v = this.drive.driving;
+    if (v) {
+      if (st.isOpen(v.x, v.z)) return;
+      for (let r = 2; r < 60; r += 1.5) {
+        for (let k = 0; k < 24; k++) {
+          const a = (k / 24) * Math.PI * 2;
+          const x = v.x + Math.cos(a) * r;
+          const z = v.z + Math.sin(a) * r;
+          if (!st.isOpen(x, z) || !st.isOpen(x + Math.sin(v.yaw) * v.length * 0.5, z + Math.cos(v.yaw) * v.length * 0.5) || !st.isOpen(x - Math.sin(v.yaw) * v.length * 0.5, z - Math.cos(v.yaw) * v.length * 0.5)) continue;
+          v.x = x;
+          v.z = z;
+          v.speed = 0;
+          this.notePushed();
+          return;
+        }
+      }
+      return;
+    }
+    const p = this.player;
+    const tx = Math.floor(p.x);
+    const tz = Math.floor(p.z);
+    if (this.playerWalk(tx, tz)) return;
+    const g = this.gridAt(0);
+    const ok = (x: number, z: number) => st.isStreetWalkable(x, z) && !st.doorAt(x, z) && !g.isOwned(x, z) && this.playerWalk(x, z);
+    for (let r = 1; r <= 60; r++) {
+      let best: [number, number] | null = null;
+      let bd = Infinity;
+      const consider = (x: number, z: number) => {
+        const d = Math.hypot(x + 0.5 - p.x, z + 0.5 - p.z);
+        if (d < bd && ok(x, z)) {
+          bd = d;
+          best = [x, z];
+        }
+      };
+      for (let dx = -r; dx <= r; dx++) {
+        consider(tx + dx, tz - r);
+        consider(tx + dx, tz + r);
+      }
+      for (let dz = -r + 1; dz <= r - 1; dz++) {
+        consider(tx - r, tz + dz);
+        consider(tx + r, tz + dz);
+      }
+      const found = best as [number, number] | null;
+      if (found) {
+        const [bx, bz] = found;
+        p.x = bx + 0.5;
+        p.z = bz + 0.5;
+        p.halt();
+        this.notePushed();
+        return;
+      }
+    }
+  }
+
+  private notePushed(): void {
+    audio.play('whoosh', { volume: 0.5 });
+    if (this.pushNoteT > 0) return;
+    this.pushNoteT = 8;
+    this.notify('A building grew where you were standing: you were pushed outside.', 'info');
+  }
+
+  /** Crack the Fort Mojave armory: the army payroll is yours, and the whole base comes after you. */
+  private raidArmory(): void {
+    const left = armoryRefillLeft(this.net.armoryRaided);
+    if (left > 0) {
+      audio.play('error');
+      this.notify(`The armory was cleaned out. The next payroll arrives in ${waitText(left)}.`, 'bad');
+      return;
+    }
+    const cash = armoryPayroll(this.homeLevel);
+    this.net.armoryRaided = Date.now();
+    audio.play('vaultClunk');
+    this.addMoney(cash, 'loot', this.player.model.root.position.clone().setY(2.2));
+    this.stats.baseRaids = (this.stats.baseRaids ?? 0) + 1;
+    this.notify(`💰 You cracked the armory and grabbed the army payroll: ${formatMoney(cash)}!`, 'good');
+    this.base.armoryRaided();
+    this.requestSave();
   }
 
   /** Show the prompt for the nearest thing to do and run it on Space (or hold Space). */
@@ -4532,7 +4645,14 @@ export class Game implements World, ItemHost {
     this.playerFx?.update(dt, playing && !this.player.seat && ownBody);
     this.playerPos.set(this.player.x, 0, this.player.z);
     const wasInside = this.inside;
-    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > this.grid.rect.z0 - 1 && Math.abs(this.player.x - CENTER_X) < 16);
+    // Inside = within the building's own walls (the yards round the back and sides are outside).
+    const rect = this.grid.rect;
+    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > rect.z0 - 0.05 && this.player.x > rect.x0 - 0.05 && this.player.x < rect.x1 + 1.05);
+    this.pushOutT -= dt;
+    if (this.pushOutT <= 0) {
+      this.pushOutT = 0.2;
+      this.pushOutOfBuildings();
+    }
     // Out through the front door of a house you're robbing: the cash is yours.
     if (this.heist && !this.heist.over && !this.inside && wasInside) this.heist.leave();
     if (this.inside !== wasInside) {
@@ -4634,7 +4754,8 @@ export class Game implements World, ItemHost {
     // Street brawlers come after you while you're out there and on your feet.
     const crowd = this.street.crowd;
     crowd.foe = this.state === 'playing' && this.combat.exposed && this.combat.ko <= 0 && !this.drive.driving ? this.street.worldToGlobal(this.player.x, this.player.z) : null;
-        this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
+    this.street.camPos = this.cam.mode === 'first' ? null : { x: camP.x, y: camP.y, z: camP.z };
+    this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
     // Neon pops a little more after dark
     // The sky follows the clock; indoors the casino keeps its own lighting.
     this.sky.set(this.state === 'playing' ? this.clockMinutes : 19.8 * 60, dt);

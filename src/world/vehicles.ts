@@ -64,7 +64,7 @@ export const CARS: CarDef[] = [
   // Military base only: you can't buy these, you have to take them.
   { id: 'jeep', value: 120000, name: 'Army Patrol Jeep', kind: 'jeep', price: 0, unlock: 1, top: 33, accel: 13, grip: 1.25, hp: 320, armor: 0.6, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Armoured patrol 4x4 with a roll bar. Shrugs off small arms.' },
   { id: 'apc', value: 350000, name: 'Armoured APC', kind: 'apc', price: 0, unlock: 1, top: 27, accel: 9, grip: 0.95, hp: 900, armor: 0.3, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Eight tonnes of steel on six wheels. Traffic gets out of its way.' },
-  { id: 'tank', value: 900000, name: 'Rhino Tank', kind: 'tank', price: 0, unlock: 1, top: 15, accel: 6, grip: 1.5, hp: 2500, armor: 0.12, cannon: true, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Tracks, armour and a 120 mm cannon (click or F to fire). Slow, unstoppable.' },
+  { id: 'tank', value: 900000, name: 'Rhino Tank', kind: 'tank', price: 0, unlock: 1, top: 18, accel: 8, grip: 1.5, hp: 2500, armor: 0.12, cannon: true, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Tracks, armour, a 120 mm cannon you aim with the mouse (click or F) and a machine gun (right click). Crushes cars. Too hot for any garage.' },
   { id: 'stealth', value: 1500000, name: 'Prototype X-1', kind: 'stealth', price: 0, unlock: 1, top: 56, accel: 23, grip: 1.45, hp: 180, armor: 0.8, military: true, colors: [0x17151f, 0x2c2f26, 0x8c9099], blurb: 'A classified stealth racer. The fastest thing on wheels, anywhere.' },
 ];
 

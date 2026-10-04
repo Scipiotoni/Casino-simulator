@@ -3,10 +3,15 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { mat, glow } from '../render/materials';
 import { asphaltTexture, canvasTexture, makeCanvas, sidewalkTexture } from '../render/textures';
 import { disposeTree } from '../items/models/common';
-import { CENTER_X, FACADE_Z, ROAD_MID } from './grid';
+import { Obstacles, Strips, instancedChunks, place } from './nature';
+import { CENTER_X, FACADE_Z, LOT_STRIDE, ROAD_MID } from './grid';
 import {
-  AVE_WALK, ROAD_HALF, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blocksFor, cityX, cityZ, colX, hash01, streetZ,
+  AVE_WALK, BLOCK_COLS, MAX_DEPTH, PARK_BLOCKS, PARK_STREET, ROAD_HALF, ROW_GAP, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blockX0,
+  blocksFor, cityX, cityZ, colX, hash01, inParkSlot, slotToGlobal, streetZ,
 } from './city';
+
+/** Streets with homes on them: their backyards are lawns with hedges between them. */
+const RESIDENTIAL_ROWS = [1, 5, 7];
 
 /** Global x of the gun shop's door (column 1, north side of the Casino Strip). */
 function colGallery(): number {
@@ -20,6 +25,8 @@ const BOX = ROAD_HALF;
 /** Where a car's centre waits before an intersection. */
 const STOP_AT = BOX + 2.8;
 const LIGHT_CYCLE = 22;
+/** Traffic further than this from you is brought back closer. */
+const BUBBLE = 320;
 
 type Axis = 'x' | 'z';
 
@@ -185,32 +192,45 @@ class Quads {
   }
 }
 
-function instanced(geo: THREE.BufferGeometry, m: THREE.Material, mats: THREE.Matrix4[]): THREE.InstancedMesh | null {
-  if (!mats.length) return null;
-  const im = new THREE.InstancedMesh(geo, m, mats.length);
-  mats.forEach((x, i) => im.setMatrixAt(i, x));
-  im.frustumCulled = false;
-  return im;
+/** Many copies of one shape, chunked so the ones off screen or far away are skipped (the city is big). */
+function instanced(geo: THREE.BufferGeometry, m: THREE.Material, mats: THREE.Matrix4[], far = 300): THREE.Group | null {
+  return instancedChunks(geo, m, mats, false, 400, far);
 }
 
-const signCache = new Map<string, THREE.CanvasTexture>();
-function signTexture(text: string): THREE.CanvasTexture {
-  const hit = signCache.get(text);
-  if (hit) return hit;
-  const { canvas, ctx } = makeCanvas(256, 64);
-  ctx.fillStyle = '#1d6b3e';
-  ctx.fillRect(0, 0, 256, 64);
-  ctx.strokeStyle = '#f4f1ea';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(5, 5, 246, 54);
-  ctx.fillStyle = '#f4f1ea';
-  ctx.font = '800 30px Nunito, Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text.toUpperCase(), 128, 34, 236);
-  const t = canvasTexture(canvas);
-  signCache.set(text, t);
-  return t;
+/** Two shapes with the same material as one (one draw call instead of two). */
+function merge2(a: THREE.BufferGeometry, b: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = mergeGeometries([a.index ? a.toNonIndexed() : a, b.index ? b.toNonIndexed() : b], false)!;
+  a.dispose();
+  b.dispose();
+  return g;
+}
+
+/** Cast (and receive) shadows on every chunk. */
+function shadows(g: THREE.Object3D, cast: boolean): void {
+  g.traverse((o) => {
+    o.castShadow = cast;
+    o.receiveShadow = true;
+  });
+}
+
+/** Every street and avenue name sign in one texture, one name per row. */
+function signAtlas(names: string[]): THREE.CanvasTexture {
+  const H = 64;
+  const { canvas, ctx } = makeCanvas(256, H * names.length);
+  names.forEach((text, i) => {
+    const y = i * H;
+    ctx.fillStyle = '#1d6b3e';
+    ctx.fillRect(0, y, 256, H);
+    ctx.strokeStyle = '#f4f1ea';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(5, y + 5, 246, H - 10);
+    ctx.fillStyle = '#f4f1ea';
+    ctx.font = '800 30px Nunito, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text.toUpperCase(), 128, y + 34, 236);
+  });
+  return canvasTexture(canvas);
 }
 
 /**
@@ -233,6 +253,8 @@ export class CityView {
   player = { x: -9999, z: -9999 };
   readonly targets: Target[] = [];
   private targetGroup = new THREE.Group();
+  /** Hedges and dumpsters behind the buildings (solid). */
+  readonly props = new Obstacles();
   /** A car got shot: the game plays the alarm. */
   onCarHit: ((c: Car) => void) | null = null;
   onHonk: ((c: Car) => void) | null = null;
@@ -508,7 +530,8 @@ export class CityView {
     headGeo.scale(1, 0.6, 1.3);
     headGeo.translate(0, 4.0, 1.0);
     const poleMat = mat(0x5b5668, { metal: 0.6, rough: 0.4 });
-    for (const [geo, m] of [[poleGeo, poleMat], [armGeo, poleMat], [headGeo, glow(0xffe2a8, 2.6)]] as const) {
+    const lampPole = merge2(poleGeo, armGeo);
+    for (const [geo, m] of [[lampPole, poleMat], [headGeo, glow(0xffe2a8, 2.6)]] as const) {
       const im = instanced(geo, m, lamps);
       if (im) s.add(im);
     }
@@ -523,7 +546,7 @@ export class CityView {
     for (const [geo, m] of [[trunk, mat(0x6b4422, { rough: 0.9 })], [crown, mat(0x2f8f45, { rough: 0.8, flat: true })], [crown2, mat(0x3aa655, { rough: 0.8, flat: true })], [pit, mat(0x3a2a1c, { rough: 1 })]] as const) {
       const im = instanced(geo, m, trees);
       if (im) {
-        im.castShadow = geo !== pit;
+        shadows(im, geo !== pit);
         s.add(im);
       }
     }
@@ -533,7 +556,7 @@ export class CityView {
     benchBack.translate(0, 0.72, -0.22);
     const benchLegs = new THREE.BoxGeometry(1.5, 0.45, 0.4);
     benchLegs.translate(0, 0.22, 0);
-    for (const [geo, m] of [[benchSeat, mat(0x8a5a2e, { rough: 0.8 })], [benchBack, mat(0x8a5a2e, { rough: 0.8 })], [benchLegs, mat(0x2b2b35, { metal: 0.6, rough: 0.5 })]] as const) {
+    for (const [geo, m] of [[merge2(benchSeat, benchBack), mat(0x8a5a2e, { rough: 0.8 })], [benchLegs, mat(0x2b2b35, { metal: 0.6, rough: 0.5 })]] as const) {
       const im = instanced(geo, m, benches);
       if (im) s.add(im);
     }
@@ -541,7 +564,7 @@ export class CityView {
     hyd.translate(0, 0.3, 0);
     const hydTop = new THREE.SphereGeometry(0.15, 10, 6);
     hydTop.translate(0, 0.62, 0);
-    for (const [geo, m] of [[hyd, mat(0xd62a2a, { rough: 0.5 })], [hydTop, mat(0xd62a2a, { rough: 0.5 })]] as const) {
+    for (const [geo, m] of [[merge2(hyd, hydTop), mat(0xd62a2a, { rough: 0.5 })]] as const) {
       const im = instanced(geo, m, hydrants);
       if (im) s.add(im);
     }
@@ -599,24 +622,37 @@ export class CityView {
     s.add(this.litLamps);
     this.lastPhase = -1;
 
-    // Street-name signs on one corner of every intersection.
+    // Street-name signs on one corner of every intersection: one atlas, one merged mesh.
+    const names = [...STREET_NAMES.slice(0, STREET_ROWS), ...aves.map((_, k) => avenueName(k))];
+    const atlas = signAtlas(names);
+    const signGeos: THREE.BufferGeometry[] = [];
+    const signPoles: THREE.Matrix4[] = [];
+    const signQuad = (row: number, x: number, y: number, z: number, yaw: number) => {
+      const q = new THREE.PlaneGeometry(1.8, 0.45);
+      const uv = q.getAttribute('uv') as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - (row + 1 - uv.getY(i)) / names.length);
+      q.rotateY(yaw);
+      q.translate(x, y, z);
+      signGeos.push(q);
+    };
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      aves.forEach(([a, b], k) => {
+      aves.forEach(([, b], k) => {
         const x = b - AVE_WALK + 2.2;
         const z = zc - BOX - 2.2;
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3.3, 6), poleMat);
-        pole.position.set(x, 1.65, z);
-        s.add(pole);
-        const st = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.45), new THREE.MeshStandardMaterial({ map: signTexture(STREET_NAMES[r] ?? 'Street'), side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: signTexture(STREET_NAMES[r] ?? 'Street') }));
-        st.position.set(x + 0.9, 3.1, z);
-        s.add(st);
-        const av = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.45), new THREE.MeshStandardMaterial({ map: signTexture(avenueName(k)), side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: signTexture(avenueName(k)) }));
-        av.rotation.y = Math.PI / 2;
-        av.position.set(x, 2.6, z - 0.9);
-        s.add(av);
+        signPoles.push(new THREE.Matrix4().makeTranslation(x, 1.65, z));
+        signQuad(r, x + 0.9, 3.1, z, 0);
+        signQuad(STREET_ROWS + k, x, 2.6, z - 0.9, Math.PI / 2);
       });
     }
+    const sp = instanced(new THREE.CylinderGeometry(0.05, 0.05, 3.3, 6), poleMat, signPoles);
+    if (sp) s.add(sp);
+    if (signGeos.length) {
+      const merged = mergeGeometries(signGeos, false)!;
+      for (const g of signGeos) g.dispose();
+      s.add(new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ map: atlas, side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: atlas })));
+    }
+    this.buildBackyards(cols);
     const crates: THREE.Matrix4[] = [];
     this.buildTargets(cols, crates);
     const crateGeo = new THREE.BoxGeometry(1.1, 0.6, 0.6);
@@ -625,10 +661,79 @@ export class CityView {
     this.spawnCars();
   }
 
+  /**
+   * Behind the buildings: lawns and hedges in the residential rows, and dumpsters along the
+   * alleys between the backs of the lots (they're solid: see `props`).
+   */
+  private buildBackyards(cols: number): void {
+    const s = this.statics;
+    this.props.clear();
+    const grass = new Strips();
+    const hedges: THREE.Matrix4[] = [];
+    const dumpsters: THREE.Matrix4[] = [];
+    const lids: THREE.Matrix4[] = [];
+    const back = FACADE_Z - MAX_DEPTH;
+    for (const row of RESIDENTIAL_ROWS) {
+      if (row >= STREET_ROWS) continue;
+      for (let col = 0; col < cols; col++) {
+        for (const side of [0, 1] as const) {
+          const slot = { row, col, side };
+          if (inParkSlot(slot)) continue;
+          const a = slotToGlobal(slot, CENTER_X - LOT_STRIDE / 2 + 0.4, back);
+          const b = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2 - 0.4, FACADE_Z - 0.6);
+          grass.rect(Math.min(a.x, b.x), Math.min(a.z, b.z), Math.max(a.x, b.x), Math.max(a.z, b.z), -0.018);
+          // A hedge along the east side of every yard (the west one belongs to the neighbour).
+          if ((col + 1) % BLOCK_COLS === 0) continue;
+          const h0 = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2, back + 2);
+          const h1 = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2, FACADE_Z - 6);
+          const len = Math.abs(h1.z - h0.z);
+          hedges.push(place(h0.x, 0, (h0.z + h1.z) / 2, 0, 0.7, 1, len));
+          this.props.rect(h0.x - 0.4, h0.x + 0.4, Math.min(h0.z, h1.z), Math.max(h0.z, h1.z));
+        }
+      }
+    }
+    // Dumpsters along every alley (not inside Central Park).
+    for (let r = 0; r < STREET_ROWS - 1; r++) {
+      const az = streetZ(r) + ROW_GAP / 2;
+      for (let k = 0; k < blocksFor(cols); k++) {
+        if (r === PARK_STREET && k >= PARK_BLOCKS[0] && k <= PARK_BLOCKS[1]) continue;
+        for (let i = 0; i < 3; i++) {
+          const x = blockX0(k) + 22 + i * 50 + hash01(r * 131 + k * 7 + i) * 8;
+          const z = az + (i % 2 ? 2.4 : -2.4);
+          const yaw = hash01(r * 17 + k * 3 + i) * 0.3 - 0.15;
+          dumpsters.push(place(x, 0, z, yaw));
+          lids.push(place(x, 0, z, yaw));
+          this.props.rect(x - 1.25, x + 1.25, z - 0.85, z + 0.85);
+        }
+      }
+    }
+    const gm = grass.mesh(mat(0x4a8a3c, { rough: 1 }));
+    if (gm) s.add(gm);
+    const hedgeGeo = new THREE.BoxGeometry(1, 1.3, 1);
+    hedgeGeo.translate(0, 0.65, 0);
+    const hg = instanced(hedgeGeo, mat(0x2f6a34, { rough: 0.95, flat: true }), hedges);
+    if (hg) {
+      shadows(hg, true);
+      s.add(hg);
+    }
+    const bin = new THREE.BoxGeometry(2.2, 1.3, 1.4);
+    bin.translate(0, 0.75, 0);
+    const lid = new THREE.BoxGeometry(2.3, 0.12, 1.5);
+    lid.translate(0, 1.46, 0);
+    const dg = instanced(bin, mat(0x2e6a4a, { rough: 0.6, metal: 0.3 }), dumpsters);
+    if (dg) {
+      shadows(dg, true);
+      s.add(dg);
+    }
+    const lg = instanced(lid, mat(0x1d1f24, { rough: 0.7 }), lids);
+    if (lg) s.add(lg);
+  }
+
   private spawnCars(): void {
     for (const c of this.cars) c.root.removeFromParent();
     this.cars = [];
-    const n = 14 + STREET_ROWS * 4 + blocksFor(this.cols) * 2;
+    // The city is big: the cars stay in a bubble around you (see update), so a fixed number does.
+    const n = 64;
     for (let i = 0; i < n; i++) {
       const kind = i % 9 === 0 ? 4 : i % 5 === 0 ? 1 : i % 7 === 0 ? 3 : i % 4 === 0 ? 2 : 0;
       const car = new Car(kind, kind === 1 ? 0xffc21a : kind === 4 ? 0x2fb8c9 : CAR_COLORS[i % CAR_COLORS.length]);
@@ -660,6 +765,41 @@ export class CityView {
     const stops = this.stopsFor(c.axis);
     for (const s of stops) if (Math.abs(c.pos - s) < BOX + 2) c.pos = s - c.dir * (BOX + 6);
     this.place(c);
+  }
+
+  /** Put a car on a road near (fx, fz), but out of sight. */
+  private respawnNear(c: Car, fx: number, fz: number): boolean {
+    const nb = blocksFor(this.cols);
+    const [x0, x1] = cityX(this.cols);
+    const [z0, z1] = cityZ();
+    for (let tries = 0; tries < 6; tries++) {
+      const alongX = Math.random() < 0.6;
+      const lines: number[] = [];
+      if (alongX) for (let r = 0; r < STREET_ROWS; r++) { if (Math.abs(streetZ(r) - fz) < BUBBLE * 0.8) lines.push(r); }
+      else for (let k = 0; k <= nb; k++) { if (Math.abs(avenueMid(k) - fx) < BUBBLE * 0.8) lines.push(k); }
+      if (!lines.length) continue;
+      const line = lines[Math.floor(Math.random() * lines.length)];
+      const off = (170 + Math.random() * (BUBBLE - 190)) * (Math.random() < 0.5 ? -1 : 1);
+      const lo = (alongX ? x0 : z0) + 4;
+      const hi = (alongX ? x1 : z1) - 4;
+      let pos = Math.max(lo, Math.min(hi, (alongX ? fx : fz) + off));
+      const axis: Axis = alongX ? 'x' : 'z';
+      for (const st of this.stopsFor(axis)) if (Math.abs(pos - st) < BOX + 3) pos = st + (pos < st ? -1 : 1) * (BOX + 6);
+      const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+      const p = this.laneXY(axis, line, dir, pos);
+      if (Math.hypot(p.x - fx, p.y - fz) < 160) continue;
+      if (this.cars.some((o) => o !== c && o.axis === axis && o.line === line && o.dir === dir && Math.abs(o.pos - pos) < 12)) continue;
+      c.axis = axis;
+      c.line = line;
+      c.dir = dir;
+      c.pos = pos;
+      c.turn = null;
+      c.decided = -999;
+      c.speed = c.max * 0.6;
+      this.place(c);
+      return true;
+    }
+    return false;
   }
 
   /** Intersection centres along a street (x) or an avenue (z). */
@@ -712,6 +852,15 @@ export class CityView {
       if (this.litLamps.instanceColor) this.litLamps.instanceColor.needsUpdate = true;
     }
     if (sim > 0) for (const c of this.cars) this.drive(c, sim, ph);
+    // Cars that drove far away from you come back on a road near you (out of sight).
+    if (sim > 0) {
+      let moved = 0;
+      for (const c of this.cars) {
+        if (moved >= 3) break;
+        if (c.turn || c.shaken > 0 || Math.hypot(c.x - fx, c.z - fz) < BUBBLE) continue;
+        if (this.respawnNear(c, fx, fz)) moved++;
+      }
+    }
     this.updateTargets(dt);
     for (const c of this.cars) {
       c.root.visible = Math.abs(c.x - fx) < 150 && Math.abs(c.z - fz) < 150;

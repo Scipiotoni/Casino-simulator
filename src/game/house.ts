@@ -29,6 +29,9 @@ export interface HouseState {
 }
 
 /** A car in your garage: one you bought (its id) or one you took out of traffic and kept. */
+/** Vehicles your garage won't take (the army would come looking for its tank). */
+export const NO_GARAGE_IDS: readonly string[] = ['tank'];
+
 export interface ParkedCar {
   id?: string;
   /** Kept traffic car: its body type and paint. */
@@ -189,7 +192,7 @@ export function sanitizeParked(raw: unknown, cap: number, known: (id: string) =>
     if (!it || typeof it !== 'object') continue;
     const p = it as Record<string, unknown>;
     if (typeof p.id === 'string') {
-      if (p.id.length > 20 || seen.has(p.id) || !known(p.id)) continue;
+      if (p.id.length > 20 || seen.has(p.id) || !known(p.id) || NO_GARAGE_IDS.includes(p.id)) continue;
       seen.add(p.id);
       out.push({ id: p.id });
     } else if (typeof p.kind === 'number' && typeof p.color === 'number') {

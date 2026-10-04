@@ -4,6 +4,7 @@ import { mat } from '../render/materials';
 import { asphaltTexture, canvasTexture, drawNeonText, lotTexture, makeCanvas, roundRect, seeded } from '../render/textures';
 import { ROAD_HALF, STREET_ROWS, WILDS, avenueMid, blocksFor, cityX, cityZ, setWildsObstacles, streetZ } from './city';
 import { inBaseArea } from './militaryBase';
+import { Obstacles, Strips, TreeBatch, instancedChunks, place } from './nature';
 
 /**
  * Everything around the city, in the global frame: the desert you can walk and drive out
@@ -75,6 +76,15 @@ export class Outskirts {
   private t = 0;
   /** More solid things out in the desert (the military base's fence and buildings). */
   extraBlock: ((gx: number, gz: number) => boolean) | null = null;
+  /** Trees, cabins and rocks of the lake shore and the forest. */
+  private wild = new Obstacles();
+  /** Lake Mojave, south of town (its pier sticks out into the water). */
+  lake: { x: number; z: number; rx: number; rz: number; pierX: number; pierZ1: number } | null = null;
+  /** Pinewood Forest, north-east of town, and the pond in it. */
+  forest: { x0: number; x1: number; z0: number; z1: number } | null = null;
+  pond: { x: number; z: number; rx: number; rz: number } | null = null;
+  private sailboats: { o: THREE.Object3D; a: number; r: number; w: number }[] = [];
+  private campfire: THREE.Mesh | null = null;
 
   /** Ground height (global) of the land around the city: flat where you can go, mountains beyond. */
   height(gx: number, gz: number): number {
@@ -91,8 +101,38 @@ export class Outskirts {
     return -0.06 + Math.pow(t, 1.3) * (45 + n * 150 + ridge * 40) + Math.max(0, d - start - 300) * 0.25 + smooth((d - start) / 40) * fbm(gx / 18, gz / 18) * 4;
   }
 
+  /** In the water of the lake or the forest pond (the pier and its deck are dry)? */
+  inWater(gx: number, gz: number): boolean {
+    const l = this.lake;
+    if (l) {
+      const u = (gx - l.x) / l.rx;
+      const v = (gz - l.z) / l.rz;
+      if (u * u + v * v < 1 && !(Math.abs(gx - l.pierX) < 1.8 && gz < l.pierZ1)) return true;
+    }
+    const p = this.pond;
+    if (p) {
+      const u = (gx - p.x) / p.rx;
+      const v = (gz - p.z) / p.rz;
+      if (u * u + v * v < 1) return true;
+    }
+    return false;
+  }
+
+  /** In the lake, the forest or on their shores (no cacti there). */
+  private inNature(gx: number, gz: number, pad = 0): boolean {
+    const l = this.lake;
+    if (l) {
+      const u = (gx - l.x) / (l.rx + 30 + pad);
+      const v = (gz - l.z) / (l.rz + 30 + pad);
+      if (u * u + v * v < 1) return true;
+    }
+    const f = this.forest;
+    return !!f && gx > f.x0 - pad && gx < f.x1 + pad && gz > f.z0 - pad && gz < f.z1 + pad;
+  }
+
   /** Is this desert point taken by a rock, cactus, pond or landmark? */
   blocked(gx: number, gz: number): boolean {
+    if (this.inWater(gx, gz) || this.wild.blocked(gx, gz)) return true;
     for (const [a, b, c, d] of this.rects) if (gx > a && gx < b && gz > c && gz < d) return true;
     const list = this.cells.get(this.cellKey(gx, gz));
     if (!list) return false;
@@ -129,6 +169,11 @@ export class Outskirts {
     for (let k = 0; k <= blocksFor(this.cols); k++) {
       if (Math.abs(gx - avenueMid(k)) < 5 + pad && (gz < this.z0 || gz > this.z1) && gz > this.z0 - R - hw && gz < this.z1 + R + hw) return true;
     }
+    // Roads down to the beach and up to the forest trailhead.
+    const l = this.lake;
+    if (l && Math.abs(gx - l.x) < 5 + pad && gz > this.z1 + R && gz < l.z - l.rz - 18) return true;
+    const f = this.forest;
+    if (f && Math.abs(gx - (f.x0 + f.x1) / 2) < 5 + pad && gz < this.z0 - R && gz > f.z1 - 4) return true;
     // Overlook highway: east from the ring along the middle of the city.
     const mz = (this.z0 + this.z1) / 2;
     if (Math.abs(gz - mz) < RING_W / 2 + pad && gx > this.x1 && gx < this.x1 + WILDS) return true;
@@ -150,9 +195,16 @@ export class Outskirts {
     this.rotors = [];
     this.balloons = [];
     this.signMats = [];
+    this.sailboats = [];
+    this.wild.clear();
     this.beacon = null;
+    const midX = (this.x0 + this.x1) / 2;
+    this.lake = { x: midX + 120, z: this.z1 + RING + 175, rx: 150, rz: 78, pierX: midX + 80, pierZ1: this.z1 + RING + 175 - 78 + 42 };
+    this.forest = { x0: midX + 90, x1: midX + 520, z0: this.z0 - RING - 340, z1: this.z0 - RING - 40 };
     this.buildGround();
     this.buildRoads();
+    this.buildLake();
+    this.buildForest();
     this.buildScatter();
     this.buildLandmarks();
     setWildsObstacles((x, z) => this.blocked(x, z) || (this.extraBlock?.(x, z) ?? false));
@@ -175,7 +227,7 @@ export class Outskirts {
 
     // Desert and mountains
     const half = Math.max(this.x1 - this.x0, this.z1 - this.z0) / 2 + WILDS + 1000;
-    const seg = 220;
+    const seg = 300;
     const geo = new THREE.PlaneGeometry(half * 2, half * 2, seg, seg);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
@@ -254,6 +306,282 @@ export class Outskirts {
     this.group.add(pad);
   }
 
+  /**
+   * Lake Mojave, south of town: a big blue lake with a sandy beach, palms, umbrellas, a
+   * lifeguard tower, a wooden pier you can walk out on and sailboats on the water. A road
+   * comes down from the ring road to the beach car park.
+   */
+  private buildLake(): void {
+    const l = this.lake!;
+    const rnd = seeded(808);
+    const g = this.group;
+    const beach = new Strips();
+    beach.disc(l.x, l.z, l.rx + 24, l.rz + 24, -0.045, 64);
+    const bm = beach.mesh(mat(0xe8d39c, { rough: 1 }));
+    if (bm) g.add(bm);
+    const shallow = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.MeshStandardMaterial({ color: 0x5fc4d0, roughness: 0.2, metalness: 0.1 }));
+    shallow.rotation.x = -Math.PI / 2;
+    shallow.scale.set(l.rx + 3, l.rz + 3, 1);
+    shallow.position.set(l.x, -0.035, l.z);
+    g.add(shallow);
+    const water = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.MeshStandardMaterial({ color: 0x1f7fa8, roughness: 0.3, metalness: 0, emissive: 0x052838 }));
+    water.rotation.x = -Math.PI / 2;
+    water.scale.set(l.rx - 4, l.rz - 4, 1);
+    water.position.set(l.x, -0.02, l.z);
+    g.add(water);
+    // Road down from the ring road and a car park at the top of the beach.
+    const parkZ = l.z - l.rz - 30;
+    this.road(l.x, this.z1 + RING + RING_W / 2, l.x, parkZ - 8, 9);
+    const lot = new Strips();
+    lot.rect(l.x - 22, parkZ - 8, l.x + 22, parkZ + 8, -0.024);
+    const lm = lot.mesh(new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
+    if (lm) g.add(lm);
+    // The pier: a long deck on posts with a rail.
+    const wood = mat(0x8a5a2e, { rough: 0.8 });
+    const pz0 = l.z - l.rz - 8;
+    const len = l.pierZ1 - pz0;
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.16, len), wood);
+    deck.position.set(l.pierX, 0.12, pz0 + len / 2);
+    deck.receiveShadow = true;
+    g.add(deck);
+    const posts: THREE.Matrix4[] = [];
+    for (let z = pz0; z <= l.pierZ1; z += 3) for (const sx of [-1, 1]) posts.push(place(l.pierX + sx * 1.7, 0.5, z));
+    const pg = instancedChunks(new THREE.BoxGeometry(0.16, 1.1, 0.16), wood, posts);
+    if (pg) g.add(pg);
+    for (const sx of [-1, 1]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, len), wood);
+      rail.position.set(l.pierX + sx * 1.7, 1.05, pz0 + len / 2);
+      g.add(rail);
+    }
+    // Palms round the shore, umbrellas and towels on the north beach.
+    const trees = new TreeBatch();
+    for (let i = 0; i < 70; i++) {
+      const a = rnd() * Math.PI * 2;
+      const k = 1.08 + rnd() * 0.14;
+      const x = l.x + Math.cos(a) * l.rx * k + 6 * Math.cos(a);
+      const z = l.z + Math.sin(a) * l.rz * k + 6 * Math.sin(a);
+      if (Math.abs(x - l.x) < 26 && z < l.z) continue;
+      if (Math.abs(x - l.pierX) < 5 && z < l.z) continue;
+      const s = 0.8 + rnd() * 0.5;
+      trees.add('palm', x, z, s, rnd() * 6);
+      this.wild.circle(x, z, 0.35 * s);
+    }
+    trees.build(g);
+    const poles: THREE.Matrix4[] = [];
+    const tops: THREE.Matrix4[] = [];
+    const towels: THREE.Matrix4[] = [];
+    const tColors = [0xff6fb5, 0x2fb8c9, 0xffc53d, 0xff8a1f, 0xf4f1ea, 0x39ff88];
+    const topsByColor = new Map<number, THREE.Matrix4[]>();
+    for (let i = 0; i < 26; i++) {
+      const x = l.x - l.rx * 0.8 + rnd() * l.rx * 1.6;
+      const u = (x - l.x) / l.rx;
+      const z = l.z - l.rz * Math.sqrt(Math.max(0, 1 - u * u)) - 6 - rnd() * 12;
+      if (Math.abs(x - l.pierX) < 4) continue;
+      poles.push(place(x, 1.1, z));
+      const c = tColors[i % tColors.length];
+      const list = topsByColor.get(c) ?? [];
+      list.push(place(x, 2.2, z, rnd() * 3));
+      topsByColor.set(c, list);
+      towels.push(place(x + 1.4, 0.02, z + 0.4, rnd() * 0.6));
+      this.wild.circle(x, z, 0.12);
+    }
+    const pgeo = new THREE.CylinderGeometry(0.04, 0.04, 2.2, 6);
+    const pp = instancedChunks(pgeo, mat(0xf4f1ea, { rough: 0.5 }), poles);
+    if (pp) g.add(pp);
+    const cone = new THREE.ConeGeometry(1.4, 0.5, 10);
+    for (const [c, list] of topsByColor) {
+      const tg = instancedChunks(cone, mat(c, { rough: 0.8 }), list, true);
+      if (tg) g.add(tg);
+    }
+    void tops;
+    const towel = new THREE.BoxGeometry(0.9, 0.03, 1.9);
+    const tw = instancedChunks(towel, mat(0xff4d6d, { rough: 0.9 }), towels);
+    if (tw) g.add(tw);
+    // Lifeguard tower.
+    const lx = l.x - 40;
+    const lz = l.z - l.rz - 10;
+    const white = mat(0xf4f1ea, { rough: 0.6 });
+    for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.4, 0.14), white);
+      leg.position.set(lx + ox * 1, 1.2, lz + oz * 1);
+      g.add(leg);
+    }
+    const hut = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 2.4), mat(0xff4d4d, { rough: 0.6 }));
+    hut.position.set(lx, 3.2, lz);
+    hut.castShadow = true;
+    g.add(hut);
+    const hroof = new THREE.Mesh(new THREE.ConeGeometry(2, 0.8, 4), white);
+    hroof.rotation.y = Math.PI / 4;
+    hroof.position.set(lx, 4.4, lz);
+    g.add(hroof);
+    this.wild.rect(lx - 1.2, lx + 1.2, lz - 1.2, lz + 1.2);
+    // Sailboats out on the water.
+    for (let i = 0; i < 4; i++) {
+      const b = new THREE.Group();
+      const hull = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 5), mat(0xf4f1ea, { rough: 0.5 }));
+      hull.position.y = 0.3;
+      b.add(hull);
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 6, 6), mat(0xd8d2c6));
+      mast.position.set(0, 3.3, 0.4);
+      b.add(mast);
+      const sailGeo = new THREE.BufferGeometry();
+      sailGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0.8, 0.5, 0, 6.2, 0.5, 0, 0.8, -2.2], 3));
+      sailGeo.computeVertexNormals();
+      const sail = new THREE.Mesh(sailGeo, mat([0xff4d4d, 0x2fb8c9, 0xffc53d, 0xf4f1ea][i], { rough: 0.7, side: THREE.DoubleSide }));
+      b.add(sail);
+      g.add(b);
+      this.sailboats.push({ o: b, a: rnd() * Math.PI * 2, r: 0.35 + rnd() * 0.45, w: (0.01 + rnd() * 0.01) * (i % 2 ? 1 : -1) });
+    }
+    const sign = billboard('LAKE MOJAVE', 'Beach · Pier · Sailing', '#2fe6ff', '#0b2a3a');
+    sign.position.set(l.x + 28, 0, parkZ - 4);
+    sign.rotation.y = Math.PI;
+    g.add(sign);
+    this.wild.circle(l.x + 28 - 4.5, parkZ - 4, 0.5);
+    this.wild.circle(l.x + 28 + 4.5, parkZ - 4, 0.5);
+    sign.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (m?.emissiveMap) this.signMats.push(m);
+    });
+  }
+
+  /**
+   * Pinewood Forest, north-east of town: hundreds of pines and birches on a mossy floor, dirt
+   * trails, a log cabin, a campfire, a fire lookout tower and a pond. A dirt road leads up
+   * from the ring road to the trailhead.
+   */
+  private buildForest(): void {
+    const f = this.forest!;
+    const rnd = seeded(5150);
+    const g = this.group;
+    const cx = (f.x0 + f.x1) / 2;
+    const cz = (f.z0 + f.z1) / 2;
+    const floor = new Strips();
+    floor.rect(f.x0, f.z0, f.x1, f.z1, -0.05);
+    for (let i = 0; i < 10; i++) floor.disc(f.x0 + rnd() * (f.x1 - f.x0), f.z0 + rnd() * (f.z1 - f.z0), 30 + rnd() * 40, 30 + rnd() * 40, -0.049, 24);
+    const fm = floor.mesh(mat(0x3d5a2e, { rough: 1 }));
+    if (fm) g.add(fm);
+    // Dirt road in from the ring road, then trails through the trees.
+    this.road(cx, this.z0 - RING - RING_W / 2, cx, f.z1 + 2, 8, false);
+    const trails = new Strips();
+    const segs: [number, number, number, number][] = [];
+    const trail = (ax: number, az: number, bx: number, bz: number) => {
+      trails.line(ax, az, bx, bz, 3, -0.04);
+      segs.push([ax, az, bx, bz]);
+    };
+    const pts: [number, number][] = [[cx, f.z1], [cx, cz + 40], [cx - 70, cz], [cx - 40, f.z0 + 50], [cx + 60, f.z0 + 40], [cx + 90, cz - 10], [cx, cz + 40]];
+    for (let i = 0; i < pts.length - 1; i++) trail(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+    trail(cx - 70, cz, f.x0 + 4, cz + 20);
+    trail(cx + 90, cz - 10, f.x1 - 4, cz - 30);
+    const tm = trails.mesh(mat(0x8a6a44, { rough: 1 }));
+    if (tm) g.add(tm);
+    const nearTrail = (x: number, z: number, pad: number) => segs.some(([ax, az, bx, bz]) => {
+      const dx = bx - ax;
+      const dz = bz - az;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
+      return Math.hypot(x - (ax + dx * t), z - (az + dz * t)) < pad;
+    });
+    // Clearings: the cabin and campfire, the lookout tower, the pond.
+    const cabin = { x: cx - 40, z: cz + 8 };
+    const tower = { x: cx + 60, z: f.z0 + 60 };
+    const pond = { x: cx + 20, z: cz - 30, rx: 22, rz: 14 };
+    this.pond = pond;
+    const clear: [number, number, number][] = [[cabin.x, cabin.z, 18], [tower.x, tower.z, 9], [pond.x, pond.z, pond.rx + 6], [cx, f.z1 - 6, 14]];
+    const trees = new TreeBatch();
+    let n = 0;
+    for (let i = 0; i < 9000 && n < 2600; i++) {
+      const x = f.x0 + 3 + rnd() * (f.x1 - f.x0 - 6);
+      const z = f.z0 + 3 + rnd() * (f.z1 - f.z0 - 6);
+      if (nearTrail(x, z, 3.2)) continue;
+      if (clear.some(([a, b, r]) => Math.hypot(x - a, z - b) < r)) continue;
+      // Thinner towards the edges.
+      const edge = Math.min(x - f.x0, f.x1 - x, z - f.z0, f.z1 - z);
+      if (edge < 25 && rnd() > edge / 25) continue;
+      const s = 0.9 + rnd() * 0.9;
+      trees.add(rnd() < 0.78 ? 'pine' : 'birch', x, z, s, rnd() * 6);
+      this.wild.circle(x, z, 0.38 * s);
+      n++;
+    }
+    trees.build(g);
+    // Pond
+    const pw = new THREE.Mesh(new THREE.CircleGeometry(1, 40), new THREE.MeshStandardMaterial({ color: 0x2a6f7a, roughness: 0.3, metalness: 0, emissive: 0x04202a }));
+    pw.rotation.x = -Math.PI / 2;
+    pw.scale.set(pond.rx, pond.rz, 1);
+    pw.position.set(pond.x, -0.03, pond.z);
+    g.add(pw);
+    // Log cabin with a pitched roof, a porch and a chimney.
+    const logs = mat(0x7a4f2a, { rough: 0.9 });
+    const cab = new THREE.Mesh(new THREE.BoxGeometry(9, 3.2, 7), logs);
+    cab.position.set(cabin.x, 1.6, cabin.z);
+    cab.castShadow = true;
+    g.add(cab);
+    const roof = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 5.2, 9.8, 3, 1), mat(0x4a3a2a, { rough: 0.85, flat: true }));
+    // A three-sided prism laid along x, one edge up.
+    roof.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
+    roof.scale.set(1, 1, 0.5);
+    roof.position.set(cabin.x, 4.4, cabin.z);
+    g.add(roof);
+    const chim = new THREE.Mesh(new THREE.BoxGeometry(1, 3, 1), mat(0x8a8178, { rough: 0.9 }));
+    chim.position.set(cabin.x + 3, 5, cabin.z - 1.5);
+    g.add(chim);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.1), mat(0x4a2a14, { rough: 0.7 }));
+    door.position.set(cabin.x, 1.1, cabin.z + 3.52);
+    g.add(door);
+    const win = mat(0x26303d, { emissive: 0xffc874, emissiveIntensity: 0.6, rough: 0.2 });
+    for (const dx of [-2.8, 2.8]) {
+      const w = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1, 0.1), win);
+      w.position.set(cabin.x + dx, 1.8, cabin.z + 3.52);
+      g.add(w);
+    }
+    this.wild.rect(cabin.x - 4.6, cabin.x + 4.6, cabin.z - 3.6, cabin.z + 3.6);
+    // Campfire: a ring of stones, logs to sit on and a flickering flame.
+    const fx = cabin.x + 2;
+    const fz = cabin.z + 10;
+    const stones: THREE.Matrix4[] = [];
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      stones.push(place(fx + Math.cos(a) * 1.1, 0.12, fz + Math.sin(a) * 1.1, a, 0.35));
+    }
+    const sg = instancedChunks(new THREE.DodecahedronGeometry(1, 0), mat(0x8a8178, { rough: 0.95, flat: true }), stones);
+    if (sg) g.add(sg);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.4, 8), new THREE.MeshStandardMaterial({ color: 0xffa040, emissive: 0xff6a10, emissiveIntensity: 2.5, transparent: true, opacity: 0.9 }));
+    flame.position.set(fx, 0.7, fz);
+    g.add(flame);
+    this.campfire = flame;
+    this.wild.circle(fx, fz, 1.4);
+    for (const a of [0, 2.1, 4.2]) {
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 2.2, 8), logs);
+      log.rotation.set(0, a, Math.PI / 2);
+      log.position.set(fx + Math.cos(a) * 3, 0.22, fz + Math.sin(a) * 3);
+      g.add(log);
+    }
+    // Fire lookout tower.
+    const steel = mat(0x6a6f76, { metal: 0.5, rough: 0.5 });
+    for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 14, 0.2), steel);
+      leg.position.set(tower.x + ox * 2, 7, tower.z + oz * 2);
+      g.add(leg);
+      this.wild.circle(tower.x + ox * 2, tower.z + oz * 2, 0.3);
+    }
+    const look = new THREE.Mesh(new THREE.BoxGeometry(5, 2.6, 5), mat(0xb5a27a, { rough: 0.8 }));
+    look.position.set(tower.x, 15.3, tower.z);
+    look.castShadow = true;
+    g.add(look);
+    const lroof = new THREE.Mesh(new THREE.ConeGeometry(4.2, 1.6, 4), mat(0x5a2a2a, { rough: 0.8 }));
+    lroof.rotation.y = Math.PI / 4;
+    lroof.position.set(tower.x, 17.4, tower.z);
+    g.add(lroof);
+    const sign = billboard('PINEWOOD FOREST', 'Trails · Cabin · Lookout', '#39ff88', '#0c2a1a');
+    sign.position.set(cx + 12, 0, f.z1 + 4);
+    sign.rotation.y = Math.PI;
+    g.add(sign);
+    this.block(cx + 12 - 4.5, f.z1 + 4, 0.6);
+    this.block(cx + 12 + 4.5, f.z1 + 4, 0.6);
+    sign.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (m?.emissiveMap) this.signMats.push(m);
+    });
+  }
+
   /** Cacti, rocks, Joshua trees and scrub all over the desert and up the slopes. */
   private buildScatter(): void {
     const rnd = seeded(1234 + this.cols);
@@ -268,7 +596,7 @@ export class Outskirts {
         const dx = Math.max(this.x0 - x, 0, x - this.x1);
         const dz = Math.max(this.z0 - z, 0, z - this.z1);
         const d = Math.hypot(dx, dz);
-        if (d < minD || d > maxD || this.onRoad(x, z) || inBaseArea(x, z, this.cols)) continue;
+        if (d < minD || d > maxD || this.onRoad(x, z) || inBaseArea(x, z, this.cols, 14) || this.inNature(x, z)) continue;
         return { x, z, d };
       }
       return null;
@@ -276,7 +604,7 @@ export class Outskirts {
     const m4 = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const e = new THREE.Euler();
-    const scatter = (geo: THREE.BufferGeometry, material: THREE.Material, n: number, minD: number, maxD: number, size: () => number, radius: number, tilt = 0) => {
+    const scatter = (geo: THREE.BufferGeometry, material: THREE.Material, n: number, minD: number, maxD: number, size: () => number, radius: number, tilt = 0, far = 360, chunk = 300) => {
       const mats: THREE.Matrix4[] = [];
       for (let i = 0; i < n; i++) {
         const p = pick(minD, maxD);
@@ -289,17 +617,15 @@ export class Outskirts {
         mats.push(m4.clone());
         if (radius > 0 && p.d < WILDS + 4) this.block(p.x, p.z, radius * s);
       }
-      const im = new THREE.InstancedMesh(geo, material, mats.length);
-      mats.forEach((m, i) => im.setMatrixAt(i, m));
-      im.castShadow = true;
-      im.receiveShadow = true;
-      this.group.add(im);
+      const g = instancedChunks(geo, material, mats, true, chunk, far);
+      if (g) this.group.add(g);
     };
-    scatter(cactusGeometry(), mat(0x3f7f3a, { rough: 0.8 }), 340, 12, WILDS + 260, () => 0.7 + rnd() * 0.8, 0.5);
-    scatter(joshuaGeometry(), mat(0x6f6a3a, { rough: 0.9, flat: true }), 160, 20, WILDS + 200, () => 0.8 + rnd() * 0.7, 0.45);
-    scatter(new THREE.DodecahedronGeometry(1, 0), mat(0x9c6a48, { rough: 0.95, flat: true }), 380, 18, WILDS + 520, () => 0.5 + rnd() ** 2 * 3.5, 0.9, 0.8);
-    scatter(new THREE.DodecahedronGeometry(1, 1), mat(0x7f4c34, { rough: 0.95, flat: true }), 140, WILDS - 20, WILDS + 700, () => 3 + rnd() * 9, 0.8, 0.6);
-    scatter(new THREE.IcosahedronGeometry(0.6, 0), mat(0x8a8a4a, { rough: 1, flat: true }), 700, 6, WILDS + 300, () => 0.4 + rnd() * 0.9, 0);
+    scatter(cactusGeometry(), mat(0x3f7f3a, { rough: 0.8 }), 900, 12, WILDS + 260, () => 0.7 + rnd() * 0.8, 0.5);
+    scatter(joshuaGeometry(), mat(0x6f6a3a, { rough: 0.9, flat: true }), 420, 20, WILDS + 200, () => 0.8 + rnd() * 0.7, 0.45);
+    scatter(new THREE.DodecahedronGeometry(1, 0), mat(0x9c6a48, { rough: 0.95, flat: true }), 900, 18, WILDS + 520, () => 0.5 + rnd() ** 2 * 3.5, 0.9, 0.8);
+    // Boulders up the mountain slopes: part of the skyline, so always drawn (in a few big chunks).
+    scatter(new THREE.DodecahedronGeometry(1, 1), mat(0x7f4c34, { rough: 0.95, flat: true }), 260, WILDS - 20, WILDS + 700, () => 3 + rnd() * 9, 0.8, 0.6, Infinity, 1400);
+    scatter(new THREE.IcosahedronGeometry(0.6, 0), mat(0x8a8a4a, { rough: 1, flat: true }), 1700, 6, WILDS + 300, () => 0.4 + rnd() * 0.9, 0, 0, 220);
   }
 
   private buildLandmarks(): void {
@@ -480,6 +806,18 @@ export class Outskirts {
       b.o.rotation.y += dt * 0.05;
     }
     if (this.beacon) (this.beacon.material as THREE.MeshStandardMaterial).emissiveIntensity = (this.t % 1.6) < 0.5 ? 4 : 0.2;
+    const l = this.lake;
+    if (l) {
+      for (const b of this.sailboats) {
+        b.a += b.w * dt;
+        b.o.position.set(l.x + Math.cos(b.a) * l.rx * b.r + 30, Math.sin(this.t + b.r * 9) * 0.08, l.z + Math.sin(b.a) * l.rz * b.r + 10);
+        b.o.rotation.y = -b.a + (b.w > 0 ? 0 : Math.PI);
+      }
+    }
+    if (this.campfire) {
+      this.campfire.scale.set(1 + Math.sin(this.t * 13) * 0.1, 1 + Math.sin(this.t * 9.3) * 0.18, 1 + Math.cos(this.t * 11) * 0.1);
+      (this.campfire.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2 + Math.sin(this.t * 17) * 0.5;
+    }
     for (const m of this.signMats) m.emissiveIntensity = 0.06 + night * 1.1;
   }
 }

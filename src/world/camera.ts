@@ -73,7 +73,7 @@ export class CameraRig {
 
   /** Third-person distance (e.g. further back while driving). */
   setThirdDist(d: number): void {
-    this.thirdTarget = clamp(d, 3, 14);
+    this.thirdTarget = clamp(d, 3, 24);
   }
 
   zoomBy(factor: number): void {

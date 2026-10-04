@@ -64,6 +64,8 @@ export interface NetState {
   heistLock?: Record<string, number>;
   /** When you last robbed Uncle Sal's house (the NPC house refills after a while). */
   npcRobbed?: number;
+  /** When you last raided the Fort Mojave armory (its payroll comes back after a while). */
+  armoryRaided?: number;
   /** Gifts you sent (kept in your ledger until they expire). */
   gifts?: import('./social').GiftOut[];
   /** Gifts you opened: gift id → when. */

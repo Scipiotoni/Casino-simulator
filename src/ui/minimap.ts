@@ -1,9 +1,9 @@
 import type { Game } from '../game/game';
 import { h } from './dom';
 import { audio } from '../core/audio';
-import { CENTER_X, DEPTH_STEP, DOOR_TILES, FACADE_Z, ROAD_MID, SIDEWALK_Z0, START_DEPTH, WIDTHS } from '../world/grid';
+import { CENTER_X, DEPTH_STEP, DOOR_TILES, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z0, START_DEPTH, WIDTHS } from '../world/grid';
 import type { StreetLot } from '../world/street';
-import { AVE_WALK, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, WILDS, avenueX, blocksFor, streetZ } from '../world/city';
+import { AVE_WALK, BLOCK_COLS, PARK_BLOCKS, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, WILDS, avenueX, blockX0, blocksFor, parkRect, streetZ } from '../world/city';
 import { RING } from '../world/outskirts';
 import { BASE_HD, BASE_HW, baseSite } from '../world/militaryBase';
 
@@ -335,6 +335,43 @@ export class Minimap {
     c.beginPath();
     c.arc(X(bd.x1 + WILDS - 32), Z(mz), 28 * s, 0, Math.PI * 2);
     c.fill();
+    // Lake Mojave with its beach, Pinewood Forest and its pond.
+    const ok = st.outskirts;
+    const labelFont = `800 ${Math.max(9, Math.min(13, s * 3))}px system-ui, sans-serif`;
+    if (ok.lake) {
+      const l = ok.lake;
+      c.fillStyle = '#e8d39c';
+      c.beginPath();
+      c.ellipse(X(l.x), Z(l.z), (l.rx + 24) * s, (l.rz + 24) * s, 0, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = '#2a8fc4';
+      c.beginPath();
+      c.ellipse(X(l.x), Z(l.z), l.rx * s, l.rz * s, 0, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = '#34313d';
+      c.fillRect(X(l.x - 4.5), Z(bd.z1 + RING), 9 * s, (l.z - l.rz - 30 - bd.z1 - RING) * s);
+    }
+    if (ok.forest) {
+      const f = ok.forest;
+      c.fillStyle = '#2f5a2e';
+      c.beginPath();
+      c.roundRect(X(f.x0), Z(f.z0), (f.x1 - f.x0) * s, (f.z1 - f.z0) * s, 30 * s);
+      c.fill();
+      if (ok.pond) {
+        c.fillStyle = '#2a6f7a';
+        c.beginPath();
+        c.ellipse(X(ok.pond.x), Z(ok.pond.z), ok.pond.rx * s, ok.pond.rz * s, 0, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.fillStyle = '#34313d';
+      c.fillRect(X((f.x0 + f.x1) / 2 - 4), Z(f.z1), 8 * s, (bd.z0 - RING - f.z1) * s);
+    }
+    c.font = labelFont;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillStyle = '#ffffff';
+    if (ok.lake) txt('🏖 LAKE MOJAVE', X(ok.lake.x), Z(ok.lake.z));
+    if (ok.forest) txt('🌲 PINEWOOD FOREST', X((ok.forest.x0 + ok.forest.x1) / 2), Z((ok.forest.z0 + ok.forest.z1) / 2));
     // The oasis
     c.fillStyle = '#2aa6c4';
     c.beginPath();
@@ -392,6 +429,27 @@ export class Minimap {
     c.stroke();
     c.setLineDash([]);
 
+    // Central Park: lawns, the lake (the avenues still cross it).
+    {
+      const pr = parkRect();
+      c.fillStyle = '#3f7f3a';
+      for (let k = PARK_BLOCKS[0]; k <= PARK_BLOCKS[1]; k++) {
+        const x0 = blockX0(k);
+        c.fillRect(X(x0), Z(pr.z0), BLOCK_COLS * LOT_STRIDE * s, (pr.z1 - pr.z0) * s);
+      }
+      const lk = st.park.lake;
+      if (lk) {
+        c.fillStyle = '#2a8fc4';
+        c.beginPath();
+        c.ellipse(X(lk.x), Z(lk.z), lk.rx * s, lk.rz * s, 0, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.font = labelFont;
+      c.fillStyle = '#ffffff';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      txt('🌳 CENTRAL PARK', X((pr.x0 + pr.x1) / 2), Z(pr.z0 + 14));
+    }
     // Buildings
     const font = this.big ? 10 : Math.max(9, Math.min(13, s * 1.6));
     c.font = `800 ${font}px system-ui, sans-serif`;
@@ -402,7 +460,9 @@ export class Minimap {
       if (out((X(b.x0) + X(b.x1)) / 2, (Z(b.z0) + Z(b.z1)) / 2, Math.hypot(X(b.x1) - X(b.x0), Z(b.z1) - Z(b.z0)) / 2)) continue;
       const filler = lot.kind === 'filler';
       const mine = lot.id === 'me' || lot.id === 'house' || lot.hotelOf === 'me';
-      c.fillStyle = filler ? (lot.info.filler?.kind === 'park' ? '#2c5a33' : '#3b3747') : lot.kind === 'shop' ? '#7a2a2a' : hex(lot.info.look.wallColor ?? 0x6a2cc2);
+      const fk = lot.info.filler?.kind;
+      if (fk === 'centralpark') continue;
+      c.fillStyle = filler ? (fk === 'park' ? '#2c5a33' : '#3b3747') : lot.kind === 'shop' ? '#7a2a2a' : hex(lot.info.look.wallColor ?? 0x6a2cc2);
       c.fillRect(X(b.x0), Z(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
       if (filler) continue;
       c.strokeStyle = mine ? '#ffc53d' : lot.kind === 'rival' ? '#ff4d6d' : lot.kind === 'shop' ? '#ff8a8a' : 'rgba(255,255,255,0.5)';
