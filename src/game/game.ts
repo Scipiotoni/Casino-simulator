@@ -36,7 +36,7 @@ import { ITEMS, ITEM_BY_ID, type ItemDef, type Site, itemDef, soldAt, zoneBlock 
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
 import type { Outcome } from '../items/types';
 import { Customer, type CustomerType, spawnPoint } from '../entities/customer';
-import { Worker, roleFor, DOOR_POSTS, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
+import { Worker, roleFor, DOOR_POSTS, DEALER_WAGE, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
 import { Player } from '../entities/player';
 import { type Appearance, defaultAppearance, sanitizeAppearance } from '../entities/appearance';
 import { Floaters } from '../ui/floaters';
@@ -321,7 +321,11 @@ export class Game implements World, ItemHost {
   private buzz = 0;
   private autosaveT = 30;
   private objectiveT = 0;
-  private interactTarget: { kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void } | null = null;
+  private interactTarget: {
+    kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void;
+    /** Runs every frame Space is held (instead of a hold-to-finish ring). */
+    whileHeld?: (dt: number) => void;
+  } | null = null;
   private holdT = 0;
   private lastInteractKey = '';
   private moneyHistoryT = 0;
@@ -748,6 +752,8 @@ export class Game implements World, ItemHost {
   }
 
   private loanWarned = 0;
+  /** Seconds spent dealing tables yourself (a little XP every few seconds). */
+  private dealXp = 0;
 
   /** Interest while you play; owe too much and the bank takes it back out of your casino. */
   private tickLoan(sim: number): void {
@@ -1897,6 +1903,10 @@ export class Game implements World, ItemHost {
     this.events.emit('toast', { text, kind });
   }
 
+  dealersRequired(): boolean {
+    return this.state === 'playing' && !this.visit && this.site === 'casino';
+  }
+
   statueLook(): Appearance {
     return this.player.appearance;
   }
@@ -2459,6 +2469,9 @@ export class Game implements World, ItemHost {
     this.effects.sparkle(item.cx, 1, item.cz, 10);
     this.floaters.money(new THREE.Vector3(item.cx, 1.5, item.cz), -def.price);
     item.pendingXp = Math.round(def.price / 60);
+    if (item.needsDealer) {
+      this.notify(`${def.name} needs a dealer: click it to hire one (${formatMoney(DEALER_WAGE)} a day), or stand beside it and hold Space to deal yourself.`, 'info');
+    }
     if (def.kind === 'vault' && this.house) {
       // A brand-new vault: tier 1, and it wants a code before it'll hold anything.
       if (!this.house.tier) this.house.tier = 1;
@@ -2582,6 +2595,56 @@ export class Game implements World, ItemHost {
     this.events.emit('staff', undefined);
     this.requestSave();
     return true;
+  }
+
+  /** Tables here that need a dealer, and how many have one. */
+  get dealerTables(): PlacedItem[] {
+    return this.items.items.filter((i) => i.needsDealer);
+  }
+
+  /** What the dealers cost a day. */
+  get dealerWages(): number {
+    return this.site === 'casino' ? this.dealerTables.filter((i) => i.dealer).length * DEALER_WAGE : 0;
+  }
+
+  /** Hire a dealer for a table (a small signing bonus, then a daily wage). */
+  hireDealer(item: PlacedItem, quiet = false): boolean {
+    if (this.visit || !item.needsDealer || item.dealer) return false;
+    if (this.money < DEALER_WAGE) {
+      audio.play('error');
+      this.notify(`Hiring a dealer costs a ${formatMoney(DEALER_WAGE)} signing bonus.`, 'bad');
+      return false;
+    }
+    this.spend(DEALER_WAGE, 'wages');
+    item.dealer = true;
+    if (!quiet) {
+      audio.play('purchase');
+      this.notify(`A dealer took their place at the ${item.def.name} (${formatMoney(DEALER_WAGE)} a day).`, 'good');
+    }
+    this.events.emit('staff', undefined);
+    this.requestSave();
+    return true;
+  }
+
+  /** Let a table's dealer go: the table only runs while you deal it yourself. */
+  fireDealer(item: PlacedItem): void {
+    if (this.visit || !item.dealer) return;
+    item.dealer = false;
+    audio.play('click');
+    this.notify(`The ${item.def.name}'s dealer went home. Hold Space beside it to deal yourself.`, 'info');
+    this.events.emit('staff', undefined);
+    this.requestSave();
+  }
+
+  /** A dealer for every table that hasn't got one (as many as you can afford). */
+  hireAllDealers(): number {
+    let n = 0;
+    for (const it of this.dealerTables) if (!it.dealer && this.money >= DEALER_WAGE && this.hireDealer(it, true)) n++;
+    if (n) {
+      audio.play('purchase');
+      this.notify(`${n} dealer${n > 1 ? 's' : ''} hired (${formatMoney(DEALER_WAGE)} a day each).`, 'good');
+    } else this.notify(this.dealerTables.some((i) => !i.dealer) ? `Hiring a dealer costs a ${formatMoney(DEALER_WAGE)} signing bonus.` : 'Every table already has a dealer.', 'info');
+    return n;
   }
 
   fire(w: Worker): void {
@@ -3322,6 +3385,33 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    // A table with no dealer: stand beside it and hold Space to deal yourself.
+    if (!target && this.dealersRequired() && !this.tableFocus) {
+      let bestDeal = 1.6;
+      for (const it of this.items.items) {
+        if (!it.needsDealer || it.dealer || it.broken || it.floor !== pf) continue;
+        const b = it.bounds;
+        const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
+        if (d >= bestDeal) continue;
+        bestDeal = d;
+        const dealing = it.manualDeal > 0;
+        target = {
+          kind: `deal${it.uid}`, label: dealing ? `Dealing ${it.def.name}… keep holding` : `Hold to deal ${it.def.name} · no dealer (click it to hire one)`, hold: true,
+          anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.7, it.cz),
+          act: () => undefined,
+          whileHeld: (dt) => {
+            it.manualDeal = 0.75;
+            this.player.playEmote('deal', 0.3);
+            // A little XP for the time you put in behind the table.
+            this.dealXp += dt;
+            if (this.dealXp >= 6) {
+              this.dealXp = 0;
+              this.gainXp(3);
+            }
+          },
+        };
+      }
+    }
     // Your vault
     if (!target && this.inHouse && this.house) {
       for (const it of this.items.items) {
@@ -3416,7 +3506,9 @@ export class Game implements World, ItemHost {
     const pressed = !blocked && (this.input.hit('Space') || (fKey && this.input.hit('KeyF')) || this.actionPressed);
     this.actionPressed = false;
     if (target) {
-      if (target.hold) {
+      if (target.whileHeld) {
+        if (pressing) target.whileHeld(dt);
+      } else if (target.hold) {
         if (pressing) {
           this.holdT += dt;
           if (Math.random() < dt * 6) audio.play('repair', { volume: 0.6 });
@@ -3786,7 +3878,7 @@ export class Game implements World, ItemHost {
   // ------------------------------------------------------------------ loop
 
   private endOfDay(): void {
-    const wages = this.workers.reduce((a, w) => a + w.info.wage, 0);
+    const wages = this.workers.reduce((a, w) => a + w.info.wage, 0) + this.dealerWages;
     let upkeep = this.items.items.reduce((a, i) => a + i.def.upkeep, 0);
     // In the hotel, the buildings you're not standing in still pay their staff and upkeep.
     if (this.hotel && this.site === 'hotel') upkeep += hotelDailyCosts(this.hotel.buildings.filter((b) => b.id !== this.hotelBid).map((b) => b.snap));

@@ -25,6 +25,9 @@ export const ROLES: RoleInfo[] = [
   { role: 'security', title: 'Security', wage: 300, unlock: 5, blurb: 'Spots and busts cheaters on the floor.' },
 ];
 
+/** A table dealer's daily wage (and signing bonus): cheap help. */
+export const DEALER_WAGE = 50;
+
 /** A role as the business you're in calls it: in the hotel, janitors are housekeepers. */
 export function roleFor(role: WorkerRole, site: 'casino' | 'hotel' | 'house'): RoleInfo {
   const r = ROLES.find((x) => x.role === role)!;

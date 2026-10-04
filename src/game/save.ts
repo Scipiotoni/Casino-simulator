@@ -244,6 +244,7 @@ export function sanitizeSnapshot(raw: unknown, fonts: string[], sanitizeLook: (a
       label: typeof r.label === 'string' ? r.label.slice(0, 14).toUpperCase() : undefined,
       setup: r.setup && typeof r.setup === 'object' ? sanitizeSetup(r.setup) : undefined,
       dirty: r.dirty === true || undefined,
+      dl: typeof r.dl === 'boolean' ? r.dl : undefined,
     });
   }
   const roles = ['janitor', 'technician', 'security', 'doorman'];

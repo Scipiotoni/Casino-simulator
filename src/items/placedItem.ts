@@ -39,6 +39,8 @@ export interface ItemHost {
   roundStart(item: PlacedItem): void;
   machineBroke(item: PlacedItem): void;
   statueLook(): Appearance;
+  /** Tables need a dealer (hired, or you dealing) to run here: your own casino, while playing. */
+  dealersRequired(): boolean;
 }
 
 export interface SeatRuntime {
@@ -105,6 +107,12 @@ export class PlacedItem {
   pendingXp = 0;
   stats: ItemStats = { plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 };
   staff: CharacterModel | null = null;
+  /** A dealer is hired for this table. */
+  dealer = false;
+  /** Seconds left of you dealing it yourself (topped up while you hold Space beside it). */
+  manualDeal = 0;
+  /** Seconds guests have sat at it with nobody dealing. */
+  private waitT = 0;
   private staffBaseX = 0;
   private staffTargetX = 0;
   private table: TableState | null = null;
@@ -146,6 +154,16 @@ export class PlacedItem {
 
   get isGambling(): boolean {
     return GAMBLING.has(this.def.kind);
+  }
+
+  /** A table game that needs someone behind it to deal. */
+  get needsDealer(): boolean {
+    return this.def.staff?.role === 'dealer';
+  }
+
+  /** Someone is dealing (a hired dealer, you, or this isn't a place where it matters). */
+  get staffed(): boolean {
+    return !this.needsDealer || this.dealer || this.manualDeal > 0 || !this.host.dealersRequired();
   }
 
   get upgradable(): boolean {
@@ -293,7 +311,7 @@ export class PlacedItem {
   }
 
   freeSeat(): SeatRuntime | null {
-    if (this.broken) return null;
+    if (this.broken || !this.staffed) return null;
     const free = this.seats.filter((s) => s.reachable && !s.occupant && !s.reserved);
     if (!free.length) return null;
     return free[Math.floor(Math.random() * free.length)];
@@ -420,7 +438,20 @@ export class PlacedItem {
     const busy = this.seats.some((s) => s.occupant);
     const ctx: ModelCtx = { t: ctxT, broken: this.broken, level: this.level, busy, jackpotPot: this.host.jackpotPot };
     this.model.update(dt, ctx);
-    if (this.staff) this.updateStaff(dt);
+    if (this.manualDeal > 0) this.manualDeal = Math.max(0, this.manualDeal - dt);
+    if (this.staff) {
+      // No dealer hired: the spot behind the table stays empty (you can stand there and deal).
+      this.staff.root.visible = !this.needsDealer || this.dealer || !this.host.dealersRequired();
+      if (this.staff.root.visible) this.updateStaff(dt);
+    }
+    if (this.needsDealer && !this.staffed && this.seats.some((s) => s.occupant)) {
+      // Guests won't wait forever for someone to deal.
+      this.waitT += dt;
+      if (this.waitT > 15) {
+        this.waitT = 0;
+        for (const s of this.seats) s.occupant?.forceLeave('Nobody came to deal…', 6);
+      }
+    } else this.waitT = 0;
     if (!this.broken) {
       if (this.table && this.visitorSeat !== null) {
         // Hold the table's own rounds while a visitor plays here.
@@ -475,13 +506,17 @@ export class PlacedItem {
     const seated = this.seats.filter((s) => s.occupant);
     switch (t.phase) {
       case 'idle':
-        if (seated.length) {
+        if (seated.length && this.staffed) {
           t.phase = 'betting';
           t.timer = 1.6;
         }
         break;
       case 'betting': {
         if (t.timer > 0) break;
+        if (!this.staffed) {
+          t.phase = 'idle';
+          break;
+        }
         t.bets.clear();
         for (const s of seated) {
           const u = s.occupant!;
@@ -672,6 +707,8 @@ export class PlacedItem {
       pxp: this.pendingXp || undefined,
       setup: this.paidSetup ? { ...this.paidSetup, extras: [...this.paidSetup.extras] } : undefined,
       dirty: this.dirty || undefined,
+      // Saved for every table (false too): a table with no flag comes from before dealers.
+      dl: this.needsDealer ? this.dealer : undefined,
     };
   }
 }
@@ -695,6 +732,8 @@ export interface SavedItem {
   /** Hotel room decoration. */
   setup?: RoomSetup;
   dirty?: boolean;
+  /** Table games: a dealer is hired (missing on saves from before dealers: those get one). */
+  dl?: boolean;
 }
 
 function pickOf<T>(arr: T[]): T {

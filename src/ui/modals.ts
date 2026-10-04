@@ -15,7 +15,7 @@ import { audio } from '../core/audio';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
-import { MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
+import { DEALER_WAGE, MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
 import { HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, vaultTier } from '../game/house';
 import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
@@ -222,6 +222,26 @@ export class Modals {
         ));
       }
       body.appendChild(roles);
+      const tables = g.site === 'casino' ? g.dealerTables : [];
+      if (tables.length) {
+        const missing = tables.filter((t) => !t.dealer).length;
+        body.appendChild(h('div', { class: 'field-label', text: `Dealers · ${tables.length - missing}/${tables.length} tables · ${formatMoney(g.dealerWages)}/day` }));
+        body.appendChild(h('p', { class: 'muted small', text: `Every table game needs a dealer (${formatMoney(DEALER_WAGE)} a day each). A table without one only runs while you stand beside it and hold Space to deal yourself.` }));
+        if (missing) body.appendChild(h('button', { class: 'btn gold small', text: `${missing > 1 ? `Hire dealers for all ${missing} tables` : 'Hire a dealer for it'} · ${formatMoney(missing * DEALER_WAGE)}`, onClick: () => { g.hireAllDealers(); render(); } }));
+        const list = h('div', { class: 'staff-list' });
+        for (const t of tables) {
+          list.appendChild(h('div', { class: 'staff-row' },
+            h('div', {}, h('b', { text: t.def.name }), h('span', { class: `muted${t.dealer ? '' : ' neg'}`, text: t.dealer ? ' · dealer on duty' : ' · no dealer' })),
+            h('div', { class: 'btn-row' },
+              h('button', { class: 'btn small', text: 'Find', onClick: () => { this.close(); g.select({ kind: 'item', item: t }); g.cam.focus.set(t.cx, 0, t.cz); } }),
+              t.dealer
+                ? h('button', { class: 'btn small danger', text: 'Let go', onClick: () => { g.fireDealer(t); render(); } })
+                : h('button', { class: 'btn small gold', text: `Hire · ${formatMoney(DEALER_WAGE)}`, onClick: () => { g.hireDealer(t); render(); } }),
+            ),
+          ));
+        }
+        body.appendChild(list);
+      }
       if (g.workers.length) {
         const list = h('div', { class: 'staff-list' });
         for (const w of g.workers) {
