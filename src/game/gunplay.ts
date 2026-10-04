@@ -9,6 +9,9 @@ import type { Ped } from '../world/crowd';
 import { HEAT, type Officer } from '../world/police';
 import { shotDamage } from './driving';
 import { mat } from '../render/materials';
+import { type Attack } from './melee';
+/** Chance a passer-by you punch (and don't knock out) fights back. */
+const BRAWL_CHANCE = 0.4;
 
 interface Tracer {
   mesh: THREE.Mesh;
@@ -87,6 +90,8 @@ export class GunPlay {
   firePressed = false;
   /** Total shots (other players see your muzzle flash when it changes). */
   shots = 0;
+  /** Heavy melee blows swung (others see the big swing). */
+  heavies = 0;
   private spinV = 0;
   private aimYaw: number | null = null;
   private aimHold = 0;
@@ -188,7 +193,7 @@ export class GunPlay {
   /** Aiming down the sights (first person, right mouse or the AIM button). */
   get aiming(): boolean {
     const g = this.g;
-    return this.firstPerson && this.reloading <= 0 && !g.modalOpen && (g.input.rightHeld || this.adsTouch);
+    return this.firstPerson && !this.def?.melee && this.reloading <= 0 && !g.modalOpen && (g.input.rightHeld || this.adsTouch);
   }
 
   /** Fully zoomed in, looking through a scope (it fills the screen instead of the gun). */
@@ -504,7 +509,26 @@ export class GunPlay {
     const ready = this.cool <= 0 && this.reloading <= 0 && !rolling;
     const want = pressed || (this.queued > 0 && ready);
     this.burstT = Math.max(0, this.burstT - dt);
-    if (d?.charge) {
+    const brawl = g.combat.brawl;
+    if (d?.melee && this.canShoot) {
+      // Fists and melee weapons: tap to jab, hold to wind up a heavy, right mouse (AIM) to block.
+      this.queued = 0;
+      const block = !blocked && (input.rightHeld || this.adsTouch);
+      // A click that came and went within one frame still counts as a tap (it lands next frame).
+      const atk = brawl.update(dt, { held: (held || pressed) && !rolling, block, rate: d.rate, base: d.dmg, now: performance.now() });
+      if (brawl.charge > 0 && Math.random() < dt * 20) {
+        const p = g.player;
+        const hx = p.x + Math.sin(p.yaw) * 0.45;
+        const hz = p.z + Math.cos(p.yaw) * 0.45;
+        g.effects.sparkle(hx, 1.25, hz, 1, brawl.charge >= 1 ? 0xff5a3a : 0xffc53d, 0.15 + brawl.charge * 0.2);
+      }
+      if (atk && !rolling) this.swing(d, atk);
+    } else {
+      brawl.update(dt, { held: false, block: false, rate: 1, base: 0, now: performance.now() });
+    }
+    if (d?.melee) {
+      // (handled above)
+    } else if (d?.charge) {
       // Railgun: hold to charge, let go to fire. The longer the charge, the harder it hits.
       this.queued = 0;
       if (held && this.canShoot && ready) {
@@ -549,8 +573,7 @@ export class GunPlay {
           g.notify(g.inside ? 'Guns stay holstered indoors: step out onto the street to shoot.' : 'You can only shoot out on the street.', 'bad');
         }
       } else if (ready) {
-        if (d.melee) this.swing(d);
-        else if (d.kind === 'minigun' && this.spinV < 12) {
+        if (d.kind === 'minigun' && this.spinV < 12) {
           // Barrels spin up first.
         } else this.fire(d);
       }
@@ -1124,12 +1147,15 @@ export class GunPlay {
    * Swing a melee weapon: everyone (and everything) in a cone in front of you within reach
    * gets hit. Same street-only rules, damage, knockouts and police heat as guns.
    */
-  private swing(d: GunDef): void {
+  private swing(d: GunDef, atk: Attack): void {
     const g = this.g;
     const st = g.street;
     const p = g.player;
-    this.cool = 1 / d.rate;
+    const dmg = atk.dmg;
+    // A heavy blow or a combo finisher sends people flying (and lunges you in).
+    const big = atk.heavy || atk.step === 2 || atk.riposte;
     this.shots++;
+    if (atk.heavy) this.heavies++;
     g.stats.shotsFired++;
     const fp = g.cam.mode === 'first';
     let yaw = this.aimYaw !== null && this.aimHold > 0 ? this.aimYaw : p.yaw;
@@ -1138,7 +1164,8 @@ export class GunPlay {
     p.model.root.rotation.y = yaw;
     p.model.swing = 1;
     this.swingT = 0.35;
-    audio.play('whoosh', { pitch: 1.3 + Math.random() * 0.3, volume: 0.6 });
+    audio.play('whoosh', { pitch: (atk.heavy ? 0.85 : 1.3) + Math.random() * 0.3, volume: atk.heavy ? 0.9 : 0.6 });
+    g.lunge(yaw, atk.heavy ? 0.9 : big ? 0.55 : 0.3);
     const og = st.worldToGlobal(p.x, p.z);
     const flip = st.placeOf(st.activeId).side === 1;
     const gdx = (flip ? -1 : 1) * Math.sin(yaw);
@@ -1155,17 +1182,21 @@ export class GunPlay {
       return new THREE.Vector3(w.x, y, w.z);
     };
     let landed = 0;
+    const label = `${dmg}${atk.riposte ? ' COUNTER!' : atk.heavy ? '!' : ''}`;
     const thump = () => {
-      if (!landed) audio.play('thud', { pitch: 0.9 + Math.random() * 0.2 });
+      if (!landed) audio.play('thud', { pitch: (atk.heavy ? 0.65 : 0.9) + Math.random() * 0.2, volume: big ? 1 : 0.8 });
       landed++;
     };
     for (const ped of st.crowd.around(og.x, og.z, reach)) {
       if (!inCone(ped.x - og.x, ped.z - og.z)) continue;
       const at = hitAt(ped.x, ped.z, 1.2);
-      const r = st.crowd.damage(ped, d.dmg, gdx, gdz);
-      st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      const r = st.crowd.damage(ped, dmg, big ? gdx * 3 : gdx, big ? gdz * 3 : gdz);
+      // Hitting someone who's already fighting you is self-defence.
+      if (!ped.fight) st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      else if (atk.riposte || big) st.crowd.stagger(ped, big ? 0.9 : 0.4);
+      if (!r.ko && !ped.fight && Math.random() < BRAWL_CHANCE) st.crowd.provoke(ped);
       fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
-      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(at.clone().setY(1.7), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, r.ko);
       if (r.ko) g.onStreetKnockout(r.cash, at);
       thump();
@@ -1173,9 +1204,9 @@ export class GunPlay {
     for (const o of st.police.officers) {
       if (o.ko > 0 || o.leaving > 0 || !inCone(o.x - og.x, o.z - og.z)) continue;
       const at = hitAt(o.x, o.z, 1.2);
-      const ko = st.police.damage(o, d.dmg);
+      const ko = st.police.damage(o, dmg);
       fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
-      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(at.clone().setY(1.7), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, ko);
       if (ko) g.stats.knockouts++;
       thump();
@@ -1183,10 +1214,10 @@ export class GunPlay {
     for (const r of g.combat.remoteTargets()) {
       const rg = st.worldToGlobal(r.x, r.z);
       if (!inCone(rg.x - og.x, rg.z - og.z)) continue;
-      g.combat.onHitRemote?.(r.pid, d.dmg);
+      g.combat.onMeleeRemote?.(r.pid, dmg, atk.heavy);
       st.police.crime(HEAT.hitPerson);
       fx.sparkle(r.x, 1.2, r.z, 6, 0xffffff, 0.3);
-      g.floaters.text(new THREE.Vector3(r.x, 1.7, r.z), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(new THREE.Vector3(r.x, 1.7, r.z), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, false);
       thump();
     }
@@ -1201,9 +1232,9 @@ export class GunPlay {
     for (const so of g.base.soldiers) {
       if (so.ko > 0 || so.y > 1 || !inCone(so.x - og.x, so.z - og.z)) continue;
       const at = hitAt(so.x, so.z, 1.2);
-      const ko = g.base.damage(so, d.dmg);
+      const ko = g.base.damage(so, dmg);
       fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
-      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(at.clone().setY(1.7), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, ko);
       if (ko) g.stats.knockouts++;
       thump();
@@ -1211,14 +1242,14 @@ export class GunPlay {
     for (const c of st.city.traffic) {
       if (!c.root.visible || !inCone(c.x - og.x, c.z - og.z)) continue;
       st.city.hitCar(c);
-      g.drive.hurtTraffic(c, shotDamage(d.dmg), true);
+      g.drive.hurtTraffic(c, shotDamage(dmg), true);
       g.stats.carsHit++;
       st.police.crime(HEAT.car, false);
       audio.play('carAlarm');
       landed++;
       break;
     }
-    if (landed) g.cam.shake(0.05);
+    if (landed) g.cam.shake(big ? 0.1 : 0.05);
     g.events.emit('guns', undefined);
   }
 

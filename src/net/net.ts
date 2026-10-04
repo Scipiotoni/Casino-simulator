@@ -173,6 +173,14 @@ interface Remote {
   prot: boolean;
   /** Their running totals of damage dealt to you and cash owed to you (undefined = not seen yet). */
   seenHits?: number;
+  /** Their melee running totals against you: damage, heavy blows, and your hits they parried. */
+  seenMelee?: number;
+  seenHeavy?: number;
+  seenParry?: number;
+  /** Fist-fight stance they publish: blocking, winding up a heavy (0..1), stunned. */
+  blocking: boolean;
+  charge: number;
+  stunned: boolean;
   seenLoot?: number;
   hpEl: HTMLElement;
   nameEl: HTMLElement;
@@ -284,6 +292,10 @@ export class Net {
   /** Damage you've dealt to each player and cash they owe you from knockouts (running totals this session). */
   private hits: Record<string, number> = {};
   private loot: Record<string, number> = {};
+  /** Melee: damage and heavy blows you've landed on each player, and their hits you parried (running totals). */
+  private melee: Record<string, number> = {};
+  private heavy: Record<string, number> = {};
+  private parries: Record<string, number> = {};
   /** Your recent chat lines, sent along with your presence. */
   private chatOut: { i: string; t: string; at: number }[] = [];
   private chatN = 0;
@@ -310,6 +322,16 @@ export class Net {
     game.combat.onHitRemote = (pid, dmg) => {
       this.hits[pid] = (this.hits[pid] ?? 0) + dmg;
       this.lastHitAt[pid] = Date.now();
+      this.presenceT = 0;
+    };
+    game.combat.onMeleeRemote = (pid, dmg, heavy) => {
+      this.melee[pid] = (this.melee[pid] ?? 0) + dmg;
+      if (heavy) this.heavy[pid] = (this.heavy[pid] ?? 0) + 1;
+      this.lastHitAt[pid] = Date.now();
+      this.presenceT = 0;
+    };
+    game.combat.onParry = (pid) => {
+      this.parries[pid] = (this.parries[pid] ?? 0) + 1;
       this.presenceT = 0;
     };
     game.combat.onLoot = (pid, amount) => {
@@ -423,6 +445,7 @@ export class Net {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, gm: '', shots: 0, held: null, label, visible: false,
           bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, wl: 0,
           buf: [], bufLot: '', gap: 120, vel: 0, rolls: -1, reloading: false, rollT: 0, reloadT: 0, ks: 0, feedSeen: new Set(), gifts: [],
+          blocking: false, charge: 0, stunned: false,
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -566,6 +589,32 @@ export class Net {
       r.seenHits = hits;
       // Only shots fired out on the street, from close enough to reach you, count.
       if (r.out && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 150) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
+    }
+    // Fist fights: their punches and swings at you get blocked, parried or taken on your side.
+    r.blocking = pr.bk === 1;
+    r.stunned = pr.stn === 1;
+    r.charge = Math.max(0, Math.min(1, num(pr.mc)));
+    const mel = cleanNumbers(pr.mh)[this.pid] ?? 0;
+    const hev = cleanNumbers(pr.mhh)[this.pid] ?? 0;
+    if (r.seenMelee === undefined || mel < r.seenMelee) {
+      r.seenMelee = mel;
+      r.seenHeavy = hev;
+    } else if (mel > r.seenMelee) {
+      const dmg = Math.min(300, mel - r.seenMelee);
+      const heavy = hev > (r.seenHeavy ?? hev);
+      r.seenMelee = mel;
+      r.seenHeavy = hev;
+      // Only from someone actually standing next to you out on the street.
+      if (r.out && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 6) g.combat.meleeHit(dmg, heavy, r.pid, r.name, r.x, r.z);
+    }
+    const par = cleanNumbers(pr.pa)[this.pid] ?? 0;
+    if (r.seenParry === undefined || par < r.seenParry) r.seenParry = par;
+    else if (par > r.seenParry) {
+      r.seenParry = par;
+      g.combat.brawl.parried(performance.now());
+      audio.play('clack', { pitch: 0.8 });
+      g.floaters.text(g.player.model.root.position.clone().setY(g.player.model.height + 0.6), `${r.name} PARRIED you!`, 'bad', 1.2, 0.9);
+      g.cam.shake(0.06);
     }
     const loot = cleanNumbers(pr.loot)[this.pid] ?? 0;
     if (r.seenLoot === undefined || loot < r.seenLoot) r.seenLoot = loot;
@@ -980,6 +1029,12 @@ export class Net {
       chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
       loot: this.loot,
+      mh: this.melee,
+      mhh: this.heavy,
+      pa: this.parries,
+      bk: g.gunplay.drawn && g.gunplay.def?.melee && g.combat.brawl.blocking ? 1 : 0,
+      mc: g.gunplay.drawn ? Math.round(g.combat.brawl.charge * 10) / 10 : 0,
+      stn: g.combat.brawl.stunned ? 1 : 0,
       look: p.appearance,
       bans,
       owes: g.net.owes,
@@ -1007,6 +1062,11 @@ export class Net {
     if (JSON.stringify(data).length > 3800) delete casino.house;
     if (JSON.stringify(data).length > 3800) delete data.cos;
     if (JSON.stringify(data).length > 3800) data.hits = trimTop(this.hits, 8);
+    if (JSON.stringify(data).length > 3800) {
+      data.mh = trimTop(this.melee, 6);
+      data.mhh = trimTop(this.heavy, 6);
+      data.pa = trimTop(this.parries, 6);
+    }
     if (JSON.stringify(data).length > 3800) data.chat = (data.chat as unknown[]).slice(-1);
     return data;
   }
@@ -1183,8 +1243,15 @@ export class Net {
         m.reloadK = 0;
       }
       r.label.classList.toggle('bounty', r.ks >= 3);
+      // Their fist-fight stance: guard up, a heavy blow glowing in their fist, seeing stars.
+      if (r.charge > 0 && Math.random() < dt * 18) {
+        const yaw = m.root.rotation.y;
+        g.effects.sparkle(r.x + Math.sin(yaw) * 0.45, 1.25, r.z + Math.cos(yaw) * 0.45, 1, r.charge >= 1 ? 0xff5a3a : 0xffc53d, 0.15 + r.charge * 0.2);
+      }
+      if (r.stunned && Math.random() < dt * 3) g.floaters.text(new THREE.Vector3(r.x, m.height + 0.5, r.z), '💫', '', 0.6, 0.4);
       if (r.ko) m.setPose('ko');
       else if (r.car) m.setPose('sit');
+      else if (r.blocking && r.vel < 2.5) m.setPose('handsUp');
       else if (r.vel > 0.35 || (r.moving && r.vel > 0.1)) {
         // Walk or run at the pace they're really going (no stepping in place, no sliding).
         m.moveSpeed = r.vel / 1.4;

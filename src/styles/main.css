@@ -5696,3 +5696,61 @@ p.small {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+
+/* ------------------------------------------------------------ fist fights: stamina and stance */
+.stbar {
+  left: 16px;
+  bottom: calc(var(--safe-bottom) + 142px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 12px;
+  background: rgba(23, 21, 31, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  font: 800 12px var(--font-body);
+  max-width: min(200px, calc(100vw - 32px));
+}
+.st-ico {
+  color: var(--gold);
+}
+.st-track {
+  width: 80px;
+  height: 7px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  flex: none;
+}
+.st-track i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ffc53d, #ffe08a);
+  transition: width 0.1s linear;
+}
+.stbar.low .st-track i {
+  background: linear-gradient(90deg, #ff8a5c, #ffb45a);
+}
+.st-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.9;
+}
+.stbar.alert {
+  border-color: var(--gold);
+  box-shadow: 0 0 14px rgba(255, 197, 61, 0.45);
+}
+@media (max-width: 640px) {
+  .stbar {
+    left: 8px;
+    bottom: calc(var(--safe-bottom) + 196px);
+  }
+  .st-track {
+    width: 72px;
+  }
+}
+.gb-fists.on {
+  background: var(--gold);
+  color: var(--gold-ink);
+}

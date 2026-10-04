@@ -55,7 +55,7 @@ import {
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
-import { SLOTS, autoSlot } from './guns';
+import { FISTS, SLOTS, autoSlot, hasWeapon } from './guns';
 import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
 import { Driving, type GarageState, emptyGarage, sanitizeGarage, shotDamage } from './driving';
 import { type Activity, activityFor, PRACTICE_LABEL, punchPay } from './activities';
@@ -387,6 +387,15 @@ export class Game implements World, ItemHost {
     this.build = new BuildController(this);
     this.gunplay = new GunPlay(this);
     this.combat = new Combat(this);
+    this.street.crowd.onPunch = (p, dmg) => {
+      const w = this.street.globalToWorld(p.x, p.z);
+      audio.playAt('whoosh', w.x, w.z, 0.6);
+      return this.combat.meleeHit(dmg, false, 'world', 'a street brawler', w.x, w.z);
+    };
+    this.street.crowd.onTell = (p, text) => {
+      const w = this.street.globalToWorld(p.x, p.z);
+      this.floaters.text(new THREE.Vector3(w.x, p.model.height + 0.5, w.z), text, text === '!' ? 'bad' : '', text === '!' ? 0.55 : 1.6, 0.3);
+    };
     this.drive = new Driving(this);
     this.street.city.group.add(this.drive.group, this.beacon.group);
     this.base = this.makeBase();
@@ -1515,13 +1524,25 @@ export class Game implements World, ItemHost {
     this.equipGun(this.guns.equipped === id ? null : id);
   }
 
+  private meleeHinted = false;
+
+  /** Step into a punch or a swing (a little lunge the way you face). */
+  lunge(yaw: number, dist: number): void {
+    if (this.drive.driving || this.player.seat || this.combat.rolling) return;
+    this.player.shove(Math.sin(yaw) * dist, Math.cos(yaw) * dist, this.playerWalk);
+  }
+
   /** Draw a gun you own, or holster (null). */
   equipGun(id: string | null): void {
-    if (id && !this.guns.owned.includes(id)) return;
+    if (id && !hasWeapon(this.guns.owned, id)) return;
     // Switching weapons drops whatever the last one was doing (a reload, a burst, a charge).
     if (id !== this.guns.equipped) this.gunplay.switched();
     this.guns = { ...this.guns, equipped: id };
     audio.play(id ? 'reload' : 'click');
+    if (id && gunDef(id)?.melee && !this.meleeHinted) {
+      this.meleeHinted = true;
+      this.notify('👊 Tap to jab (3-hit combos), hold to wind up a heavy blow, hold right-click (AIM on touch) to block. Block just as a hit lands to PARRY: they’re stunned and your next hit counts double.', 'info');
+    }
     this.events.emit('guns', undefined);
     this.requestSave();
   }
@@ -4165,6 +4186,8 @@ export class Game implements World, ItemHost {
       if (!this.build.active) {
         // 1–5: weapon slots. 6–9: emotes.
         for (let k = 0; k < SLOTS; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.useSlot(k);
+        // X (or 0): fists up, or put them down.
+        if (input.hit('KeyX') || input.hit('Digit0') || input.hit('Numpad0')) this.equipGun(this.guns.equipped === FISTS ? null : FISTS);
         if (input.hit('Digit6')) this.player.playEmote('wave', 2);
         if (input.hit('Digit7')) this.player.playEmote('dance', 4);
         if (input.hit('Digit8')) this.player.playEmote('cheer', 2);
@@ -4230,6 +4253,17 @@ export class Game implements World, ItemHost {
       }
       const c = this.combat;
       if (c.rolling) ix = iz = 0;
+      // Fist fights: blocking slows you to a shuffle, being stunned nearly roots you.
+      const br = c.brawl;
+      if (br.stunned) {
+        ix *= 0.2;
+        iz *= 0.2;
+        if (Math.random() < dt * 3) this.floaters.text(this.player.model.root.position.clone().setY(this.player.model.height + 0.5), '💫', '', 0.6, 0.4);
+      } else if (br.blocking && this.gunplay.drawn) {
+        ix *= 0.5;
+        iz *= 0.5;
+        this.player.playEmote('handsUp', 0.12);
+      }
       this.player.model.roll = c.rolling ? 1 - c.rollT / ROLL_TIME : 0;
       const rp = this.gunplay.reloadProgress;
       this.player.model.reloadK = rp >= 0 ? rp : 0;
@@ -4356,7 +4390,10 @@ export class Game implements World, ItemHost {
     const pg = this.street.worldToGlobal(this.player.x, this.player.z);
     this.street.city.player.x = this.inside ? -9999 : pg.x;
     this.street.city.player.z = pg.z;
-    this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
+    // Street brawlers come after you while you're out there and on your feet.
+    const crowd = this.street.crowd;
+    crowd.foe = this.state === 'playing' && this.combat.exposed && this.combat.ko <= 0 && !this.drive.driving ? this.street.worldToGlobal(this.player.x, this.player.z) : null;
+        this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
     // Neon pops a little more after dark
     // The sky follows the clock; indoors the casino keeps its own lighting.
     this.sky.set(this.state === 'playing' ? this.clockMinutes : 19.8 * 60, dt);
