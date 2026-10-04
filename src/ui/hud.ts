@@ -7,7 +7,8 @@ import { MAX_LEVEL, type PlacedItem } from '../items/placedItem';
 import type { Customer } from '../entities/customer';
 import type { Worker } from '../entities/staff';
 import { FLOOR_STYLES } from '../render/textures';
-import { WALL_STYLES } from '../world/walls';
+import { DOOR_TYPES, WALL_STYLES } from '../world/walls';
+import { initHeistUi } from './heistUi';
 import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
@@ -53,6 +54,7 @@ export class Hud {
   private refreshT = 0;
   readonly shop: ShopDrawer;
   readonly modals: Modals;
+  private heistUi: { update(): void };
   readonly minimap: Minimap;
   private bannerQueue: { title: string; text: string; kind: string }[] = [];
   private bannerBusy = false;
@@ -71,6 +73,7 @@ export class Hud {
     this.root = h('div', { class: 'ui', id: 'ui' });
     parent.appendChild(this.root);
     this.modals = new Modals(this.root, game, this);
+    this.heistUi = initHeistUi(game, this.modals, this.root);
     this.shop = new ShopDrawer(this.root, game, this);
     this.minimap = new Minimap(game);
     this.gunBar = new GunBar(game);
@@ -253,6 +256,7 @@ export class Hud {
       if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });
     });
     g.events.on('visit', () => this.renderVisit());
+    g.events.on('heist', () => this.renderVisit());
     const luxe = () => (this.luxeEl.textContent = g.cosmetics.on.map((id) => cosmetic(id)?.icon ?? '').join(''));
     g.events.on('cosmetics', luxe);
     luxe();
@@ -447,13 +451,24 @@ export class Hud {
     }, h('span', { class: 'sw-chip', html: icon('close', 26) }), h('span', { class: 'sw-name', text: 'Knock down' }), h('span', { class: 'sw-price', text: '½ back' })));
     WALL_STYLES.forEach((s, i) => {
       row.appendChild(h('button', {
-        class: `floor-sw${!m.erase && i === m.style ? ' on' : ''}`, title: `${s.name} · $${s.price}/tile`, 'aria-label': s.name,
+        class: `floor-sw${!m.erase && m.door < 0 && i === m.style ? ' on' : ''}`, title: `${s.name} · $${s.price}/tile`, 'aria-label': s.name,
         onClick: () => { g.build.setWallStyle(i, false); audio.play('click'); },
       }, h('span', { class: `sw-chip wall-chip${s.glass ? ' glass' : ''}`, style: `background:${s.swatch};${s.neon ? `box-shadow:inset 0 5px 0 #${s.neon.toString(16).padStart(6, '0')}` : ''}` }),
       h('span', { class: 'sw-name', text: s.name }), h('span', { class: 'sw-price', text: `$${s.price}` })));
     });
+    // Doors hang in the walls: from a plain wooden door to a laser door burglars dread.
+    row.appendChild(h('span', { class: 'sw-sep', text: '🚪' }));
+    DOOR_TYPES.forEach((d, i) => {
+      const locks = d.lock ? `${'🔒'.repeat(Math.min(3, Math.ceil(d.lock / 2)))} lock ${d.lock}` : 'no lock';
+      row.appendChild(h('button', {
+        class: `floor-sw door-sw${m.door === i ? ' on' : ''}`, title: `${d.name} · ${formatMoney(d.price)} · ${d.blurb} (Security +${d.security})`, 'aria-label': d.name,
+        onClick: () => { g.build.setDoorType(i); audio.play('click'); },
+      }, h('span', { class: 'sw-chip door-chip', style: `background:${d.swatch}` }, h('i', { text: d.lock ? '🔒' : '' })),
+      h('span', { class: 'sw-name', text: d.name }), h('span', { class: 'sw-price', text: `${formatMoney(d.price)} · ${locks}` })));
+    });
+    const title = m.erase ? 'Knock down walls & doors' : m.door >= 0 ? `Hang a ${DOOR_TYPES[m.door].name}` : 'Build walls';
     this.wallBar.append(
-      h('div', { class: 'paint-head' }, h('span', { text: '🧱' }), h('b', { text: m.erase ? 'Knock down walls' : 'Build walls' }), this.wallInfo,
+      h('div', { class: 'paint-head' }, h('span', { text: m.door >= 0 ? '🚪' : '🧱' }), h('b', { text: title }), this.wallInfo,
         h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } })),
       row,
     );
@@ -465,6 +480,10 @@ export class Hud {
     const m = g.build.mode;
     if (m.kind !== 'wall') return;
     const n = g.build.wallLine.length;
+    if (m.door >= 0) {
+      this.wallInfo.textContent = `${g.input.isTouch ? 'Tap' : 'Click'} a wall (or the gap between two walls) to hang it`;
+      return;
+    }
     const help = g.input.isTouch ? 'Drag a line across the floor' : 'Click and drag a line · right-click cancels';
     this.wallInfo.textContent = n > 1 ? `${n} tiles${m.erase ? '' : ` · ${formatMoney(g.build.wallCost)}`}` : help;
   }
@@ -776,16 +795,20 @@ export class Hud {
     if (v) {
       clear(this.visitBar);
       const home = g.street.get('me');
+      const house = v.lot.kind === 'house';
       this.visitBar.append(
         h('div', { class: 'vb-text' },
-          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
+          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : house ? `🦹 ${v.lot.owner}'s house` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
           h('span', { class: 'vb-net', dataset: { live: 'vnet' } }),
         ),
-        h('button', {
-          class: 'btn small gold', html: `${icon('casino', 14)} Head home`,
-          onClick: () => { g.returnHome(); audio.play('whoosh'); },
-          title: home ? `Back to ${home.info.look.name}` : 'Back home',
-        }),
+        // Mid-heist there's only one way out: the front door.
+        house && g.heist && !g.heist.over
+          ? h('span', { class: 'chip bad', text: 'Escape through the front door' })
+          : h('button', {
+            class: 'btn small gold', html: `${icon('casino', 14)} Head home`,
+            onClick: () => { g.returnHome(); audio.play('whoosh'); },
+            title: home ? `Back to ${home.info.look.name}` : 'Back home',
+          }),
       );
     }
     this.renderFloors();
@@ -815,6 +838,7 @@ export class Hud {
   update(dt: number): void {
     const g = this.game;
     this.floorBar.hidden = g.floors < 2 || !g.inside;
+    this.heistUi.update();
     this.minimap.update(dt);
     this.gunBar.update();
     this.combatHud.update(dt);
@@ -868,7 +892,9 @@ export class Hud {
         const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;
         if (vn) {
           const n = g.visit.net;
-          vn.textContent = g.visit.lot.kind === 'hotel' ? 'Just looking around' : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
+          vn.textContent = g.visit.lot.kind === 'house'
+            ? (g.heist ? (g.heist.phase === 'looted' ? 'Get out the front door with the cash!' : 'Crack the vault: Space at locked doors and the vault') : 'Back out on the pavement')
+            : g.visit.lot.kind === 'hotel' ? 'Just looking around' : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
           vn.className = `vb-net ${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}`;
         }
       }

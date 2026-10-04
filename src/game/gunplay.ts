@@ -63,7 +63,8 @@ type Hit =
   | { kind: 'soldier'; t: number; soldier: import('../world/militaryBase').Soldier; head: boolean }
   | { kind: 'ped'; t: number; ped: Ped; head: boolean }
   | { kind: 'cop'; t: number; cop: Officer; head: boolean }
-  | { kind: 'player'; t: number; pid: string; name: string; head: boolean };
+  | { kind: 'player'; t: number; pid: string; name: string; head: boolean }
+  | { kind: 'guard'; t: number; target: import('./heist').HeistTarget; head: boolean };
 
 /**
  * Shooting out on the street: the gun in your hand, aiming (mouse on desktop, facing plus a
@@ -168,11 +169,29 @@ export class GunPlay {
     }
   }
 
-  /** Out on the roads and sidewalks with your feet on the ground. */
+  /**
+   * Out on the roads and sidewalks with your feet on the ground, or inside a house where a
+   * heist is going down (robbing it, or defending your own).
+   */
   get canShoot(): boolean {
     const g = this.g;
     const p = g.player;
-    return g.state === 'playing' && !g.inside && p.floor === 0 && !p.seat && !g.photoMode && g.combat.ko <= 0 && g.street.isOutdoors(p.x, p.z);
+    if (g.state !== 'playing' || p.seat || g.photoMode || g.combat.ko > 0) return false;
+    if (g.indoorFight) return true;
+    return !g.inside && p.floor === 0 && g.street.isOutdoors(p.x, p.z);
+  }
+
+  /** Indoors (a heist fight): walls, shut doors, the ceiling and the outside stop a bullet. */
+  private indoorBlocked(x: number, y: number, z: number): boolean {
+    const g = this.g;
+    if (y > 2.95) return true;
+    const f = g.player.floor;
+    const grid = g.gridAt(f);
+    const tx = Math.floor(x);
+    const tz = Math.floor(z);
+    if (!grid.isOwned(tx, tz)) return true;
+    if (grid.solidAt(grid.idx(tx, tz))) return true;
+    return grid.doorAt(tx, tz) >= 0 && (g.levels[f]?.floor.walls.doorOpenness(tx, tz) ?? 1) < 0.45;
   }
 
   /** The gun is drawn and visible in your hand. */
@@ -729,6 +748,7 @@ export class GunPlay {
     const st = g.street;
     const city = st.city;
     let best: Hit = { kind: 'air', t: d.range };
+    const indoor = g.indoorFight;
     // Walls and the ground: march until the bullet leaves the street or hits the pavement.
     for (let t = 0.3; t < d.range; t += 0.25) {
       const x = o.x + dir.x * t;
@@ -738,7 +758,7 @@ export class GunPlay {
         best = { kind: 'ground', t: dir.y < -1e-4 ? Math.max(0, (o.y - 0.02) / -dir.y) : t };
         break;
       }
-      if (y < 60 && !st.isOutdoors(x, z)) {
+      if (indoor ? this.indoorBlocked(x, y, z) : y < 60 && !st.isOutdoors(x, z)) {
         best = { kind: 'wall', t };
         break;
       }
@@ -823,16 +843,29 @@ export class GunPlay {
         if (!flat && (y < 0 || y > r.height + 0.08)) continue;
         best = { kind: 'player', t, pid: r.pid, name: r.name, head: !flat && y > r.height - 0.42 };
       }
+      // A house's guards and its dog, mid-heist.
+      if (g.heist) {
+        for (const c of g.heist.raycast(o.x, o.z, wx, wz, best.t * hlen)) {
+          if (done?.has(c.target)) continue;
+          const t = c.s / hlen;
+          if (t >= best.t) break;
+          const y = yAt(t);
+          if (!flat && (y < 0 || y > c.height + 0.08)) continue;
+          best = { kind: 'guard', t, target: c.target, head: !flat && y > c.height - 0.42 };
+          break;
+        }
+      }
     }
     const t = best.t;
     const hit = new THREE.Vector3(o.x + dir.x * t, flat ? muzzle.y : o.y + dir.y * t, o.z + dir.z * t);
     const fx = g.effects;
-    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player';
+    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player' || best.kind === 'guard';
     if (done) {
       if (best.kind === 'ped') done.add(best.ped);
       else if (best.kind === 'cop') done.add(best.cop);
       else if (best.kind === 'soldier') done.add(best.soldier);
       else if (best.kind === 'player') done.add(best.pid);
+      else if (best.kind === 'guard') done.add(best.target);
     }
     switch (best.kind) {
       case 'car': {
@@ -904,6 +937,17 @@ export class GunPlay {
         g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
         g.combat.landed(best.head, ko);
         if (ko) g.stats.knockouts++;
+        break;
+      }
+      case 'guard': {
+        const dmg = this.dmgOf(d, best.head, t);
+        if (flat) hit.y = 1.2;
+        if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
+        if (dmg <= 0 || !g.heist) break;
+        const ko = g.heist.damage(best.target, dmg);
+        fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
         break;
       }
       case 'cop': {
@@ -1012,6 +1056,21 @@ export class GunPlay {
       st.city.hitTarget(tg, gdx, gdz);
       g.onTargetHit();
     }
+    // Guards and the dog (world frame).
+    if (g.heist) {
+      const wx = Math.sin(yaw);
+      const wz = Math.cos(yaw);
+      for (const t of g.heist.around(p.x, p.z, reach)) {
+        const dx = t.x - p.x;
+        const dz = t.z - p.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.6 && (dx * wx + dz * wz) / dist <= cone) continue;
+        if (!g.heist.clearSight(p.floor, p.x, p.z, t.x, t.z)) continue;
+        const ko = g.heist.damage(t, dmg);
+        if (show) g.floaters.text(new THREE.Vector3(t.x, 1.7, t.z), `🔥${dmg * 4}`, 'dmg', 0.8, 0.6);
+        g.combat.landed(false, ko);
+      }
+    }
   }
 
   /** Fire a grenade or rocket from the muzzle. */
@@ -1077,8 +1136,9 @@ export class GunPlay {
     const g = this.g;
     const st = g.street;
     if (b.y <= 0.1) return true;
-    if (b.y < 60 && !st.isOutdoors(b.x, b.z)) return true;
+    if (g.indoorFight ? this.indoorBlocked(b.x, b.y, b.z) : b.y < 60 && !st.isOutdoors(b.x, b.z)) return true;
     if (b.y > 2.4) return false;
+    if (g.heist && b.y < 2 && g.heist.around(b.x, b.z, 0.55).length) return true;
     const ga = st.worldToGlobal(a.x, a.z);
     const gb = st.worldToGlobal(b.x, b.z);
     const len = Math.hypot(gb.x - ga.x, gb.z - ga.z);
@@ -1114,6 +1174,14 @@ export class GunPlay {
       g.combat.onHitRemote?.(r.pid, dmg);
       g.floaters.text(new THREE.Vector3(r.x, 1.8, r.z), `💥${dmg}`, 'dmg head', 1, 0.8);
       g.combat.landed(false, false);
+    }
+    if (g.heist) {
+      for (const t of g.heist.around(w.x, w.z, ex.radius)) {
+        const dmg = Math.round(power * (1 - Math.hypot(t.x - w.x, t.z - w.z) / ex.radius) * 1.5);
+        if (dmg <= 0) continue;
+        g.floaters.text(new THREE.Vector3(t.x, 1.8, t.z), `💥${dmg}`, 'dmg head', 1, 0.8);
+        g.combat.landed(false, g.heist.damage(t, dmg));
+      }
     }
     st.police.crime(HEAT.hitPerson, false);
     this.booms.push({ i: Math.random().toString(36).slice(2, 9), x: Math.round(gp.x * 10) / 10, z: Math.round(gp.z * 10) / 10, r: ex.radius, t: Date.now() });
@@ -1217,6 +1285,21 @@ export class GunPlay {
       audio.play('carAlarm');
       landed++;
       break;
+    }
+    if (g.heist) {
+      const wx = Math.sin(yaw);
+      const wz = Math.cos(yaw);
+      for (const t of g.heist.around(p.x, p.z, reach)) {
+        const dx = t.x - p.x;
+        const dz = t.z - p.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.4 && (dx * wx + dz * wz) / dist <= cone) continue;
+        const ko = g.heist.damage(t, d.dmg);
+        fx.sparkle(t.x, 1.2, t.z, 6, 0xffffff, 0.3);
+        g.floaters.text(new THREE.Vector3(t.x, 1.7, t.z), `${d.dmg}`, 'dmg', 0.9, 0.7);
+        g.combat.landed(false, ko);
+        thump();
+      }
     }
     if (landed) g.cam.shake(0.05);
     g.events.emit('guns', undefined);

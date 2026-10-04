@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mat } from '../render/materials';
-import type { Grid } from './grid';
+import { DOOR_BASE, type Grid } from './grid';
 import { WALL_H } from './building';
 import { damp } from '../core/math';
 
@@ -41,9 +41,51 @@ export const WALL_STYLES: WallStyle[] = [
   { id: 'hedge', name: 'Garden Hedge', price: 45, color: 0xffffff, trim: 0x2e5a22, rough: 1, pattern: 'hedge', swatch: '#3f7a2e' },
 ];
 
+/** A door hung in a wall line. The lock decides what a burglar has to beat to get through. */
+export interface DoorType {
+  id: string;
+  name: string;
+  price: number;
+  /** 0 = opens for anyone; 1..5 = a lock burglars have to crack (harder each step). */
+  lock: number;
+  /** Points it adds to the house's security rating. */
+  security: number;
+  /** Door leaf colour (and the swatch in the build bar). */
+  color: number;
+  swatch: string;
+  blurb: string;
+}
+
+export const DOOR_TYPES: DoorType[] = [
+  { id: 'wood', name: 'Wooden Door', price: 300, lock: 0, security: 1, color: 0x8a5a2e, swatch: '#8a5a2e', blurb: 'A panelled door. It opens for anyone.' },
+  { id: 'lock', name: 'Deadbolt Door', price: 1500, lock: 1, security: 3, color: 0x4a2a14, swatch: '#4a2a14', blurb: 'A solid door with a deadbolt: burglars have to pick the lock.' },
+  { id: 'steel', name: 'Steel Security Door', price: 6000, lock: 2, security: 5, color: 0x8c9099, swatch: '#8c9099', blurb: 'Riveted steel with a high-security lock: a much harder pick.' },
+  { id: 'keypad', name: 'Keypad Door', price: 15000, lock: 3, security: 7, color: 0x3a3f48, swatch: '#3a3f48', blurb: 'Armoured door with a coded keypad: burglars have to hack it.' },
+  { id: 'blast', name: 'Blast Door', price: 40000, lock: 4, security: 10, color: 0x55585e, swatch: '#c9a227', blurb: 'Vault-grade steel with a combination wheel. A dial and a lock to crack.' },
+  { id: 'laserdoor', name: 'Laser Door', price: 90000, lock: 5, security: 13, color: 0x9fdcff, swatch: '#ff2a2a', blurb: 'Glass and laser bars. The hardest hack there is, and every mistake shocks the burglar.' },
+];
+
+export function doorType(type: number): DoorType {
+  return DOOR_TYPES[type] ?? DOOR_TYPES[0];
+}
+
+/** Doors in an encoded wall layer (a save or another player's floor plan): their types, one per door. */
+export function doorsInEncoded(enc: string | undefined): number[] {
+  const out: number[] = [];
+  if (!enc) return out;
+  for (const part of enc.split(',')) {
+    const [v, n] = part.split(':').map(Number);
+    if (!(v >= DOOR_BASE) || !(n > 0)) continue;
+    for (let k = 0; k < Math.min(n, 400) && out.length < 400; k++) out.push(Math.min(DOOR_TYPES.length - 1, v - DOOR_BASE));
+  }
+  return out;
+}
+
 /** A wall's thickness, and how tall built walls stand (up to the ceiling). */
 const T = 0.24;
 export const BUILT_WALL_H = WALL_H;
+/** Height of a doorway (the lintel fills the rest up to the ceiling). */
+const DOOR_H = 2.2;
 
 /**
  * The cutaway: walls standing between the camera and what you're looking at drop down to a
@@ -320,16 +362,111 @@ export class WallRenderer {
   private height = 1;
   /** 1 = full height, lower values cut the walls down (top-down view). */
   heightTarget = 1;
+  /** Doors in the walls: their swinging leaves. */
+  private doorGroup = new THREE.Group();
+  private doorList: { x: number; z: number; type: number; pivot: THREE.Group; base: number; open: number; want: boolean }[] = [];
+  /** Should the door on this tile be open now (somebody it lets through is close)? Set by the game. */
+  doorOpen: ((x: number, z: number, type: number) => boolean) | null = null;
+  private doorT = 0;
 
   constructor(private grid: Grid) {
     this.group.name = 'walls';
+    this.group.add(this.doorGroup);
+  }
+
+  /** The swinging leaf of one door: hinged on one jamb, it folds down with the walls in the cutaway. */
+  private addDoorLeaf(x: number, z: number, type: number, run: 'x' | 'z'): void {
+    const dt = doorType(type);
+    const dir = run === 'x' ? 1 : 2;
+    const pivot = new THREE.Group();
+    const W = 0.84;
+    const LH = DOOR_H - 0.06;
+    const th = dt.id === 'blast' ? 0.13 : 0.06;
+    const part = (sx: number, sy: number, sz: number, px: number, py: number, pz: number, m: THREE.Material, shadow = true) => {
+      const geo = new THREE.BoxGeometry(sx, sy, sz);
+      geo.translate(px, py, pz);
+      const n = geo.getAttribute('position').count;
+      const cen = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        cen[i * 3] = W / 2;
+        cen[i * 3 + 1] = 0;
+        cen[i * 3 + 2] = dir;
+      }
+      geo.setAttribute('aCenter', new THREE.BufferAttribute(cen, 3));
+      const mesh = new THREE.Mesh(geo, cutaway(m, 0.006));
+      mesh.castShadow = shadow;
+      pivot.add(mesh);
+      return mesh;
+    };
+    const brass = mat(0xd9a531, { rough: 0.3, metal: 0.9 });
+    const dark = mat(0x17151f, { rough: 0.5, metal: 0.4 });
+    if (dt.id === 'laserdoor') {
+      part(W, LH, 0.04, W / 2, LH / 2, 0, mat(0x9fdcff, { rough: 0.05, metal: 0.2, transparent: true, opacity: 0.28, depthWrite: false }), false);
+      part(W, 0.08, 0.08, W / 2, 0.04, 0, dark);
+      part(W, 0.08, 0.08, W / 2, LH - 0.04, 0, dark);
+      part(0.06, LH, 0.08, 0.03, LH / 2, 0, dark);
+      part(0.06, LH, 0.08, W - 0.03, LH / 2, 0, dark);
+      const red = new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+      for (let i = 0; i < 6; i++) part(W - 0.1, 0.02, 0.02, W / 2, 0.3 + i * 0.32, 0, red, false);
+    } else {
+      const leafMat = mat(dt.color, { rough: dt.id === 'wood' || dt.id === 'lock' ? 0.7 : 0.35, metal: dt.id === 'wood' || dt.id === 'lock' ? 0 : 0.75 });
+      part(W, LH, th, W / 2, LH / 2, 0, leafMat);
+      if (dt.id === 'wood' || dt.id === 'lock') {
+        const inset = mat(dt.id === 'wood' ? 0x6b4422 : 0x2e1a0c, { rough: 0.75 });
+        for (const y of [0.62, 1.52]) part(W * 0.62, 0.62, th + 0.02, W / 2, y, 0, inset);
+        part(0.05, 0.05, th + 0.12, W - 0.1, 1.02, 0, brass, false);
+        if (dt.id === 'lock') part(0.09, 0.16, th + 0.03, W - 0.1, 1.22, 0, brass, false);
+      } else if (dt.id === 'steel') {
+        const rivet = mat(0xc9ced6, { rough: 0.3, metal: 0.9 });
+        for (const y of [0.15, LH - 0.15]) for (let i = 0; i < 5; i++) part(0.035, 0.035, th + 0.02, 0.1 + i * ((W - 0.2) / 4), y, 0, rivet, false);
+        part(0.04, 0.4, th + 0.14, W - 0.1, 1.05, 0, rivet, false);
+      } else if (dt.id === 'keypad') {
+        part(W * 0.8, 0.05, th + 0.02, W / 2, 0.5, 0, dark);
+        part(W * 0.8, 0.05, th + 0.02, W / 2, 1.7, 0, dark);
+        const pad = new THREE.MeshBasicMaterial({ color: 0x39ff88, toneMapped: false });
+        part(0.12, 0.17, th + 0.04, W - 0.13, 1.2, 0, pad, false);
+        part(0.04, 0.35, th + 0.12, W - 0.1, 0.95, 0, dark, false);
+      } else if (dt.id === 'blast') {
+        const hazard = mat(0xf2c12e, { rough: 0.5, metal: 0.3 });
+        for (const y of [0.18, LH - 0.18]) part(W, 0.12, th + 0.02, W / 2, y, 0, hazard, false);
+        const wheel = new THREE.TorusGeometry(0.2, 0.03, 6, 18);
+        for (const sd of [-1, 1]) {
+          const g2 = wheel.clone();
+          g2.translate(W / 2, 1.1, sd * (th / 2 + 0.04));
+          const n = g2.getAttribute('position').count;
+          const cen = new Float32Array(n * 3);
+          for (let i = 0; i < n; i++) {
+            cen[i * 3] = W / 2;
+            cen[i * 3 + 2] = dir;
+          }
+          g2.setAttribute('aCenter', new THREE.BufferAttribute(cen, 3));
+          pivot.add(new THREE.Mesh(g2, cutaway(mat(0xc9ced6, { rough: 0.3, metal: 0.9 }), 0.006)));
+        }
+        wheel.dispose();
+      }
+    }
+    // Hinged on one jamb; the leaf runs along the wall line when it's shut.
+    const cx = x + 0.5;
+    const cz = z + 0.5;
+    const base = run === 'x' ? 0 : -Math.PI / 2;
+    if (run === 'x') pivot.position.set(cx - W / 2, 0, cz);
+    else pivot.position.set(cx, 0, cz - W / 2);
+    pivot.rotation.y = base;
+    this.doorGroup.add(pivot);
+    this.doorList.push({ x, z, type, pivot, base, open: 0, want: false });
   }
 
   rebuild(): void {
     for (const c of [...this.group.children]) {
+      if (c === this.doorGroup) continue;
       c.removeFromParent();
       (c as THREE.Mesh).geometry?.dispose();
     }
+    for (const c of [...this.doorGroup.children]) {
+      c.removeFromParent();
+      c.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+    }
+    this.doorList = [];
     const g = this.grid;
     const bodies = new Map<number, BoxBatch>();
     const trims = new Map<number, BoxBatch>();
@@ -340,17 +477,24 @@ export class WallRenderer {
       return b;
     };
     const H = BUILT_WALL_H;
+    const doorTiles: { x: number; z: number; type: number }[] = [];
     for (let z = g.zMin; z < g.zMin + g.d; z++) {
       for (let x = 0; x < g.w; x++) {
+        const dt = g.doorAt(x, z);
+        if (dt >= 0) {
+          doorTiles.push({ x, z, type: dt });
+          continue;
+        }
         const s = g.wallAt(x, z);
         if (s < 0) continue;
         const st = WALL_STYLES[s] ?? WALL_STYLES[0];
         const cx = x + 0.5;
         const cz = z + 0.5;
-        const e = g.isWall(x + 1, z);
-        const w = g.isWall(x - 1, z);
-        const so = g.isWall(x, z + 1);
-        const n = g.isWall(x, z - 1);
+        // Walls reach out to their neighbours, doors included.
+        const e = g.inWallLine(x + 1, z);
+        const w = g.inWallLine(x - 1, z);
+        const so = g.inWallLine(x, z + 1);
+        const n = g.inWallLine(x, z - 1);
         const lone = !e && !w && !so && !n;
         const pieces: [number, number, number, number][] = [];
         // A lone tile stands as a short stretch of wall; otherwise a post plus arms.
@@ -429,6 +573,46 @@ export class WallRenderer {
         }
       }
     }
+    // Door frames: a lintel up to the ceiling in the wall's own style, jambs and a header.
+    for (const d of doorTiles) {
+      const run = g.doorRun(d.x, d.z) ?? (g.inWallLine(d.x - 1, d.z) || g.inWallLine(d.x + 1, d.z) ? 'x' : 'z');
+      const nb = run === 'x' ? [g.wallAt(d.x - 1, d.z), g.wallAt(d.x + 1, d.z)] : [g.wallAt(d.x, d.z - 1), g.wallAt(d.x, d.z + 1)];
+      const s = Math.max(0, nb.find((v) => v >= 0) ?? 0);
+      const st = WALL_STYLES[s] ?? WALL_STYLES[0];
+      const body = batch(bodies, s);
+      const trim = batch(trims, s);
+      const cx = d.x + 0.5;
+      const cz = d.z + 0.5;
+      const dir = run === 'x' ? 1 : 2;
+      for (const b of [body, trim]) {
+        b.cx = cx;
+        b.cz = cz;
+        b.dir = dir;
+      }
+      const along = (len: number, thick: number): [number, number] => (run === 'x' ? [len, thick] : [thick, len]);
+      const [lx, lz] = along(1, T);
+      body.add(cx, (DOOR_H + H) / 2, cz, lx, H - DOOR_H, lz);
+      for (const sd of [-1, 1]) {
+        const off = sd * (0.5 - 0.045);
+        const [jx, jz] = along(0.09, T + 0.07);
+        trim.add(run === 'x' ? cx + off : cx, DOOR_H / 2, run === 'x' ? cz : cz + off, jx, DOOR_H, jz);
+      }
+      const [hx, hz] = along(1, T + 0.07);
+      trim.add(cx, DOOR_H + 0.05, cz, hx, 0.1, hz);
+      const [c1x, c1z] = along(1, T + 0.06);
+      trim.add(cx, H - 0.1, cz, c1x, 0.08, c1z);
+      const [c2x, c2z] = along(1, T + 0.12);
+      trim.add(cx, H - 0.025, cz, c2x, 0.05, c2z);
+      if (st.neon) {
+        const nb2 = batch(neons, s);
+        nb2.cx = cx;
+        nb2.cz = cz;
+        nb2.dir = dir;
+        const [nx, nz] = along(1, T + 0.09);
+        nb2.add(cx, H - 0.17, cz, nx, 0.04, nz);
+      }
+      this.addDoorLeaf(d.x, d.z, d.type, run);
+    }
     for (const [s, b] of bodies) {
       const st = WALL_STYLES[s] ?? WALL_STYLES[0];
       const m = styleMats(st);
@@ -449,6 +633,23 @@ export class WallRenderer {
   update(dt: number): void {
     this.height = damp(this.height, this.heightTarget, 8, dt);
     this.group.scale.y = this.height;
-    this.group.visible = this.group.children.length > 0;
+    this.group.visible = this.group.children.length > 1 || this.doorList.length > 0;
+    // Doors swing open for whoever they let through, and shut behind them.
+    if (!this.doorList.length) return;
+    this.doorT -= dt;
+    const check = this.doorT <= 0;
+    if (check) this.doorT = 0.12;
+    for (const d of this.doorList) {
+      if (check) d.want = !!this.doorOpen?.(d.x, d.z, d.type);
+      const want = d.want ? 1 : 0;
+      const before = d.open;
+      d.open = damp(d.open, want, want ? 7 : 4, dt);
+      if (Math.abs(d.open - before) > 1e-4) d.pivot.rotation.y = d.base - d.open * 1.5;
+    }
+  }
+
+  /** How far the door on this tile stands open (0 shut .. 1 open), or -1 if there's none. */
+  doorOpenness(x: number, z: number): number {
+    return this.doorList.find((d) => d.x === x && d.z === z)?.open ?? -1;
   }
 }

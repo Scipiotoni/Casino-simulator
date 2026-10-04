@@ -85,6 +85,12 @@ export function layoutRect(l: Layout): Rect {
   return { x0: CENTER_X - w / 2, x1: CENTER_X + w / 2 - 1, z0: FACADE_Z - d, z1: FACADE_Z - 1 };
 }
 
+/**
+ * Values of the wall layer: 0 = nothing, 1..DOOR_BASE-1 = a wall (style + 1), DOOR_BASE + n =
+ * a door of type n. Doors sit in wall lines and let people through.
+ */
+export const DOOR_BASE = 200;
+
 const F_OWNED = 1;
 const F_SIDEWALK = 2;
 const F_DOOR = 4;
@@ -103,7 +109,7 @@ export class Grid {
   floorOcc = new Int32Array(0);
   /** Carpet style index per tile. */
   floor = new Uint8Array(0);
-  /** Built wall per tile: style index + 1 (0 = no wall). Walls block walking. */
+  /** Built wall per tile: style index + 1 (0 = no wall), or DOOR_BASE + door type. Walls block walking, doors don't. */
   wall = new Uint8Array(0);
   /** Bumped whenever walkability changes so cached paths can be invalidated. */
   version = 0;
@@ -217,29 +223,75 @@ export class Grid {
     const f = this.flags[i];
     if (f & (F_SIDEWALK | F_DOOR)) return this.occ[i] === 0;
     if (!(f & F_OWNED)) return false;
-    return this.occ[i] === 0 && this.wall[i] === 0;
+    return this.occ[i] === 0 && !this.solidAt(i);
   }
 
-  /** Wall style on a tile (-1 = none). */
+  /** A solid wall (not a door) at this tile index. */
+  solidAt(i: number): boolean {
+    const v = this.wall[i];
+    return v > 0 && v < DOOR_BASE;
+  }
+
+  /** Wall style on a tile (-1 = none, or a door). */
   wallAt(x: number, z: number): number {
-    return this.inBounds(x, z) ? this.wall[this.idx(x, z)] - 1 : -1;
+    if (!this.inBounds(x, z)) return -1;
+    const v = this.wall[this.idx(x, z)];
+    return v > 0 && v < DOOR_BASE ? v - 1 : -1;
   }
 
+  /** A solid wall on this tile (doors don't count). */
   isWall(x: number, z: number): boolean {
     return this.wallAt(x, z) >= 0;
+  }
+
+  /** Door type on a tile (-1 = none). */
+  doorAt(x: number, z: number): number {
+    if (!this.inBounds(x, z)) return -1;
+    const v = this.wall[this.idx(x, z)];
+    return v >= DOOR_BASE ? v - DOOR_BASE : -1;
+  }
+
+  /** A wall or a door: part of a wall line (walls join up to doors). */
+  inWallLine(x: number, z: number): boolean {
+    return this.inBounds(x, z) && this.wall[this.idx(x, z)] > 0;
   }
 
   /** Put up (style ≥ 0) or knock down (-1) a wall on an owned tile. */
   setWall(x: number, z: number, style: number): void {
     if (!this.isOwned(x, z)) return;
-    this.wall[this.idx(x, z)] = style < 0 ? 0 : Math.min(250, style + 1);
+    this.wall[this.idx(x, z)] = style < 0 ? 0 : Math.min(DOOR_BASE - 1, style + 1);
     this.version++;
+  }
+
+  /** Hang a door (type ≥ 0) on an owned tile, or take it out (-1). */
+  setDoor(x: number, z: number, type: number): void {
+    if (!this.isOwned(x, z)) return;
+    this.wall[this.idx(x, z)] = type < 0 ? 0 : Math.min(250, DOOR_BASE + type);
+    this.version++;
+  }
+
+  /**
+   * Which way a door on this tile runs: 'x' when the wall line goes east–west through it,
+   * 'z' north–south, null when it isn't between two walls (or the building's outer wall).
+   */
+  doorRun(x: number, z: number): 'x' | 'z' | null {
+    const side = (tx: number, tz: number) => this.inWallLine(tx, tz) || !this.isOwned(tx, tz);
+    if (side(x - 1, z) && side(x + 1, z) && (this.inWallLine(x - 1, z) || this.inWallLine(x + 1, z))) return 'x';
+    if (side(x, z - 1) && side(x, z + 1) && (this.inWallLine(x, z - 1) || this.inWallLine(x, z + 1))) return 'z';
+    return null;
   }
 
   get wallCount(): number {
     let n = 0;
-    for (let i = 0; i < this.wall.length; i++) if (this.wall[i]) n++;
+    for (let i = 0; i < this.wall.length; i++) if (this.wall[i] > 0 && this.wall[i] < DOOR_BASE) n++;
     return n;
+  }
+
+  /** Every door on this floor. */
+  doors(): { x: number; z: number; type: number }[] {
+    const out: { x: number; z: number; type: number }[] = [];
+    for (let i = 0; i < this.wall.length; i++) if (this.wall[i] >= DOOR_BASE) out.push({ x: this.tileX(i), z: this.tileZ(i), type: this.wall[i] - DOOR_BASE });
+    return out;
   }
 
   /** Walkability test on continuous world coordinates. */

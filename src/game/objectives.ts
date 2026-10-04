@@ -85,6 +85,10 @@ export interface LifetimeStats {
   /** Cars wrecked (blown up) and vehicles driven out of the military base. */
   carsWrecked?: number;
   baseRaids?: number;
+  /** House heists pulled off, cash they brought in, and times your own house was robbed. */
+  heists?: number;
+  heistLoot?: number;
+  robbed?: number;
 }
 
 export function emptyStats(): LifetimeStats {

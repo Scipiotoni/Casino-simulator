@@ -143,10 +143,12 @@ export class Combat {
     return Math.max(0, TELEPORT_LOCK_SECONDS - this.sinceHurt);
   }
 
-  /** Out on the street, where fights happen. */
+  /** Out on the street, where fights happen (or inside a house mid-heist, where the guards fight back). */
   get exposed(): boolean {
     const g = this.g;
-    return g.state === 'playing' && !g.inside && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
+    if (g.state !== 'playing') return false;
+    if (g.indoorFight) return true;
+    return !g.inside && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
   }
 
   update(dt: number): void {
@@ -223,6 +225,19 @@ export class Combat {
       g.drive.exit();
     }
     g.player.seat = null;
+    if ((fromPid === 'guard' || fromPid === 'trap') && g.heist) {
+      // Taken down in a house you were robbing: the guards take their cut and drag you out.
+      const fine = g.heist.knockedOut();
+      if (fine > 0) g.spend(fine, 'robbed');
+      this.lastKo = { by: fromName, lost: fine };
+      g.stats.knockedDown++;
+      g.gunplay.drop();
+      audio.play('knockout');
+      g.cam.shake(0.25);
+      g.notify(`${fromName[0].toUpperCase()}${fromName.slice(1)} knocked you out! ${fine > 0 ? `The guards took ${formatMoney(fine)} off you and` : 'The guards'} drop the loot back in the vault.`, 'bad');
+      g.requestSave();
+      return;
+    }
     if (fromPid === 'police') {
       // Busted: the police fine you and the chase is over.
       const police = g.street.police;
@@ -239,6 +254,8 @@ export class Combat {
       g.requestSave();
       return;
     }
+    // Knocked out mid-heist (by the owner, say): the loot goes back and you're thrown out too.
+    if (g.heist) g.heist.knockedOut();
     // Explosions and the army knock you down but don't take your cash.
     const lost = fromPid === 'world' ? 0 : koLoss(g.money);
     if (lost > 0) {

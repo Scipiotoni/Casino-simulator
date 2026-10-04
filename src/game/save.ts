@@ -56,6 +56,12 @@ export interface NetState {
   ep?: string;
   /** The running-total id each visitor's `credited` amount belongs to. */
   creditedEp?: Record<string, string>;
+  /** Houses you've robbed lately (published so the victim's vault pays out and everyone sees the cooldown). */
+  heists?: import('./heistRules').HeistRecord[];
+  /** Robberies of your own house already taken out of your vault: record id → when. */
+  heistSeen?: Record<string, number>;
+  /** Houses you were thrown out of after a failed heist: owner id → epoch ms you may try again. */
+  heistLock?: Record<string, number>;
 }
 
 export function newNetEpoch(): string {

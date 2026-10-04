@@ -20,7 +20,7 @@ import { Sky } from '../world/sky';
 import { CharacterModel } from '../entities/characterModel';
 import { WaypointBeacon } from '../world/waypoint';
 import { type ReticleOpts, sanitizeReticle } from '../ui/reticle';
-import { WALL_CUT, syncWallCut } from '../world/walls';
+import { DOOR_TYPES, WALL_CUT, doorType, doorsInEncoded, syncWallCut } from '../world/walls';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
 import {
@@ -56,6 +56,8 @@ import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
 import { GunPlay } from './gunplay';
 import { SLOTS, autoSlot } from './guns';
 import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
+import { Heist, type HouseTarget } from './heist';
+import { type HeistRecord, RECORD_TTL_MS, applyRobbery, cleanRecords, houseCooldown, maxTake, waitText } from './heistRules';
 import { Driving, type GarageState, emptyGarage, sanitizeGarage, shotDamage } from './driving';
 import { type Activity, activityFor, PRACTICE_LABEL, punchPay } from './activities';
 
@@ -146,6 +148,12 @@ export interface GameEvents {
   perfHint: { fps: number };
   /** You started or stopped doing something (sitting, punching the bag…). */
   activity: void;
+  /** A heist started, ended or changed (alarm, vault, loot). */
+  heist: void;
+  /** Open a heist minigame: the vault, or a locked door. */
+  heistGame: { kind: 'vault' } | { kind: 'door'; floor: number; x: number; z: number; type: number };
+  /** At another player's front door: ask before breaking in. */
+  heistAsk: StreetLot;
 }
 
 export interface Settings {
@@ -309,6 +317,14 @@ export class Game implements World, ItemHost {
   playerHotel: ((pid: string, bid: string) => CasinoSnapshot | null) | null = null;
   /** Is this player keeping you out right now? (set by the net layer) */
   bannedBy: ((pid: string) => number) | null = null;
+  /** Another player's house as a heist target: floor plan, vault, online (set by the net layer). */
+  houseTarget: ((pid: string) => HouseTarget | null) | null = null;
+  /** Every heist record the street knows of (set by the net layer), for the shared cooldown. */
+  heistRecords: (() => HeistRecord[]) | null = null;
+  /** The break-in you're in the middle of. */
+  heist: Heist | null = null;
+  /** Players breaking into your house right now (set by the net layer). */
+  intruders: string[] = [];
   /** Other players standing in the loaded casino / on the street (set by the net layer). */
   remotes: RemoteView[] = [];
   /** Everyone online, for the city map. */
@@ -370,7 +386,7 @@ export class Game implements World, ItemHost {
     this.renderer = new Renderer(container, settings.quality);
     this.input = new Input(this.renderer.renderer.domElement);
     const scene = this.renderer.scene;
-    this.levels = [new Level(0, this.layout)];
+    this.levels = [this.makeLevel(0)];
     this.building = new Building(this.levels[0].grid, {
       name: 'Lucky Star Casino', signFont: 'bungee', signColor: 0xff3fa4, wallColor: 0x3a1d4d, trimColor: 0x2fe6ff,
     });
@@ -445,6 +461,29 @@ export class Game implements World, ItemHost {
 
   // ------------------------------------------------------------------ floors
 
+  /** A floor, with its doors wired to open for whoever walks up to them. */
+  private makeLevel(index: number): Level {
+    const l = new Level(index, this.layout);
+    l.floor.walls.doorOpen = (x, z) => this.doorOpenAt(index, x, z);
+    return l;
+  }
+
+  /**
+   * Does the door on this tile swing open? For anyone close to it: you, guests, staff, other
+   * players. A burglar has to crack a locked door first (guards always have the keys).
+   */
+  private doorOpenAt(floor: number, x: number, z: number): boolean {
+    const cx = x + 0.5;
+    const cz = z + 0.5;
+    const near = (px: number, pz: number) => Math.abs(px - cx) < 1.45 && Math.abs(pz - cz) < 1.45;
+    const p = this.player;
+    if (p.floor === floor && near(p.x, p.z) && (!this.heist || this.heist.doorOpenFor(floor, x, z))) return true;
+    for (const w of this.workers) if (w.floor === floor && near(w.x, w.z)) return true;
+    for (const c of this.customers) if (c.floor === floor && !c.gone && near(c.x, c.z)) return true;
+    if (floor === this.viewFloor) for (const r of this.remotes) if (near(r.x, r.z)) return true;
+    return !!this.heist?.guardNear(floor, cx, cz);
+  }
+
   get grid(): Grid {
     return this.levels[0].grid;
   }
@@ -474,7 +513,7 @@ export class Game implements World, ItemHost {
       l.floor.group.removeFromParent();
     }
     while (this.levels.length < n) {
-      const l = new Level(this.levels.length, this.layout);
+      const l = this.makeLevel(this.levels.length);
       this.levels.push(l);
       this.floorGroup.add(l.floor.group);
       l.floor.rebuild();
@@ -507,6 +546,7 @@ export class Game implements World, ItemHost {
   }
 
   newGame(opts: { name: string; look: CasinoLook; player: Appearance; playerName: string }): void {
+    this.endHeist(false);
     this.state = 'playing';
     this.visit = null;
     this.money = START_MONEY;
@@ -578,6 +618,7 @@ export class Game implements World, ItemHost {
 
   /** Decorated showroom for the title screen. */
   loadDemo(): void {
+    this.endHeist(false);
     this.state = 'title';
     this.visit = null;
     this.layout = { width: 2, depth: 2 };
@@ -1059,8 +1100,11 @@ export class Game implements World, ItemHost {
     return true;
   }
 
-  /** The house as it looks from the street. */
-  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number } | null {
+  /**
+   * The house as it looks from the street, plus what a burglar sizes up: the vault's tier and
+   * contents, and the last robbery (so everyone shares the cooldown).
+   */
+  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number; vt: number; vm: number; rb: HeistRecord | null } | null {
     const h = this.house;
     if (!h) return null;
     const live = this.site === 'house';
@@ -1069,6 +1113,9 @@ export class Game implements World, ItemHost {
       width: live ? this.layout.width : h.snap.layout.width,
       depth: live ? this.layout.depth : h.snap.layout.depth,
       floors: live ? this.floors : h.snap.floors,
+      vt: h.tier,
+      vm: Math.round(h.vault),
+      rb: h.robbed ?? null,
     };
   }
 
@@ -1171,9 +1218,12 @@ export class Game implements World, ItemHost {
     if (!h) return 0;
     const live = this.inHouse;
     const staff = live ? this.workers.map((w) => w.role) : h.snap.staff.map((s) => s.role);
-    const gadgets = live
+    const doors = live
+      ? this.levels.reduce((a, l) => a + l.grid.doors().reduce((b, d) => b + (DOOR_TYPES[d.type]?.security ?? 0), 0), 0)
+      : (h.snap.walls ?? []).reduce((a, w) => a + doorsInEncoded(w).reduce((b, t) => b + (DOOR_TYPES[t]?.security ?? 0), 0), 0);
+    const gadgets = doors + (live
       ? this.items.items.reduce((a, i) => a + (i.def.security ?? 0), 0)
-      : h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.security ?? 0), 0);
+      : h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.security ?? 0), 0));
     return securityRating(h.tier, staff.filter((r) => r === 'security').length, staff.filter((r) => r === 'doorman').length, gadgets);
   }
 
@@ -1307,6 +1357,95 @@ export class Game implements World, ItemHost {
     this.events.emit('hotel', undefined);
     this.requestSave();
     return moved;
+  }
+
+  // ------------------------------------------------------------------ heists
+
+  /** Fighting indoors: in the middle of a heist, or defending your house from one. */
+  get indoorFight(): boolean {
+    if (this.heist && !this.heist.over && this.inside) return true;
+    return this.inHouse && this.intruders.length > 0;
+  }
+
+  /** The latest robbery of a house and when it can be robbed again (shared by everyone). */
+  houseCooldownOf(pid: string): { last: HeistRecord | null; until: number } {
+    return houseCooldown(pid, [...(this.heistRecords?.() ?? []), ...cleanRecords(this.net.heists ?? [])]);
+  }
+
+  /** Why you can't break into this house right now (null = go ahead). */
+  heistBlock(lot: StreetLot): string | null {
+    const pid = lot.houseOf;
+    if (!pid || pid === 'me') return null;
+    const now = Date.now();
+    const ban = this.bannedBy?.(pid) ?? 0;
+    if (ban > now) return `${lot.owner} blacklisted you: their bodyguards won’t let you near the house for ${waitText(ban - now)}.`;
+    const lock = this.net.heistLock?.[pid] ?? 0;
+    if (lock > now) return `${lot.owner}’s guards remember your face. Try this house again in ${waitText(lock - now)}.`;
+    const t = this.houseTarget?.(pid);
+    if (!t) return `${lot.owner}’s house is locked up tight right now.`;
+    if (!t.tier || !t.snap.items.some((i) => i.id === 'vault')) return `${lot.owner}’s house has no vault: nothing worth stealing.`;
+    if (t.vault < 100) return `${lot.owner}’s vault is empty: nothing worth stealing.`;
+    const cd = this.houseCooldownOf(pid);
+    if (cd.until > now && cd.last) {
+      const who = cd.last.by === this.player.name ? 'You' : cd.last.by;
+      return `🚨 ${who} robbed this house ${waitText(now - cd.last.t)} ago. It’s on high alert for another ${waitText(cd.until - now)}.`;
+    }
+    if (this.drive.driving) return 'Get out of the car first.';
+    return null;
+  }
+
+  /** What breaking into this house could be worth: the target and the most a perfect run takes. */
+  heistPreview(lot: StreetLot): { target: HouseTarget; max: number; safes: number } | null {
+    const t = lot.houseOf && lot.houseOf !== 'me' ? this.houseTarget?.(lot.houseOf) : null;
+    if (!t) return null;
+    const safes = t.snap.items.filter((i) => i.id === 'safe').length;
+    return { target: t, max: maxTake(t.vault, t.online, safes), safes };
+  }
+
+  /** The heist is over: clean up, and if you were thrown out, land on the pavement outside. */
+  endHeist(kick: boolean): void {
+    const h = this.heist;
+    if (!h) return;
+    h.over = true;
+    this.heist = null;
+    h.dispose();
+    this.events.emit('heist', undefined);
+    if (kick && this.visit) this.returnHome(true);
+  }
+
+  /**
+   * Robberies of your house that burglars published: each comes out of your vault once (never
+   * more than half of it, never two in quick succession).
+   */
+  applyRobberies(recs: HeistRecord[]): void {
+    const h = this.house;
+    if (!h || !recs.length) return;
+    const seen = (this.net.heistSeen ??= {});
+    let changed = false;
+    for (const rec of [...recs].sort((a, b) => a.t - b.t)) {
+      if (seen[rec.i]) continue;
+      seen[rec.i] = rec.t;
+      changed = true;
+      const take = applyRobbery(h.vault, rec, h.robbed?.t ?? 0);
+      if (take <= 0) continue;
+      h.vault -= take;
+      h.robbed = { ...rec, a: take };
+      addLog(h, this.day, `Robbed by ${rec.by}`, -take);
+      this.stats.robbed = (this.stats.robbed ?? 0) + 1;
+      audio.play('alarm');
+      this.notify(`💸 ${rec.by} broke into your house and robbed ${formatMoney(take)} from your vault! Guards, lasers, cameras and locked doors make the next one harder.`, 'bad');
+      this.events.emit('house', undefined);
+    }
+    // Remember applied robberies longer than anyone publishes them, so none is taken twice.
+    const old = Date.now() - RECORD_TTL_MS - 2 * 86400_000;
+    for (const [k, t] of Object.entries(seen)) if (t < old) delete seen[k];
+    if (changed) this.requestSave();
+  }
+
+  /** Your house's floor plan for burglars (published with your lot). */
+  houseSnapshot(): CasinoSnapshot | null {
+    this.captureHouse();
+    return this.house ? (JSON.parse(JSON.stringify(this.house.snap)) as CasinoSnapshot) : null;
   }
 
   // ------------------------------------------------------------------ guns
@@ -1486,6 +1625,7 @@ export class Game implements World, ItemHost {
     if (lot.kind === 'rival') return generateRival(this.rival);
     if (lot.kind === 'player') return this.playerLot?.(lot.id) ?? null;
     if (lot.kind === 'hotel' && lot.hotelOf) return this.playerHotel?.(lot.hotelOf, lot.id.split('hotel:')[1] ?? '') ?? null;
+    if (lot.kind === 'house' && lot.houseOf && lot.houseOf !== 'me') return this.houseTarget?.(lot.houseOf)?.snap ?? null;
     return null;
   }
 
@@ -1499,7 +1639,7 @@ export class Game implements World, ItemHost {
       if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
       if (!this.playerLot?.(lot.id)) return `${lot.info.look.name} is closed right now.`;
     }
-    if (lot.kind === 'house' && lot.houseOf !== 'me') return `${lot.owner}'s bodyguards won’t let you in: it’s a private home.`;
+    if (lot.kind === 'house' && lot.houseOf !== 'me') return this.heistBlock(lot);
     if (lot.kind === 'filler' || lot.kind === 'shop') return 'You can’t go in there.';
     if (lot.kind === 'hotel' && lot.hotelOf && lot.hotelOf !== 'me') {
       const until = this.bannedBy?.(lot.hotelOf) ?? 0;
@@ -1509,9 +1649,19 @@ export class Game implements World, ItemHost {
     return null;
   }
 
-  /** Walk through another casino's door (or back through your own). */
-  enterLot(lot: StreetLot): boolean {
+  /**
+   * Walk through another casino's door (or back through your own). Another player's house
+   * only opens for a break-in (`heist`): that's a choice you make at the door.
+   */
+  enterLot(lot: StreetLot, heist = false): boolean {
     if (this.state !== 'playing' || lot.id === this.street.activeId) return false;
+    const robbing = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
+    if (robbing && !heist) {
+      const block = this.entryBlock(lot);
+      audio.play('error');
+      this.notify(block ?? `🦹 It’s ${lot.owner}’s private home. Stand at the door and press Space to break in.`, 'bad');
+      return false;
+    }
     if (lot.hotelOf === 'me' && this.hotel) {
       this.enterHotel(lot.id.slice('hotel:'.length));
       return true;
@@ -1551,14 +1701,28 @@ export class Game implements World, ItemHost {
     this.visit = { lot, home, away, rate, net: 0, hands: 0 };
     this.build.cancel(false);
     this.select(null);
-    this.loadCasino(snap, true);
+    this.loadCasino(snap, true, !robbing);
     this.street.activeId = lot.id;
     this.shiftPlayer(at.x, FACADE_Z - 1.5);
-    audio.play('doorbell');
-    this.events.emit('toast', {
-      text: lot.id === 'hotel' ? `Welcome to your hotel! Walk up to the front desk and press Space to run it.` : lot.kind === 'hotel' ? `Welcome to ${snap.name}!` : `Welcome to ${snap.name}! Walk up to any game and press Space to play.`,
-      kind: 'event',
-    });
+    if (robbing) {
+      const target = this.houseTarget?.(lot.houseOf!);
+      if (target) this.heist = new Heist(this, target);
+      audio.play('vaultClunk', { pitch: 1.6 });
+      const h = this.heist;
+      this.events.emit('toast', {
+        text: h
+          ? `🦹 You’re in ${lot.owner}’s house. Find the ${h.vaultTierName} and crack it${h.guards.length ? `, and watch out for ${h.guards.length} guard${h.guards.length === 1 ? '' : 's'}` : ''}. Guns work in here.`
+          : `You’re in ${lot.owner}’s house.`,
+        kind: 'event',
+      });
+      this.events.emit('heist', undefined);
+    } else {
+      audio.play('doorbell');
+      this.events.emit('toast', {
+        text: lot.id === 'hotel' ? `Welcome to your hotel! Walk up to the front desk and press Space to run it.` : lot.kind === 'hotel' ? `Welcome to ${snap.name}!` : `Welcome to ${snap.name}! Walk up to any game and press Space to play.`,
+        kind: 'event',
+      });
+    }
     this.events.emit('visit', undefined);
     this.refreshStreet();
     return true;
@@ -1568,6 +1732,14 @@ export class Game implements World, ItemHost {
   returnHome(kicked = false): void {
     const v = this.visit;
     if (!v) return;
+    if (this.heist) {
+      // Walking away from a break-in: whatever you were carrying stays behind.
+      const h = this.heist;
+      this.heist = null;
+      h.over = true;
+      h.dispose();
+      this.events.emit('heist', undefined);
+    }
     this.standUp();
     const from = this.street.activeId;
     // Where you are (or the door you're thrown out of), seen from your own casino.
@@ -2736,6 +2908,7 @@ export class Game implements World, ItemHost {
       return false;
     };
     if (!lot) return fail(dest === 'hotel' ? 'You don’t have a hotel yet: buy one from the Hotel tab.' : 'You don’t have a house yet: buy one from the Home tab.');
+    if (this.heist && !this.heist.over) return fail('You’re in the middle of a heist: get out the front door first.');
     if (this.travelHere === dest) return fail('You’re already here.');
     const lock = this.combat.teleportLock;
     if (lock > 0) return fail(`You were just hurt: no teleporting for ${Math.ceil(lock)} more seconds.`);
@@ -2789,6 +2962,11 @@ export class Game implements World, ItemHost {
    */
   teleportTo(gx: number, gz: number): boolean {
     if (this.state !== 'playing' || this.photoMode) return false;
+    if (this.heist && !this.heist.over) {
+      audio.play('error');
+      this.notify('You’re in the middle of a heist: get out the front door first.', 'bad');
+      return false;
+    }
     if (this.drive.driving) {
       audio.play('error');
       this.notify('Get out of the car first.', 'bad');
@@ -2992,6 +3170,8 @@ export class Game implements World, ItemHost {
   /** Walkability for the manager: the floor they're on, plus the whole sidewalk outside. */
   private playerWalk = (tx: number, tz: number): boolean => {
     const g = this.gridAt(this.player.floor);
+    // A burglar can't walk through a locked door they haven't cracked.
+    if (this.heist && !this.heist.doorOpenFor(this.player.floor, tx, tz)) return false;
     if (this.player.floor > 0 || g.isOwned(tx, tz)) return g.isWalkable(tx, tz);
     if (tz === FACADE_Z && g.isDoor(tx, tz)) return true;
     // Decorations in the yard out front are solid.
@@ -3178,6 +3358,35 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    // A break-in: locked doors to crack, the vault to open, the cash to grab.
+    const hs = this.heist;
+    if (!target && hs && !hs.over && this.combat.ko <= 0) {
+      const d = hs.lockedDoorNear(pf, p.x, p.z);
+      if (d) {
+        const dt = doorType(d.type);
+        target = {
+          kind: `hdoor${d.x},${d.z}`, label: `🔓 Crack the ${dt.name}`, hold: false,
+          anchor: () => new THREE.Vector3(d.x + 0.5, 2.6, d.z + 0.5),
+          act: () => this.events.emit('heistGame', { kind: 'door', floor: pf, x: d.x, z: d.z, type: d.type }),
+        };
+      }
+      const v = hs.vault;
+      if (!target && v && v.floor === pf) {
+        const bb = v.bounds;
+        if (distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1) < 1.5) {
+          const label = hs.phase === 'locked' ? `🧨 Crack the ${hs.vaultTierName}`
+            : hs.phase === 'timelock' ? `⏳ Time lock: ${Math.ceil(hs.timelock)} s` : hs.phase === 'open' ? '💰 Grab the cash' : '🏃 Out the front door!';
+          target = {
+            kind: `hvault${hs.phase}`, label, hold: false,
+            anchor: () => new THREE.Vector3(v.cx, v.model.height + 0.5, v.cz),
+            act: () => {
+              if (hs.phase === 'locked') this.events.emit('heistGame', { kind: 'vault' });
+              else if (hs.phase === 'open') hs.grab();
+            },
+          };
+        }
+      }
+    }
     // Your vault
     if (!target && this.inHouse && this.house) {
       for (const it of this.items.items) {
@@ -3193,7 +3402,7 @@ export class Game implements World, ItemHost {
       }
     }
     // Things to do: sit, nap, punch the bag, play the drums… and practice play at your own games.
-    if (!target && !this.tableFocus) {
+    if (!target && !this.tableFocus && !this.heist) {
       let bestUse = 1.25;
       for (const it of this.items.items) {
         if (it.floor !== pf || it.broken) continue;
@@ -3240,12 +3449,17 @@ export class Game implements World, ItemHost {
             };
           } else {
             const block = this.entryBlock(lot);
-            const label = block ? `🚫 ${lot.kind === 'house' ? `${lot.owner}'s house` : lot.info.look.name}`
+            const robbable = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
+            const robbedBy = robbable && block ? this.houseCooldownOf(lot.houseOf!) : null;
+            const label = robbedBy?.last && robbedBy.until > Date.now()
+              ? `🚨 ${lot.owner}'s house · robbed by ${robbedBy.last.by} · safe for ${waitText(robbedBy.until - Date.now())}`
+              : block ? `🚫 ${lot.kind === 'house' ? `${lot.owner}'s house` : lot.info.look.name}`
+              : robbable ? `🦹 Break into ${lot.owner}'s house`
               : lot.kind === 'me' ? `Back to ${lot.info.look.name}` : lot.id === 'house' ? 'Go into your house' : `Enter ${lot.info.look.name}`;
             target = {
               kind: `door${lot.id}`, label, hold: false,
               anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
-              act: () => this.enterLot(lot),
+              act: () => (robbable && !block ? this.events.emit('heistAsk', lot) : this.enterLot(lot)),
             };
           }
         }
@@ -3951,7 +4165,7 @@ export class Game implements World, ItemHost {
     }
 
     // Player movement
-    const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0;
+    const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0 && !this.heist?.busy;
     this.transitionT = Math.max(0, this.transitionT - dt);
     if (canMove) {
       let ix = 0;
@@ -4020,6 +4234,8 @@ export class Game implements World, ItemHost {
     this.playerPos.set(this.player.x, 0, this.player.z);
     const wasInside = this.inside;
     this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > this.grid.rect.z0 - 1 && Math.abs(this.player.x - CENTER_X) < 16);
+    // Out through the front door of a house you're robbing: the cash is yours.
+    if (this.heist && !this.heist.over && !this.inside && wasInside) this.heist.leave();
     if (this.inside !== wasInside) {
       if (!this.inside && this.build.active && !this.onHomeFront) this.build.cancel();
       if (!this.inside && this.selection?.kind === 'item' && !this.selection.item.outdoor) this.select(null);
@@ -4060,6 +4276,7 @@ export class Game implements World, ItemHost {
     // Simulation
     if (sim > 0) {
       this.simulateWorld(sim);
+      if (playing && this.heist) this.heist.update(sim);
       if (playing) {
         this.updateInteraction(sim);
         if (!this.visit && this.site !== 'house') {
@@ -4292,6 +4509,7 @@ export class Game implements World, ItemHost {
   }
 
   load(s: SaveData): void {
+    this.endHeist(false);
     this.state = 'playing';
     this.visit = null;
     this.street.activeId = 'me';

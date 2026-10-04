@@ -22,6 +22,8 @@ import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, ROLL_TIME, bountyFor, type RemoteTarget } from '../game/combat';
 import { remoteShotEnd } from '../game/gunplay';
 import { buildCar, carDef, sanitizeMods } from '../world/vehicles';
+import { type HeistRecord, cleanRecords } from '../game/heistRules';
+import type { HouseTarget } from '../game/heist';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
 interface DocSnap {
@@ -104,14 +106,25 @@ interface LotDoc {
   info: { look: CasinoLook; layout: Layout; floors: number; cos?: string[]; hotel?: HotelInfo[]; rb?: number; house?: HouseView | null };
   /** The owner's hotel floor plans by building, for walking around in them. */
   hotelSnap?: Record<string, CasinoSnapshot>;
+  /** The owner's house floor plan (burglars walk into it). */
+  houseSnap?: CasinoSnapshot | null;
+  /** Houses this player robbed lately. */
+  heists: HeistRecord[];
+  /** When the owner last wrote this (epoch ms). */
+  updated: number;
 }
 
-/** Another player's house as the street shows it. */
+/** Another player's house as the street shows it, and what a burglar sizes up. */
 interface HouseView {
   look: CasinoLook;
   width: number;
   depth: number;
   floors: number;
+  /** Vault tier (0 = none) and what's in it. */
+  vt: number;
+  vm: number;
+  /** The last robbery of this house (the owner publishes it so everyone shares the cooldown). */
+  rb: HeistRecord | null;
 }
 
 interface Remote {
@@ -181,6 +194,10 @@ interface Remote {
   /** Their knockout streak (a bounty from 3), and feed lines / explosions already shown. */
   ks: number;
   feedSeen: Set<string>;
+  /** Whose house they're robbing right now ('' = nobody's), whether the alarm went off, and their recent robberies. */
+  hz: string;
+  al: boolean;
+  heists: HeistRecord[];
 }
 
 /** One position update from another player. */
@@ -263,6 +280,8 @@ export class Net {
   private chatN = 0;
   /** When you last hit each player (to credit you with the knockout). */
   private lastHitAt: Record<string, number> = {};
+  /** Burglars whose alarm you've already been warned about. */
+  private alarmWarned = new Set<string>();
   status = 'Offline: just you and the rival down the street.';
 
   constructor(private game: Game, private hud: Hud) {
@@ -271,6 +290,8 @@ export class Net {
     game.playerLot = (pid) => this.lotSnapshot(pid);
     game.playerHotel = (pid, bid) => this.lots.get(pid)?.hotelSnap?.[bid] ?? null;
     game.bannedBy = (pid) => this.bannedBy(pid);
+    game.houseTarget = (pid) => this.houseTarget(pid);
+    game.heistRecords = () => this.allRecords();
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.openPlayers = () => this.openPlayers();
     game.combat.remoteTargets = () => this.targets();
@@ -355,6 +376,9 @@ export class Net {
         bans: cleanNumbers(raw.bans),
         info: { look: snapData.look, layout: snapData.layout, floors: snapData.floors, cos: cleanCosmetics(raw.cos), hotel: hotelInfo(raw.hotel), rb: rebirthsOf(raw.rb), house: houseView(raw.house) },
         hotelSnap: hotelSnaps(raw.hotelSnap),
+        houseSnap: raw.houseSnap ? sanitizeSnapshot(raw.houseSnap, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null,
+        heists: cleanRecords(raw.heists),
+        updated: typeof raw.updated === 'number' && Number.isFinite(raw.updated) ? raw.updated : 0,
       });
     }
     this.syncStreet();
@@ -392,6 +416,7 @@ export class Net {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, gm: '', shots: 0, held: null, label, visible: false,
           bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, wl: 0,
           buf: [], bufLot: '', gap: 120, vel: 0, rolls: -1, reloading: false, rollT: 0, reloadT: 0, ks: 0, feedSeen: new Set(),
+          hz: '', al: false, heists: [],
         };
         this.remotes.set(p.peer, r);
       } else if (r.lookKey !== lookKey) {
@@ -465,6 +490,9 @@ export class Net {
       r.owes = cleanNumbers(pr.owes);
       r.oe = typeof pr.oe === 'string' ? pr.oe.slice(0, 16) : '';
       r.since = num(pr.since) || r.since;
+      r.hz = typeof pr.hz === 'string' ? pr.hz.slice(0, 80) : '';
+      r.al = pr.al === 1;
+      r.heists = cleanRecords(pr.heists);
       const c = pr.casino as Record<string, unknown> | undefined;
       const snap = c ? sanitizeSnapshot({ ...c, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance) : null;
       r.casino = snap ? { look: snap.look, layout: snap.layout, floors: snap.floors, cos: cleanCosmetics(c?.cos), hotel: hotelInfo(c?.hotel), rb: r.rb, house: houseView(c?.house) } : null;
@@ -532,7 +560,7 @@ export class Net {
       const dmg = Math.min(400, hits - r.seenHits);
       r.seenHits = hits;
       // Only shots fired out on the street, from close enough to reach you, count.
-      if (r.out && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 150) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
+      if ((r.out || this.fighting(r)) && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 150) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
     }
     const loot = cleanNumbers(pr.loot)[this.pid] ?? 0;
     if (r.seenLoot === undefined || loot < r.seenLoot) r.seenLoot = loot;
@@ -632,7 +660,9 @@ export class Net {
   private targets(): RemoteTarget[] {
     const out: RemoteTarget[] = [];
     for (const r of this.remotes.values()) {
-      if (!r.visible || !r.out || r.floor !== 0 || r.ko || r.prot) continue;
+      if (!r.visible || r.ko || r.prot) continue;
+      // Out on the street, or in the same house as you while a heist is going down there.
+      if (!(r.out && r.floor === 0) && !this.fighting(r)) continue;
       out.push({ pid: r.pid, name: r.name, x: r.x, z: r.z, y: r.model.root.position.y, height: r.model.height });
     }
     return out;
@@ -758,6 +788,81 @@ export class Net {
 
   private lotSnapshot(pid: string): CasinoSnapshot | null {
     return this.lots.get(pid)?.snap ?? null;
+  }
+
+  /** Every robbery the street knows of: robbers' own records and victims' last robbery (deduplicated). */
+  private allRecords(): HeistRecord[] {
+    const out = new Map<string, HeistRecord>();
+    const add = (r: HeistRecord | null | undefined) => {
+      if (r && !out.has(r.i)) out.set(r.i, r);
+    };
+    for (const l of this.lots.values()) {
+      l.heists.forEach(add);
+      add(l.info.house?.rb);
+    }
+    for (const r of this.remotes.values()) {
+      r.heists.forEach(add);
+      add(r.casino?.house?.rb);
+    }
+    return [...out.values()];
+  }
+
+  /**
+   * Another player's house as a heist target: its floor plan (from their lot), the vault
+   * (live from their presence when they're online), and whether they're online. Robberies
+   * published since the owner last wrote their copy haven't come out of it yet: count them off.
+   */
+  private houseTarget(pid: string): HouseTarget | null {
+    const l = this.lots.get(pid);
+    const r = [...this.remotes.values()].find((x) => x.pid === pid);
+    const snap = l?.houseSnap;
+    const hv = r?.casino?.house ?? l?.info.house;
+    if (!snap || !hv) return null;
+    const since = r?.casino?.house ? Date.now() - 15_000 : l?.updated ?? 0;
+    let vault = hv.vm;
+    const seen = new Set<string>();
+    for (const rec of [...this.allRecords(), ...cleanRecords(this.game.net.heists ?? [])]) {
+      if (rec.v !== pid || rec.t <= since || seen.has(rec.i)) continue;
+      seen.add(rec.i);
+      vault -= rec.a;
+    }
+    return { pid, owner: r?.name ?? l?.owner ?? 'Someone', snap, vault: Math.max(0, vault), tier: hv.vt, online: !!r };
+  }
+
+  /** Is this player in the same indoor fight as you: robbing your house, or the owner of the house you're robbing? */
+  private fighting(r: Remote): boolean {
+    const g = this.game;
+    const lotId = this.localLot(r.lot);
+    if (g.heist && !g.heist.over) return r.pid === g.heist.target.pid && lotId === g.street.activeId && r.floor === g.player.floor;
+    return g.inHouse && r.hz === this.pid && lotId === 'house' && r.floor === g.player.floor;
+  }
+
+  /**
+   * Your house's side of heists: robberies published by burglars come out of your vault, and
+   * anyone breaking in right now is an intruder (the alarm warns you if you have one).
+   */
+  private watchHouse(): void {
+    const g = this.game;
+    const mine = this.allRecords().filter((r) => r.v === this.pid);
+    if (mine.length) g.applyRobberies(mine);
+    const intruders: string[] = [];
+    for (const r of this.remotes.values()) {
+      if (r.hz !== this.pid) {
+        this.alarmWarned.delete(r.pid);
+        continue;
+      }
+      if (this.localLot(r.lot) === 'house') intruders.push(r.pid);
+      if (r.al && !this.alarmWarned.has(r.pid)) {
+        this.alarmWarned.add(r.pid);
+        audio.play('alarm');
+        g.notify(`🚨 Your house alarm is going off: ${r.name} is breaking in! Get home (J) and stop them: while you're online they can take up to half your vault.`, 'bad');
+      }
+    }
+    if (intruders.join() !== g.intruders.join()) {
+      if (intruders.length && g.inHouse) g.notify(`🦹 ${intruders.length === 1 ? 'A burglar is' : 'Burglars are'} in your house! Your guns work in here: defend your vault.`, 'bad');
+      g.intruders = intruders;
+      g.events.emit('heist', undefined);
+    }
   }
 
   /** Until when (epoch ms) this owner keeps you out; 0 if you're welcome. */
@@ -905,6 +1010,7 @@ export class Net {
       this.checkT = 1;
       this.creditVisitors();
       this.checkBanned();
+      this.watchHouse();
       // Expired bans drop off.
       const now = Date.now();
       for (const [k, v] of Object.entries(g.net.bans)) if (v < now) delete g.net.bans[k];
@@ -941,6 +1047,9 @@ export class Net {
       ko: g.combat.ko > 0 ? 1 : 0,
       pr: g.combat.protect > 0 ? 1 : 0,
       wl: g.street.police.stars,
+      hz: g.heist && !g.heist.over ? g.heist.target.pid : undefined,
+      al: g.heist?.alarmed ? 1 : undefined,
+      heists: cleanRecords(g.net.heists ?? []),
       car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color, m: g.drive.driving.mods ? { ...g.drive.driving.mods, engine: 0, turbo: 0, tires: 0, nitro: 0 } : undefined } : null,
       chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
@@ -969,6 +1078,7 @@ export class Net {
     if (JSON.stringify(data).length > 3800) delete data.cos;
     if (JSON.stringify(data).length > 3800) data.hits = trimTop(this.hits, 8);
     if (JSON.stringify(data).length > 3800) data.chat = (data.chat as unknown[]).slice(-1);
+    if (JSON.stringify(data).length > 3800) data.heists = (data.heists as unknown[]).slice(0, 2);
     return data;
   }
 
@@ -999,6 +1109,8 @@ export class Net {
       hotel: g.hotelInfo(),
       house: g.houseInfo(),
       hotelSnap: g.hotelSnapshot(),
+      houseSnap: g.houseSnapshot(),
+      heists: cleanRecords(g.net.heists ?? []),
       rb: g.rebirths,
       updated: Date.now(),
     };
@@ -1248,7 +1360,12 @@ function houseView(raw: unknown): HouseView | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const snap = sanitizeSnapshot({ look: r.look, layout: { width: r.width, depth: r.depth }, floors: r.floors, items: [], staff: [] }, SIGN_FONTS.map((f) => f.id), sanitizeAppearance);
-  return snap ? { look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors } : null;
+  if (!snap) return null;
+  return {
+    look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors,
+    vt: Math.max(0, Math.min(5, Math.round(num(r.vt)))), vm: Math.max(0, Math.min(1e12, Math.floor(num(r.vm)))),
+    rb: cleanRecords(r.rb ? [r.rb] : [])[0] ?? null,
+  };
 }
 
 function hotelSnaps(raw: unknown): Record<string, CasinoSnapshot> {

@@ -8,13 +8,13 @@ import { FLOOR_STYLES } from '../render/textures';
 import { audio } from '../core/audio';
 import { formatMoney } from '../core/math';
 import { floorName } from './game';
-import { BUILT_WALL_H, WALL_STYLES } from '../world/walls';
+import { BUILT_WALL_H, DOOR_TYPES, WALL_STYLES } from '../world/walls';
 
 export type Mode =
   | { kind: 'play' }
   | { kind: 'place'; def: ItemDef; rot: number; color: number; moving: PlacedItem | null }
   | { kind: 'paint'; style: number }
-  | { kind: 'wall'; style: number; erase: boolean };
+  | { kind: 'wall'; style: number; erase: boolean; door: number };
 
 const MAX_WALL_RUN = 48;
 
@@ -91,7 +91,7 @@ export class BuildController {
 
   startWall(style = 0, erase = false): void {
     this.cancel(false);
-    this.mode = { kind: 'wall', style, erase };
+    this.mode = { kind: 'wall', style, erase, door: -1 };
     this.g.floor.showGrid(true);
     this.g.emitMode();
     audio.play('pop');
@@ -101,6 +101,17 @@ export class BuildController {
     if (this.mode.kind !== 'wall') return;
     this.mode.style = style;
     this.mode.erase = erase;
+    this.mode.door = -1;
+    this.wallKey = '';
+    this.g.emitMode();
+  }
+
+  /** Hang doors of this type: click a wall (or a gap between two walls) to put one in. */
+  setDoorType(type: number): void {
+    if (this.mode.kind !== 'wall') return;
+    this.mode.door = Math.max(0, Math.min(DOOR_TYPES.length - 1, type));
+    this.mode.erase = false;
+    this.wallStart = null;
     this.wallKey = '';
     this.g.emitMode();
   }
@@ -371,6 +382,16 @@ export class BuildController {
     }
     const p = input.pointer.over || input.isTouch ? this.groundAt(input.pointer.x, input.pointer.y) : null;
     const cur: [number, number] | null = p ? [Math.floor(p.x), Math.floor(p.z)] : null;
+    if (m.door >= 0) {
+      // Doors go in one at a time: click the wall where it should be.
+      this.wallStart = null;
+      this.wallLine = cur ? [cur] : [];
+      this.showWallPreview(this.wallLine);
+      const c = input.clicks[input.clicks.length - 1];
+      const q = c ? this.groundAt(c.x, c.y) : null;
+      if (q) this.applyWall([[Math.floor(q.x), Math.floor(q.z)]]);
+      return;
+    }
     if (input.primaryDown && cur && !this.wallStart) this.wallStart = cur;
     const line = this.wallStart && cur ? this.lineTiles(this.wallStart, cur) : cur ? [cur] : [];
     this.wallLine = line;
@@ -392,7 +413,7 @@ export class BuildController {
     const m = this.mode;
     if (m.kind !== 'wall') return;
     const grid = this.g.gridAt(this.g.viewFloor);
-    const key = `${line.map((t) => t.join(',')).join(';')}|${m.style}|${m.erase}|${grid.version}|${this.g.money > 0}`;
+    const key = `${line.map((t) => t.join(',')).join(';')}|${m.style}|${m.erase}|${m.door}|${grid.version}|${this.g.money > 0}`;
     if (key === this.wallKey) return;
     this.wallKey = key;
     if (!this.wallPreview) {
@@ -411,15 +432,19 @@ export class BuildController {
     let n = 0;
     const st = WALL_STYLES[m.style] ?? WALL_STYLES[0];
     const h = BUILT_WALL_H * 0.42;
+    const door = m.door >= 0 ? DOOR_TYPES[m.door] : null;
     for (const [x, z] of line) {
       let ok: boolean;
-      if (m.erase) ok = grid.isWall(x, z);
-      else {
+      if (m.erase) ok = grid.inWallLine(x, z);
+      else if (door) {
+        ok = this.g.items.canDoor(this.g.viewFloor, x, z).ok && this.g.money >= door.price;
+        if (ok) cost += door.price;
+      } else {
         ok = this.g.items.canWall(this.g.viewFloor, x, z).ok;
         if (ok) cost += st.price;
         if (ok && cost > this.g.money) ok = false;
       }
-      mtx.makeScale(1, m.erase ? h + 0.1 : h, 1).setPosition(x + 0.5, 0, z + 0.5);
+      mtx.makeScale(door ? 0.9 : 1, m.erase ? h + 0.1 : door ? BUILT_WALL_H * 0.75 : h, door ? 0.35 : 1).setPosition(x + 0.5, 0, z + 0.5);
       mesh.setMatrixAt(n, mtx);
       mesh.setColorAt(n, col.setHex(m.erase ? (ok ? 0xff4d5e : 0x777777) : ok ? 0x3ddc84 : 0xff4d5e));
       n++;
@@ -443,10 +468,36 @@ export class BuildController {
     let reason = '';
     if (m.erase) {
       for (const [x, z] of tiles) {
+        const dt = grid.doorAt(x, z);
+        if (dt >= 0) {
+          grid.setDoor(x, z, -1);
+          this.g.addMoney(Math.round((DOOR_TYPES[dt] ?? DOOR_TYPES[0]).price / 2), 'sell');
+          built++;
+          continue;
+        }
         if (!grid.isWall(x, z)) continue;
         const old = WALL_STYLES[grid.wallAt(x, z)] ?? WALL_STYLES[0];
         grid.setWall(x, z, -1);
         this.g.addMoney(Math.round(old.price / 2), 'sell');
+        built++;
+      }
+    } else if (m.door >= 0) {
+      const door = DOOR_TYPES[m.door] ?? DOOR_TYPES[0];
+      for (const [x, z] of tiles) {
+        const c = this.g.items.canDoor(f, x, z);
+        if (!c.ok) {
+          reason = c.reason ?? '';
+          continue;
+        }
+        if (this.g.money < door.price) {
+          reason = `A ${door.name} costs ${formatMoney(door.price)}`;
+          break;
+        }
+        // A wall that was there comes out (half its price back), the door goes in.
+        const was = grid.wallAt(x, z);
+        if (was >= 0) this.g.addMoney(Math.round((WALL_STYLES[was] ?? WALL_STYLES[0]).price / 2), 'sell');
+        grid.setDoor(x, z, m.door);
+        this.g.spend(door.price, 'build');
         built++;
       }
     } else {
@@ -467,7 +518,8 @@ export class BuildController {
       }
     }
     if (built) {
-      this.g.onWallsChanged(built, m.erase);
+      this.g.onWallsChanged(m.door >= 0 ? 0 : built, m.erase);
+      if (m.door >= 0 && !m.erase) this.g.notify(`${DOOR_TYPES[m.door]?.name ?? 'Door'} hung.`, 'good');
       audio.play(m.erase ? 'break' : 'place', { pitch: 0.9 + Math.random() * 0.2 });
       for (const [x, z] of tiles.slice(0, 6)) this.g.effects.dust(x + 0.5, z + 0.5, 0.6);
     }

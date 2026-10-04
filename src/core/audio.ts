@@ -14,7 +14,8 @@ export type SfxName =
   | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat' | 'siren' | 'whiz' | 'busted'
   | 'thud' | 'drumhit' | 'cymbal' | 'strum' | 'piano' | 'clack' | 'shutter' | 'blip' | 'splash' | 'sizzle'
   | 'crash' | 'explosion' | 'backfire' | 'turbo' | 'shift' | 'ignition' | 'metalHit' | 'cannon'
-  | 'flame' | 'charge' | 'rail' | 'launch' | 'roll' | 'dodge' | 'multikill' | 'streak';
+  | 'flame' | 'charge' | 'rail' | 'launch' | 'roll' | 'dodge' | 'multikill' | 'streak'
+  | 'zap' | 'bark' | 'drill' | 'pinSet' | 'dialTick' | 'dialClick';
 
 /** How a car's engine sounds: pitch, rumble, rasp, whine. */
 export type EngineProfile = 'four' | 'v8' | 'sport' | 'diesel' | 'electric' | 'buggy' | 'tank';
@@ -701,6 +702,33 @@ class AudioEngine {
       case 'alarm':
         for (let i = 0; i < 6; i++) this.tone(i % 2 ? 660 : 880, t + i * 0.25, 0.23, { type: 'sawtooth', gain: 0.06, filter: 2500, dest });
         break;
+      case 'zap':
+        // Laser burn: a crackle over a falling buzz.
+        this.tone(1900 * p, t, 0.18, { type: 'sawtooth', gain: 0.07, freqEnd: 300, filter: 6000, dest });
+        this.noise(t, 0.2, { type: 'highpass', freq: 3000, gain: 0.25, dest });
+        this.tone(60, t, 0.2, { type: 'square', gain: 0.08, filter: 600, dest });
+        break;
+      case 'bark':
+        for (let i = 0; i < 2; i++) {
+          this.tone(420 * p, t + i * 0.2, 0.11, { type: 'sawtooth', gain: 0.12, freqEnd: 230, filter: 1600, dest });
+          this.noise(t + i * 0.2, 0.09, { type: 'bandpass', freq: 900, q: 1.5, gain: 0.3, dest });
+        }
+        break;
+      case 'drill':
+        this.tone(220 * p, t, 0.35, { type: 'sawtooth', gain: 0.035, freqEnd: 240 * p, filter: 2200, dest });
+        this.noise(t, 0.35, { type: 'bandpass', freq: 2600 * p, q: 3, gain: 0.08, dest });
+        break;
+      case 'pinSet':
+        this.noise(t, 0.04, { type: 'highpass', freq: 4500, gain: 0.3, dest });
+        this.tone(1600 * p, t, 0.05, { type: 'square', gain: 0.04, filter: 6000, dest });
+        break;
+      case 'dialTick':
+        this.noise(t, 0.02, { type: 'highpass', freq: 6000, gain: 0.12, dest });
+        break;
+      case 'dialClick':
+        this.noise(t, 0.05, { type: 'bandpass', freq: 1800, q: 4, gain: 0.45, dest });
+        this.tone(900 * p, t, 0.05, { type: 'square', gain: 0.05, filter: 3000, dest });
+        break;
     }
   }
 
@@ -1071,6 +1099,7 @@ const MIN_GAP: Partial<Record<SfxName, number>> = {
   flame: 0.1, charge: 0.5, explosion: 0.08, crash: 0.12, backfire: 0.07, turbo: 0.4, metalHit: 0.03,
   smg: 0.04, ping: 0.03, glass: 0.06, honk: 1, carAlarm: 1.2, alarm: 1.4, keyBeep: 0.02, siren: 1, whiz: 0.08,
   coin: 0.05, spin: 0.12, tick: 0.05, win: 0.15, chips: 0.1, cards: 0.08, dice: 0.2, paint: 0.06, click: 0.03,
+  zap: 0.2, bark: 0.6, drill: 0.3, dialTick: 0.02,
 };
 
 function pickOf<T>(arr: T[]): T {

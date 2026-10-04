@@ -4204,6 +4204,31 @@ p.small {
   color: var(--red);
   background: rgba(255, 77, 94, 0.12);
 }
+.sw-sep {
+  flex: none;
+  align-self: center;
+  font-size: 22px;
+  padding: 0 2px 0 6px;
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+}
+.door-sw {
+  width: 96px;
+}
+.door-chip {
+  position: relative;
+  width: 30px;
+  margin: 0 auto;
+  border-radius: 6px 6px 2px 2px;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-bottom: none;
+}
+.door-chip i {
+  position: absolute;
+  right: -2px;
+  top: 14px;
+  font-size: 12px;
+  font-style: normal;
+}
 @media (max-width: 640px) {
   .walls-btn span {
     display: none;
@@ -5537,4 +5562,163 @@ p.small {
     top: calc(var(--safe-top, 0px) + 130px);
     right: 8px;
   }
+}
+
+/* ------------------------------------------------------------------ heists */
+.heist-hud {
+  position: absolute;
+  top: calc(var(--safe-top) + 132px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+  min-width: 220px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 8px 14px;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid rgba(255, 77, 94, 0.45);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-size: 12.5px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 5;
+}
+.heist-hud b {
+  font-size: 13.5px;
+}
+.heist-hud i {
+  font-style: normal;
+  font-weight: 800;
+}
+.heist-hud.alarm {
+  animation: heist-alarm 0.6s steps(1) infinite;
+}
+.heist-hud.defend {
+  border-color: var(--gold);
+}
+@keyframes heist-alarm {
+  0% {
+    background: rgba(140, 10, 26, 0.92);
+  }
+  50% {
+    background: var(--panel);
+  }
+}
+.hh-bar {
+  display: block;
+  width: 180px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+.hh-bar i {
+  display: block;
+  height: 100%;
+  background: var(--gold);
+}
+.heist-modal {
+  width: min(400px, 100%);
+}
+.heist-game .hg-head {
+  font-weight: 800;
+  font-size: 15px;
+}
+.hg {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+.hg-canvas {
+  width: 100%;
+  max-width: 340px;
+  height: auto;
+  border-radius: 12px;
+  background: #0d0816;
+  touch-action: none;
+}
+.hg-info {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+.hg-act {
+  width: 100%;
+  max-width: 340px;
+  min-height: 48px;
+  font-size: 16px;
+  touch-action: none;
+  user-select: none;
+}
+.hg-dots {
+  display: flex;
+  gap: 6px;
+}
+.hg-dot {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 2px solid transparent;
+  opacity: 0.55;
+}
+.hg-dot.on {
+  border-color: var(--gold);
+  opacity: 1;
+}
+.hg-dot.done {
+  background: rgba(61, 220, 132, 0.25);
+  border-color: var(--green);
+  opacity: 1;
+}
+.hg-meter {
+  width: 100%;
+  max-width: 300px;
+  height: 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.hg-meter i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--cyan), var(--gold));
+  transition: width 0.06s linear;
+}
+.hg-meter.hot i {
+  background: var(--green);
+}
+.hg-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 64px);
+  gap: 8px;
+}
+.hg-key {
+  height: 64px;
+  border-radius: 12px;
+  background: #13241a;
+  border: 2px solid rgba(57, 255, 136, 0.25);
+  color: rgba(57, 255, 136, 0.7);
+  font: 800 20px/1 var(--font-body);
+  touch-action: none;
+}
+.hg-key.lit {
+  background: #39ff88;
+  color: #0b1a10;
+  box-shadow: 0 0 18px rgba(57, 255, 136, 0.8);
+}
+.hg-key.bad {
+  background: var(--red);
+  color: #fff;
+}
+.heist-sec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
