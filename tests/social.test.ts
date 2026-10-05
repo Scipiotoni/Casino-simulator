@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   GIFT_KEEP_MS, GIFT_MAX, LOAN_PERIOD_MS, LOAN_RATE, accrue, canBorrow, cleanGifts, cleanLoan, cleanNote, dailyReward, dailyStatus,
-  dayKey, giftBlock, giftId, loanLimit, pruneSeen, roundSig, unopenedGifts,
+  cleanIds, dayKey, giftBlock, giftId, loanLimit, openedIds, pruneSeen, roundSig, unopenedGifts,
 } from '../src/game/social';
 
 const now = Date.UTC(2026, 9, 4, 12);
@@ -57,7 +57,7 @@ describe('gifts', () => {
   });
 
   it('refuses gifts you can’t afford, to yourself, empty or too fast', () => {
-    const ok = { amount: 1000, itemPrice: 0, money: 5000, recent: 0, self: false, inHotel: false };
+    const ok = { amount: 1000, itemPrice: 0, money: 5000, recent: 0, self: false };
     expect(giftBlock(ok)).toBeNull();
     expect(giftBlock({ ...ok, self: true })).toMatch(/yourself/);
     expect(giftBlock({ ...ok, amount: 0 })).toMatch(/cash or a luxury/);
@@ -65,7 +65,10 @@ describe('gifts', () => {
     expect(giftBlock({ ...ok, money: 500 })).toMatch(/don’t have/);
     expect(giftBlock({ ...ok, itemPrice: 250_000, money: 200_000 })).toMatch(/don’t have/);
     expect(giftBlock({ ...ok, recent: 5 })).toMatch(/wait a minute/);
-    expect(giftBlock({ ...ok, inHotel: true })).toMatch(/hotel/);
+    // Opened gifts are published so the sender sees them arrive (recent first, junk dropped).
+    const now = Date.now();
+    expect(openedIds({ aaaa1: now - 1000, bbbb2: now, cccc3: now - 30 * 86400_000 }, now)).toEqual(['bbbb2', 'aaaa1']);
+    expect([...cleanIds(['abcd12', '<b>', 7, 'x'])]).toEqual(['abcd12']);
     expect(giftBlock({ ...ok, amount: GIFT_MAX + 1, money: 1e9 })).toMatch(/up to/);
   });
 });

@@ -24,7 +24,7 @@ import { remoteShotEnd } from '../game/gunplay';
 import { buildCar, carDef, sanitizeMods } from '../world/vehicles';
 import { type HeistRecord, cleanRecords } from '../game/heistRules';
 import type { HouseTarget } from '../game/heist';
-import { GIFT_LOG, GIFT_KEEP_MS, type GiftOut, cleanGifts, cleanNote, giftBlock, giftId, pruneSeen, roundSig, unopenedGifts } from '../game/social';
+import { GIFT_LOG, GIFT_KEEP_MS, type GiftOut, cleanGifts, cleanIds, cleanNote, giftBlock, giftId, openedIds, pruneSeen, roundSig, unopenedGifts } from '../game/social';
 import type { LeaderEntry, SocialApi } from '../ui/social';
 
 // Minimal shapes of the platform capabilities this game uses (db, room, user).
@@ -296,6 +296,8 @@ export class Net {
   private ledgerEps = new Map<string, string>();
   /** Gifts each player has sent (from their ledger), and the name they go by. */
   private giftLists = new Map<string, { name: string; gifts: GiftOut[] }>();
+  /** Gift ids each player says they've opened (so you can see yours arrived). */
+  private giftsGot = new Map<string, Set<string>>();
   private remotes = new Map<string, Remote>();
   private labelRoot: HTMLElement;
   private presenceT = 0;
@@ -444,6 +446,7 @@ export class Net {
       const gifts = cleanGifts(raw.gifts);
       if (gifts.length) this.giftLists.set(d.id, { name: typeof raw.name === 'string' ? raw.name.slice(0, 24) : '', gifts });
       else this.giftLists.delete(d.id);
+      this.giftsGot.set(d.id, cleanIds(raw.got));
     }
   }
 
@@ -993,10 +996,10 @@ export class Net {
   }
 
   /** Everyone you could blacklist: players online now and owners of casinos on the street. */
-  private knownPlayers(): { pid: string; name: string; online: boolean; where: string }[] {
-    const out = new Map<string, { pid: string; name: string; online: boolean; where: string }>();
-    for (const r of this.remotes.values()) out.set(r.pid, { pid: r.pid, name: r.name, online: true, where: this.whereOf(r) });
-    for (const [pid, l] of this.lots) if (!out.has(pid)) out.set(pid, { pid, name: l.owner, online: false, where: 'Offline' });
+  private knownPlayers(): { pid: string; name: string; online: boolean; where: string; casino?: string; seen?: number }[] {
+    const out = new Map<string, { pid: string; name: string; online: boolean; where: string; casino?: string; seen?: number }>();
+    for (const r of this.remotes.values()) out.set(r.pid, { pid: r.pid, name: r.name, online: true, where: this.whereOf(r), casino: r.casino?.look.name ?? this.lots.get(r.pid)?.info.look.name });
+    for (const [pid, l] of this.lots) if (!out.has(pid)) out.set(pid, { pid, name: l.owner, online: false, where: 'Offline', casino: l.info.look.name, seen: l.updated || undefined });
     for (const pid of Object.keys(this.game.net.bans)) if (!out.has(pid)) out.set(pid, { pid, name: 'Player', online: false, where: 'Offline' });
     return [...out.values()].sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name));
   }
@@ -1231,10 +1234,12 @@ export class Net {
     const g = this.game;
     if (!this.db || !this.writable) return;
     const gifts = (g.net.gifts ?? []).filter((x) => Date.now() - x.t < GIFT_KEEP_MS);
-    const key = JSON.stringify([g.net.owes, gifts]);
-    if (key === this.lastLedger || (key === '[{},[]]' && !this.lastLedger)) return;
+    // Gifts you opened: their senders see them arrive.
+    const got = openedIds(g.net.giftSeen ?? {});
+    const key = JSON.stringify([g.net.owes, gifts, got]);
+    if (key === this.lastLedger || (key === '[{},[],[]]' && !this.lastLedger)) return;
     try {
-      await this.db.collection('ledger').doc(this.pid).set({ owes: { ...g.net.owes }, gifts, ep: g.net.ep ?? '', name: g.player.name.slice(0, 24), t: Date.now() });
+      await this.db.collection('ledger').doc(this.pid).set({ owes: { ...g.net.owes }, gifts, got, ep: g.net.ep ?? '', name: g.player.name.slice(0, 24), t: Date.now() });
       this.lastLedger = key;
     } catch {
       /* try again later */
@@ -1430,7 +1435,9 @@ export class Net {
     }
     if (opened) {
       net.giftSeen = pruneSeen(net.giftSeen);
-      g.requestSave();
+      // Let the senders know (and save now: a gift is opened once, even if the page closes).
+      this.ledgerT = 0;
+      g.saveNow();
     }
   }
 
@@ -1444,7 +1451,7 @@ export class Net {
       ? 'You’re offline: gifts need a connection to the street.'
       : !this.writable && !this.remotes.size
         ? 'You’re connected as a guest: you can only send gifts to players who are online right now.'
-        : giftBlock({ amount, itemPrice: c?.price ?? 0, money: g.money, recent: sent.filter((x) => now - x.t < 60_000).length, self: pid === this.pid, inHotel: g.inHotel });
+        : giftBlock({ amount, itemPrice: c?.price ?? 0, money: g.casinoCash, recent: sent.filter((x) => now - x.t < 60_000).length, self: pid === this.pid });
     const online = [...this.remotes.values()].some((r) => r.pid === pid);
     if (!why && !this.writable && !online) {
       audio.play('error');
@@ -1457,7 +1464,8 @@ export class Net {
       return false;
     }
     const total = Math.round(amount) + (c?.price ?? 0);
-    g.spend(total, 'gift');
+    // Out of your casino's bank, wherever you are (the hotel has a bank of its own).
+    g.spendCasino(total, 'gift');
     const gift: GiftOut = { i: giftId(now), to: pid, nm: name.slice(0, 24), a: Math.round(amount), c: c?.id, m: cleanNote(note), t: now };
     g.net.gifts = [...sent.filter((x) => now - x.t < GIFT_KEEP_MS), gift].slice(-GIFT_LOG);
     g.stats.giftsSent = (g.stats.giftsSent ?? 0) + 1;
@@ -1492,6 +1500,7 @@ export class Net {
       me: () => this.pid,
       players: () => this.knownPlayers(),
       sendGift: (pid, name, amount, item, note) => this.sendGift(pid, name, amount, item, note),
+      opened: (pid, id) => this.giftsGot.get(pid)?.has(id) ?? false,
       leaderboard: () => this.leaderboard(),
       isOnline: (pid) => [...this.remotes.values()].some((r) => r.pid === pid),
     };

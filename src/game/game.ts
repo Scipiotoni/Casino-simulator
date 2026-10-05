@@ -863,27 +863,67 @@ export class Game implements World, ItemHost {
     const d = this.dailyInfo(now);
     if (!d.claimable) return 0;
     this.net.daily = { day: dayKey(now), streak: d.streak };
-    this.creditCasino(d.reward, 'reward');
+    const where = this.creditCasino(d.reward, 'reward');
+    if (where && typeof window !== 'undefined') window.setTimeout(() => this.notify(where, 'info'), 1200);
     audio.play('jackpot');
     this.effects.confetti(this.player.x, 2, this.player.z, d.streak % 7 === 0 ? 200 : 90, d.streak % 7 === 0 ? 1.3 : 1);
     this.saveNow();
     return d.reward;
   }
 
-  /** Money for your casino's bank from anywhere: at the hotel it waits until you leave. */
-  creditCasino(amount: number, reason: MoneyReason): void {
-    if (amount <= 0) return;
-    if (this.site === 'hotel') this.net.giftHeld = (this.net.giftHeld ?? 0) + amount;
-    else this.addMoney(amount, reason, this.player.model.root.position.clone().setY(2.2));
+  /** Your casino's bank, wherever you are (at the hotel the hotel's own bank is the live one). */
+  get casinoCash(): number {
+    return this.site === 'hotel' ? this.parked?.home.money ?? 0 : this.money;
   }
 
-  /** Gift cash that waited while you were at the hotel. */
+  /** Pay out of your casino's bank, wherever you are. */
+  spendCasino(amount: number, reason: MoneyReason): void {
+    if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money - amount);
+    else this.spend(amount, reason);
+  }
+
+  /**
+   * Money for your casino's bank from anywhere (gifts, rewards). None of it is lost to the bank
+   * limit: what doesn't fit goes into your house vault, and what doesn't fit there waits and
+   * goes in as the bank has room. Says where it went ('' = all in the bank).
+   */
+  creditCasino(amount: number, reason: MoneyReason): string {
+    amount = Math.round(amount);
+    if (amount <= 0) return '';
+    const now = Math.min(amount, Math.max(0, MAX_BANK - this.casinoCash));
+    if (now > 0) {
+      if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money + now);
+      else this.addMoney(now, reason, this.player.model.root.position.clone().setY(2.2));
+    }
+    let rest = amount - now;
+    const notes: string[] = [];
+    const h = this.house;
+    if (rest > 0 && h) {
+      const fit = Math.max(0, Math.min(rest, (vaultTier(h.tier)?.cap ?? 0) - h.vault));
+      if (fit > 0) {
+        h.vault += fit;
+        addLog(h, this.day, reason === 'gift' ? 'Gift (casino bank full)' : 'Reward (casino bank full)', fit);
+        rest -= fit;
+        notes.push(`${formatMoney(fit)} went into your house vault`);
+      }
+    }
+    if (rest > 0) {
+      this.net.giftHeld = (this.net.giftHeld ?? 0) + rest;
+      notes.push(`${formatMoney(rest)} waits until your casino’s bank has room`);
+    }
+    return notes.length ? `Your casino’s bank is full: ${notes.join(', and ')}.` : '';
+  }
+
+  /** Gift and reward cash that waited for room in your casino's bank. */
   releaseHeld(): void {
     const held = this.net.giftHeld ?? 0;
-    if (held <= 0 || this.site === 'hotel' || this.state !== 'playing') return;
-    this.net.giftHeld = 0;
-    this.addMoney(Math.round(held), 'gift');
-    this.notify(`🎁 ${formatMoney(held)} from gifts and rewards went into your casino’s bank.`, 'money');
+    if (held <= 0 || this.state !== 'playing') return;
+    const now = Math.min(held, Math.max(0, MAX_BANK - this.casinoCash));
+    if (now < 1) return;
+    this.net.giftHeld = Math.max(0, Math.round(held - now));
+    if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money + now);
+    else this.addMoney(Math.round(now), 'gift');
+    this.notify(`🎁 ${formatMoney(now)} from gifts and rewards went into your casino’s bank.`, 'money');
   }
 
   /** Open a gift: cash into the bank, a luxury item into your collection (or its price, if you have it). */
@@ -899,12 +939,13 @@ export class Game implements World, ItemHost {
         got = `${c.icon} ${c.name}`;
       }
     }
-    if (total > 0) this.creditCasino(total, 'gift');
+    const where = total > 0 ? this.creditCasino(total, 'gift') : '';
     this.stats.giftsReceived = (this.stats.giftsReceived ?? 0) + 1;
     audio.play('jackpot');
     this.effects.confetti(this.player.x, 2.2, this.player.z, 120);
     const what = [total > 0 ? formatMoney(total) : '', got].filter(Boolean).join(' and ');
-    this.notify(`🎁 ${from} sent you ${what}!${note ? ` “${note}”` : ''}`, 'money');
+    const bank = total > 0 && this.site === 'hotel' && !where ? ' It’s in your casino’s bank.' : '';
+    this.notify(`🎁 ${from} sent you ${what}!${note ? ` “${note}”` : ''}${bank}${where ? ` ${where}` : ''}`, 'money');
     this.saveNow();
   }
 
@@ -4576,6 +4617,8 @@ export class Game implements World, ItemHost {
   }
 
   private bankFullT = 0;
+  /** Seconds to the next look for room for waiting gift cash. */
+  private releaseT = 0;
 
   /** Tell the player (now and then) that the bank is full. */
   private bankFull(): void {
@@ -4638,7 +4681,6 @@ export class Game implements World, ItemHost {
       this.tickHotel(sim);
       if (!this.catchingUp) {
         this.tickLoan(sim);
-        if (this.net.giftHeld && this.site !== 'hotel') this.releaseHeld();
       }
       if (this.visit) {
         this.visit.away += sim;
@@ -4694,6 +4736,11 @@ export class Game implements World, ItemHost {
     this.bankFullT = Math.max(0, this.bankFullT - dt);
     this.capBanks();
     const sim = this.paused && !this.visit ? 0 : dt * (this.visit ? 1 : this.speed);
+    // Gift cash waiting for room in the bank goes in (in real time: even while the game is paused).
+    if (this.net.giftHeld && this.state === 'playing' && !this.catchingUp && (this.releaseT -= dt) <= 0) {
+      this.releaseT = 2;
+      this.releaseHeld();
+    }
     this.time += sim;
     const input = this.input;
     const playing = this.state === 'playing';

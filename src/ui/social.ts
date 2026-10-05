@@ -24,8 +24,10 @@ export interface LeaderEntry {
 export interface SocialApi {
   online(): boolean;
   me(): string;
-  players(): { pid: string; name: string; online: boolean; where: string }[];
+  players(): { pid: string; name: string; online: boolean; where: string; casino?: string; seen?: number }[];
   sendGift(pid: string, name: string, amount: number, item: string | undefined, note: string): boolean;
+  /** Has that player opened this gift of yours? */
+  opened(pid: string, id: string): boolean;
   leaderboard(): LeaderEntry[];
   isOnline(pid: string): boolean;
 }
@@ -56,7 +58,7 @@ export function openGift(g: Game, m: Modals, api: SocialApi | null, pid: string,
     const sum = amount + price;
     total.textContent = sum > 0 ? formatMoney(sum) : '—';
     send.textContent = `🎁 Send to ${name}`;
-    send.disabled = sum <= 0 || sum > g.money;
+    send.disabled = sum <= 0 || sum > g.casinoCash;
     amountRow.querySelectorAll('.chip-btn').forEach((b) => b.classList.toggle('on', Number((b as HTMLElement).dataset.v) === amount));
     itemRow.querySelectorAll('.gift-item').forEach((b) => b.classList.toggle('on', (b as HTMLElement).dataset.v === (item ?? '')));
     noteRow.querySelectorAll('.chip-btn').forEach((b) => b.classList.toggle('on', b.textContent === note));
@@ -102,7 +104,7 @@ export function openGift(g: Game, m: Modals, api: SocialApi | null, pid: string,
     h('div', { class: 'field-label', text: '✉️ Note' }),
     noteRow,
     noteInput,
-    h('div', { class: 'kv' }, h('span', { text: `Total (you have ${formatMoney(g.money)})` }), total),
+    h('div', { class: 'kv' }, h('span', { text: `Total (your casino’s bank: ${formatMoney(g.casinoCash)})` }), total),
   );
   refresh();
   m.open(`🎁 Gift for ${name}`, body, { foot: send });
@@ -118,9 +120,13 @@ export function openGifts(g: Game, m: Modals, api: SocialApi | null): void {
     const list = api.players();
     body.appendChild(h('div', { class: 'field-label', text: 'Send a gift' }));
     if (!list.length) body.appendChild(h('p', { class: 'muted', text: 'Nobody else is on the street yet.' }));
+    // Same name twice (someone playing on a second device): their casinos and when they were on tell them apart.
+    const names = new Map<string, number>();
+    for (const p of list) names.set(p.name, (names.get(p.name) ?? 0) + 1);
     for (const p of list.slice(0, 40)) {
+      const extra = [p.casino && (names.get(p.name) ?? 0) > 1 ? p.casino : '', !p.online && p.seen ? `on ${ago(p.seen)}` : ''].filter(Boolean).join(' · ');
       body.appendChild(h('div', { class: 'gift-row' },
-        h('div', {}, h('b', { text: p.name }), h('span', { class: `muted small${p.online ? ' pos' : ''}`, text: ` · ${p.online ? '● online' : 'offline'}` })),
+        h('div', {}, h('b', { text: p.name }), h('span', { class: `muted small${p.online ? ' pos' : ''}`, text: ` · ${p.online ? '● online' : 'offline'}${extra ? ` · ${extra}` : ''}` })),
         h('button', { class: 'btn small gold', text: '🎁 Gift', onClick: () => openGift(g, m, api, p.pid, p.name) }),
       ));
     }
@@ -132,15 +138,18 @@ export function openGifts(g: Game, m: Modals, api: SocialApi | null): void {
   const sent = [...(net.gifts ?? [])].reverse().slice(0, 15);
   body.appendChild(h('div', { class: 'field-label', text: `Gifts you sent (${g.stats.giftsSent ?? 0} all time)` }));
   if (!sent.length) body.appendChild(h('p', { class: 'muted small', text: 'None yet. Click a player, or pick one above.' }));
-  for (const x of sent) body.appendChild(giftLine(`To ${x.nm || 'a player'}`, x.a, x.c, x.m, x.t));
+  for (const x of sent) {
+    const got = api?.opened(x.to, x.i) ?? false;
+    body.appendChild(giftLine(`To ${x.nm || 'a player'}`, x.a, x.c, x.m, x.t, got ? '✓ opened' : '⏳ not opened yet'));
+  }
   m.open('🎁 Gifts', body);
 }
 
-function giftLine(who: string, cash: number, item: string | undefined, note: string, t: number): HTMLElement {
+function giftLine(who: string, cash: number, item: string | undefined, note: string, t: number, status = ''): HTMLElement {
   const c = item ? cosmetic(item) : undefined;
   const what = [cash > 0 ? formatMoney(cash) : '', c ? `${c.icon} ${c.name}` : ''].filter(Boolean).join(' + ');
   return h('div', { class: 'gift-line' },
-    h('div', {}, h('b', { text: who }), h('span', { class: 'muted small', text: ` · ${ago(t)}` })),
+    h('div', {}, h('b', { text: who }), h('span', { class: 'muted small', text: ` · ${ago(t)}` }), status ? h('span', { class: `small ${status.startsWith('✓') ? 'pos' : 'muted'}`, text: ` · ${status}` }) : null),
     h('div', {}, h('span', { class: 'pos', text: what }), note ? h('span', { class: 'muted small', text: ` “${note}”` }) : null),
   );
 }
@@ -278,7 +287,7 @@ export function openDaily(g: Game, m: Modals): void {
     class: 'btn gold big', text: info.claimable ? `Claim ${formatMoney(info.reward)}` : 'See you tomorrow', disabled: !info.claimable,
     onClick: () => {
       const got = g.claimDaily();
-      if (got > 0) g.notify(`📅 Day ${info.streak} reward: ${formatMoney(got)}!${g.inHotel ? ' It goes into your casino’s bank when you leave the hotel.' : ''}`, 'money');
+      if (got > 0) g.notify(`📅 Day ${info.streak} reward: ${formatMoney(got)}!${g.inHotel ? ' It’s in your casino’s bank.' : ''}`, 'money');
       m.close();
     },
   });

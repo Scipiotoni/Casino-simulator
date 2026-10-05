@@ -79,6 +79,23 @@ export function unopenedGifts(list: readonly GiftOut[], pid: string, seen: Recor
   return list.filter((g) => g.to === pid && !seen[g.i] && g.t >= since);
 }
 
+/** Ids of the gifts you opened lately (published, so senders can see their gift arrived). */
+export function openedIds(seen: Record<string, number>, now = Date.now()): string[] {
+  return Object.entries(seen)
+    .filter(([, t]) => now - t < GIFT_KEEP_MS)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 40)
+    .map(([k]) => k);
+}
+
+/** Someone else's list of opened gift ids (untrusted). */
+export function cleanIds(raw: unknown): Set<string> {
+  const out = new Set<string>();
+  if (!Array.isArray(raw)) return out;
+  for (const v of raw.slice(0, 40)) if (typeof v === 'string' && /^[a-z0-9]{4,24}$/.test(v)) out.add(v);
+  return out;
+}
+
 /** Forget opened gifts older than the keep window (they can't come back anyway). */
 export function pruneSeen(seen: Record<string, number>, now = Date.now()): Record<string, number> {
   const out: Record<string, number> = {};
@@ -87,9 +104,8 @@ export function pruneSeen(seen: Record<string, number>, now = Date.now()): Recor
 }
 
 /** Why a gift can't be sent (null = go ahead). */
-export function giftBlock(o: { amount: number; itemPrice: number; money: number; recent: number; self: boolean; inHotel: boolean }): string | null {
+export function giftBlock(o: { amount: number; itemPrice: number; money: number; recent: number; self: boolean }): string | null {
   if (o.self) return 'You can’t send a gift to yourself.';
-  if (o.inHotel) return 'Gifts come out of your casino’s bank. Leave the hotel first.';
   if (o.amount <= 0 && o.itemPrice <= 0) return 'Put some cash or a luxury item in the box.';
   if (o.amount > 0 && o.amount < GIFT_MIN) return `The smallest cash gift is $${GIFT_MIN}.`;
   if (o.amount > GIFT_MAX) return 'One gift can hold up to $1,000,000.';
