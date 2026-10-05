@@ -214,15 +214,31 @@ export class CombatHud {
     const ko = playing && c.ko > 0;
     this.koEl.hidden = !ko;
     if (ko) {
-      const key = `${c.lastKo?.by}|${c.lastKo?.lost}|${Math.ceil(c.ko)}`;
+      const spots = g.respawnSpots();
+      const dest = g.respawnDest;
+      const key = `${c.lastKo?.by}|${c.lastKo?.lost}|${Math.ceil(c.ko)}|${spots.join()}|${dest}`;
       if (key !== this.koKey) {
         this.koKey = key;
         this.koEl.innerHTML = '';
+        const label = { casino: '🎰 Casino', hotel: '🏨 Hotel', house: '🏠 House' } as const;
+        const near = g.nearestSpot();
         this.koEl.append(
           h('div', { class: 'ko-title', text: c.lastKo?.busted ? 'BUSTED' : 'KNOCKED OUT' }),
           h('div', { class: 'ko-by', text: c.lastKo?.busted ? 'The police caught up with you' : c.lastKo ? `by ${c.lastKo.by}` : '' }),
           h('div', { class: 'ko-lost', text: c.lastKo && c.lastKo.lost > 0 ? `−${formatMoney(c.lastKo.lost)} ${c.lastKo.busted ? 'fine' : 'taken from your pockets'}` : 'Your pockets were empty' }),
           h('div', { class: 'ko-tip', text: g.house?.vault ? `Your vault is untouched: ${formatMoney(g.house.vault)} safe at home.` : 'Money in your vault at home is always safe.' }),
+          h('div', { class: 'ko-where', text: 'Wake up at' }),
+          h('div', { class: 'ko-spots', role: 'radiogroup', 'aria-label': 'Where you wake up' },
+            ...spots.map((d, i) => h('button', {
+              class: `ko-spot${d === dest ? ' on' : ''}`,
+              role: 'radio',
+              'aria-checked': d === dest ? 'true' : 'false',
+              title: `Wake up in your ${d} (${i + 1})`,
+              onClick: () => {
+                g.respawnPick = d;
+                this.koKey = '';
+              },
+            }, h('b', { text: String(i + 1) }), label[d], d === near ? h('small', { text: 'nearest' }) : null))),
           h('div', { class: 'ko-timer', text: `Back on your feet in ${Math.ceil(c.ko)}…` }),
         );
       }

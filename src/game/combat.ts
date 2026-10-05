@@ -263,6 +263,9 @@ export class Combat {
     this.ko = KO_SECONDS;
     this.hp = 0;
     this.rollT = 0;
+    // Free the mouse so you can pick where to come round.
+    g.respawnPick = null;
+    g.input.exitLock();
     if (this.streak >= 3) g.notify(`Your ${this.streak}-knockout streak is over.`, 'bad');
     this.streak = 0;
     if (fromPid !== 'world' && fromPid !== 'police') this.addFeed(`${fromName} ➜ you`, false);
@@ -328,6 +331,8 @@ export class Combat {
     this.g.player.emote = null;
     // Up on your feet (never left sitting in mid-air).
     if (!this.g.drive.driving && !this.g.activity) this.g.player.seat = null;
+    // ...back home: inside your casino, hotel or house.
+    this.g.respawnHome();
     this.g.events.emit('combat', undefined);
   }
 

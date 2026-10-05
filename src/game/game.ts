@@ -3184,6 +3184,11 @@ export class Game implements World, ItemHost {
     const lock = this.combat.teleportLock;
     if (lock > 0) return fail(`You were just hurt: no teleporting for ${Math.ceil(lock)} more seconds.`);
     if (this.combat.ko > 0) return false;
+    return this.goInside(lot);
+  }
+
+  /** Straight inside one of your own buildings (fast travel, or coming round after a knockout). */
+  private goInside(lot: StreetLot): boolean {
     // Your car stays parked where you left it.
     if (this.drive.driving) {
       this.drive.driving.speed = 0;
@@ -3212,6 +3217,54 @@ export class Game implements World, ItemHost {
       audio.play('whoosh');
     }
     return ok;
+  }
+
+  /** Where you'd rather come round after a knockout (null: the nearest of your buildings). */
+  respawnPick: 'casino' | 'hotel' | 'house' | null = null;
+
+  /** Your buildings you can wake up in after a knockout: your casino, then your hotel and house if you have them. */
+  respawnSpots(): ('casino' | 'hotel' | 'house')[] {
+    return (['casino', 'hotel', 'house'] as const).filter((d) => !!this.travelLot(d));
+  }
+
+  /** The one of your buildings closest to where you are. */
+  nearestSpot(): 'casino' | 'hotel' | 'house' | null {
+    const p = this.street.worldToGlobal(this.player.x, this.player.z);
+    let best: 'casino' | 'hotel' | 'house' | null = null;
+    let bd = Infinity;
+    for (const d of this.respawnSpots()) {
+      const door = this.street.toGlobal(this.travelLot(d)!.id, CENTER_X, SIDEWALK_Z0 + 1.6);
+      const dist = Math.hypot(door.x - p.x, door.z - p.z);
+      if (dist < bd) {
+        bd = dist;
+        best = d;
+      }
+    }
+    return best;
+  }
+
+  /** Where you'll wake up: the one you picked, or else the nearest. */
+  get respawnDest(): 'casino' | 'hotel' | 'house' | null {
+    return this.respawnPick && this.respawnSpots().includes(this.respawnPick) ? this.respawnPick : this.nearestSpot();
+  }
+
+  /**
+   * Knocked out and coming round: you wake up inside your casino, your hotel or your house
+   * (whichever you picked, or the nearest), safe behind your own doors.
+   */
+  respawnHome(): void {
+    if (this.state !== 'playing') return;
+    // Out cold in a house you were robbing: the guards drag you out first (you're on the
+    // pavement now, whatever the last frame thought).
+    const robbing = !!this.heist && !this.heist.over;
+    if (robbing) this.heist!.update(0);
+    const dest = this.respawnDest;
+    this.respawnPick = null;
+    if (!dest || (!robbing && this.travelHere === dest)) return;
+    const lot = this.travelLot(dest);
+    if (!lot || !this.goInside(lot)) return;
+    const name = dest === 'casino' ? 'your casino' : dest === 'hotel' ? 'your hotel' : 'your house';
+    this.notify(`You came round in ${name}.`, 'info');
   }
 
   /** Fast travel to the sidewalk outside one of your own buildings (from another one). */
@@ -4556,7 +4609,11 @@ export class Game implements World, ItemHost {
         if (this.build.active) this.build.cancel();
         else if (this.selection) this.select(null);
       }
-      if (!this.build.active) {
+      if (this.combat.ko > 0) {
+        // Knocked out: 1–3 pick where you come round.
+        const spots = this.respawnSpots();
+        for (let k = 0; k < spots.length; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.respawnPick = spots[k];
+      } else if (!this.build.active) {
         // 1–5: weapon slots. 6–9: emotes.
         for (let k = 0; k < SLOTS; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.useSlot(k);
         // X (or 0): fists up, or put them down.

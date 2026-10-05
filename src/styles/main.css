@@ -4433,6 +4433,56 @@ p.small {
   color: var(--muted);
   font-size: 13px;
 }
+.ko-where {
+  margin-top: 10px;
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ko-spots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+.ko-spot {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: rgba(23, 12, 36, 0.85);
+  color: #fff;
+  font: 800 15px var(--font-body);
+  cursor: pointer;
+}
+.ko-spot b {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+}
+.ko-spot small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ko-spot.on {
+  border-color: var(--gold);
+  background: rgba(255, 197, 61, 0.18);
+  box-shadow: 0 0 0 2px rgba(255, 197, 61, 0.35);
+}
+.ko-spot:hover {
+  border-color: var(--gold);
+}
 .scope {
   inset: 0;
   background: radial-gradient(circle at center, transparent min(36vh, 36vw), rgba(0, 0, 0, 0.55) calc(min(36vh, 36vw) + 1px), #000 calc(min(36vh, 36vw) + 10px));
