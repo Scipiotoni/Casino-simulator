@@ -1,5 +1,5 @@
 import type { Card } from './types';
-import { Shoe, bestHand } from './cards';
+import { Shoe, bestHand, isRed } from './cards';
 
 /**
  * Standard casino rule sets (Las Vegas / European conventions) used both by the games you
@@ -99,6 +99,16 @@ export const JOB_PAYTABLE: { name: string; pays: number }[] = [
   { name: 'Jacks or Better', pays: 1 },
 ];
 
+/**
+ * What a hand pays on a real machine for `coins` coins (1–5), stake included: the table
+ * times the coins, except the royal flush, which pays 250 a coin and jumps to 4,000 at
+ * five coins (that's why you always play max coins).
+ */
+export function vpPays(name: string, coins: number): number {
+  if (name === 'Royal Flush') return coins >= 5 ? 4000 : 250 * coins;
+  return (JOB_PAYTABLE.find((l) => l.name === name)?.pays ?? 0) * coins;
+}
+
 /** Jacks or Better result for a final five-card hand ("pays" is for 1 coin, stake included). */
 export function jacksOrBetter(cards: Card[]): { name: string; pays: number } {
   const s = bestHand(cards);
@@ -191,7 +201,9 @@ export type SicBoBet =
   | { kind: 'single'; n: number }
   | { kind: 'double'; n: number }
   | { kind: 'triple'; n: number }
-  | { kind: 'anyTriple' };
+  | { kind: 'anyTriple' }
+  /** Two different numbers both showing (a domino), 5:1. */
+  | { kind: 'combo'; n: number; m: number };
 
 export const SICBO_TOTAL_PAYS: Record<number, number> = { 4: 60, 5: 30, 6: 17, 7: 12, 8: 8, 9: 6, 10: 6, 11: 6, 12: 6, 13: 8, 14: 12, 15: 17, 16: 30, 17: 60 };
 
@@ -217,6 +229,8 @@ export function sicBoReturn(bet: SicBoBet, amount: number, dice: [number, number
       return count(bet.n) === 3 ? amount * 181 : 0;
     case 'anyTriple':
       return triple ? amount * 31 : 0;
+    case 'combo':
+      return count(bet.n) && count(bet.m) ? amount * 6 : 0;
   }
 }
 
@@ -296,4 +310,118 @@ export function bigSixPays(sym: number): number {
 const shared = new Shoe(8);
 export function shoeDraw(): Card {
   return shared.draw();
+}
+
+// ------------------------------------------------------------------ blackjack side bets
+
+/**
+ * Perfect Pairs on your first two cards: a perfect pair (same rank and suit) 25:1, a
+ * coloured pair (same rank and colour) 12:1, a mixed pair 6:1. Returns the pay "to 1"
+ * (0 = lost) and the name.
+ */
+export function perfectPairs(a: Card, b: Card): { name: string; pays: number } {
+  if (a.rank !== b.rank) return { name: 'No pair', pays: 0 };
+  if (a.suit === b.suit) return { name: 'Perfect pair', pays: 25 };
+  if (isRed(a) === isRed(b)) return { name: 'Coloured pair', pays: 12 };
+  return { name: 'Mixed pair', pays: 6 };
+}
+
+/**
+ * 21+3: your two cards and the dealer's up card as a three-card poker hand. Suited trips
+ * 100:1, straight flush 40:1, three of a kind 30:1, straight 10:1, flush 5:1.
+ */
+export function twentyOnePlus3(cards: Card[]): { name: string; pays: number } {
+  const s = threeCardScore(cards);
+  const flush = cards.every((c) => c.suit === cards[0].suit);
+  if (s[0] === 4 && flush) return { name: 'Suited trips', pays: 100 };
+  if (s[0] === 5) return { name: 'Straight flush', pays: 40 };
+  if (s[0] === 4) return { name: 'Three of a kind', pays: 30 };
+  if (s[0] === 3) return { name: 'Straight', pays: 10 };
+  if (s[0] === 2) return { name: 'Flush', pays: 5 };
+  return { name: 'Nothing', pays: 0 };
+}
+
+// ------------------------------------------------------------------ poker side bets
+
+/**
+ * Casino Hold'em AA Bonus: your two cards and the flop. Pair of aces or better pays;
+ * judged before you call or fold.
+ */
+export function aaBonus(five: Card[]): { name: string; pays: number } {
+  const s = bestHand(five);
+  const pays = [0, 0, 7, 7, 7, 20, 30, 40, 50, 100][s.cat];
+  if (s.cat >= 2) return { name: s.name, pays };
+  if (s.cat === 1 && s.key[1] === 14) return { name: 'Pair of aces', pays: 7 };
+  return { name: s.name, pays: 0 };
+}
+
+/**
+ * Three Card Poker 6-Card Bonus: the best five of your three and the dealer's three.
+ * Royal 1000:1, straight flush 200:1, quads 100:1, full house 20:1, flush 15:1,
+ * straight 10:1, three of a kind 5:1.
+ */
+export function sixCardBonus(six: Card[]): { name: string; pays: number } {
+  const s = bestHand(six);
+  const pays = [0, 0, 0, 5, 10, 15, 20, 100, 200, 1000][s.cat];
+  return { name: s.name, pays };
+}
+
+// ------------------------------------------------------------------ baccarat scoreboards
+
+export type CoupMark = { winner: 'P' | 'B' | 'T'; pp?: boolean; bp?: boolean; natural?: boolean };
+
+export interface RoadCell {
+  col: number;
+  row: number;
+  winner: 'P' | 'B' | 'T';
+  ties: number;
+  pp?: boolean;
+  bp?: boolean;
+}
+
+/** Bead plate: every coup in order, down six rows then across. */
+export function beadPlate(coups: CoupMark[], rows = 6): RoadCell[] {
+  return coups.map((c, i) => ({ col: Math.floor(i / rows), row: i % rows, winner: c.winner, ties: 0, pp: c.pp, bp: c.bp }));
+}
+
+/**
+ * The big road: a new column each time the winner changes, down the column while it
+ * repeats, turning right along the row when the column is full or blocked (the "dragon
+ * tail"). Ties don't take a cell: they're counted on the last one (green slashes).
+ */
+export function bigRoad(coups: CoupMark[], rows = 6): RoadCell[] {
+  const out: RoadCell[] = [];
+  const taken = new Set<string>();
+  const at = (c: number, r: number) => taken.has(`${c},${r}`);
+  let lead = 0;
+  let startCol = -1;
+  let last: RoadCell | null = null;
+  for (const c of coups) {
+    if (c.winner === 'T') {
+      if (last) last.ties++;
+      else lead++;
+      continue;
+    }
+    let col: number;
+    let row: number;
+    if (!last || last.winner !== c.winner) {
+      col = startCol + 1;
+      while (at(col, 0)) col++;
+      startCol = col;
+      row = 0;
+    } else if (last.row + 1 < rows && !at(last.col, last.row + 1)) {
+      col = last.col;
+      row = last.row + 1;
+    } else {
+      col = last.col + 1;
+      row = last.row;
+      while (at(col, row)) col++;
+    }
+    const cell: RoadCell = { col, row, winner: c.winner, ties: lead, pp: c.pp, bp: c.bp };
+    lead = 0;
+    taken.add(`${col},${row}`);
+    out.push(cell);
+    last = cell;
+  }
+  return out;
 }

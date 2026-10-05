@@ -11,16 +11,23 @@ export function isRed(c: Card): boolean {
   return c.suit === 1 || c.suit === 2;
 }
 
-/** A shuffled multi-deck shoe that reshuffles itself when it runs low. */
+/**
+ * A shuffled multi-deck shoe. Without a cut card it quietly reshuffles when it runs low;
+ * with one (`cutAt` cards from the back, like a dealer's plastic cut card) it deals right
+ * down to the cut and the table changes the shoe between rounds.
+ */
 export class Shoe {
   private cards: Card[] = [];
+  /** Cards dealt since the last shuffle (they're in the discard tray). */
+  dealt = 0;
 
-  constructor(private decks = 6, private rng: () => number = Math.random) {
+  constructor(private decks = 6, private rng: () => number = Math.random, readonly cutAt = 0) {
     this.shuffle();
   }
 
   shuffle(): void {
     this.cards = [];
+    this.dealt = 0;
     for (let d = 0; d < this.decks; d++) for (let s = 0; s < 4; s++) for (let r = 0; r < 13; r++) this.cards.push({ rank: r, suit: s });
     for (let i = this.cards.length - 1; i > 0; i--) {
       const j = Math.floor(this.rng() * (i + 1));
@@ -29,12 +36,27 @@ export class Shoe {
   }
 
   draw(): Card {
-    if (this.cards.length < 15) this.shuffle();
+    if (this.cutAt ? this.cards.length === 0 : this.cards.length < 15) this.shuffle();
+    this.dealt++;
     return this.cards.pop()!;
+  }
+
+  /** Burn the top card (into the discard tray, unseen). */
+  burn(): Card {
+    return this.draw();
   }
 
   get remaining(): number {
     return this.cards.length;
+  }
+
+  get size(): number {
+    return this.decks * 52;
+  }
+
+  /** The cut card has come out: finish the round, then shuffle. */
+  get cutCardOut(): boolean {
+    return this.cutAt > 0 && this.cards.length <= this.cutAt;
   }
 }
 
