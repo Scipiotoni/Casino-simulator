@@ -110,6 +110,8 @@ export class GunPlay {
   private swingT = 0;
   private aimX = 0;
   private aimY = 0;
+  /** How far the gun in your hands is pulled back from a wall in front of you (0–1). */
+  private nearK = 0;
   private swayY = 0;
   private vmKick = 0;
   private bobT = 0;
@@ -390,9 +392,14 @@ export class GunPlay {
     const bob = Math.min(1, speed / 4) * (1 - this.adsK * 0.85);
     this.vmKick = Math.max(0, this.vmKick - dt * 9);
     const reload = this.reloading > 0 && this.def ? Math.sin(Math.min(1, 1 - this.reloading / this.def.reload) * Math.PI) : 0;
-    // Too close to a wall: pull the gun back and down.
+    // Too close to a wall: pull the gun back and tip it up out of the way (eased, so it
+    // doesn't snap). Indoors (a heist) that's the walls and shut doors, not the street's edge.
     const fwd = g.cam.lookDir(new THREE.Vector3());
-    const near = !g.street.isOutdoors(g.player.x + fwd.x * 0.75, g.player.z + fwd.z * 0.75) ? 1 : 0;
+    const ax = g.player.x + fwd.x * 0.75;
+    const az = g.player.z + fwd.z * 0.75;
+    const wall = g.indoorFight ? this.indoorBlocked(ax, 1.4, az) : !g.street.isOutdoors(ax, az);
+    this.nearK += ((wall ? 1 : 0) - this.nearK) * Math.min(1, dt * 10);
+    const near = this.nearK;
     const k = this.adsK;
     const sightY = -0.03 - vm.muzzle.y * vm.scale;
     const hip = { x: 0.072, y: -0.075, z: -0.24 };
