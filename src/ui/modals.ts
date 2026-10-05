@@ -804,6 +804,7 @@ export class Modals {
       b.setAttribute('aria-checked', String(get()));
       return h('div', { class: 'field row' }, h('span', { class: 'field-label', text: label }), b);
     };
+    body.appendChild(toggle('Hide tab (looks like an untitled Google Doc)', () => !!st.hideTab, (v) => (st.hideTab = v)));
     body.appendChild(toggle('Lounge music', () => st.musicOn, (v) => (st.musicOn = v)));
     body.appendChild(toggle('Show FPS', () => st.showFps, (v) => (st.showFps = v)));
     const q = h('div', { class: 'seg' });

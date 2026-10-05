@@ -174,6 +174,8 @@ export interface Settings {
   reticle?: ReticleOpts;
   /** How far the world is drawn in detail. */
   viewDist?: ViewDist;
+  /** Hide tab: the browser tab looks like an untitled document. */
+  hideTab?: boolean;
 }
 
 const DAY_SECONDS = 300;

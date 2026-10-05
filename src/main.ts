@@ -14,6 +14,7 @@ import { TitleScreen } from './ui/title';
 import { audio } from './core/audio';
 import { loadJSON, removeKey, saveJSON } from './core/storage';
 import { formatMoney } from './core/math';
+import { setTabCloak } from './ui/tabCloak';
 
 const SAVE_KEY = 'jackpot-tycoon:save:v1';
 const SETTINGS_KEY = 'jackpot-tycoon:settings:v1';
@@ -74,6 +75,7 @@ async function start(hotData: unknown): Promise<void> {
   }
   const stored = loadJSON<Partial<Settings>>(SETTINGS_KEY);
   const settings: Settings = { ...DEFAULT_SETTINGS, quality: guessQuality(), ...stored };
+  setTabCloak(!!settings.hideTab);
   app.innerHTML = '';
   const stage = document.createElement('div');
   stage.className = 'stage';
@@ -174,6 +176,7 @@ async function start(hotData: unknown): Promise<void> {
   game.events.on('camera', () => saveJSON(SETTINGS_KEY, settings));
   hud.modals.onSettingsChanged = () => {
     applyAudio();
+    setTabCloak(!!settings.hideTab);
     saveJSON(SETTINGS_KEY, settings);
   };
 
