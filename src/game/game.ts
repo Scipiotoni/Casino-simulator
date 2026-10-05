@@ -1585,8 +1585,7 @@ export class Game implements World, ItemHost {
     if (refill > 0) return `🕒 Uncle Sal is still restocking after your last visit. Come back in ${waitText(refill)}.`;
     const t = this.heistTarget(pid);
     if (!t) return `${lot.owner}’s house is locked up tight right now.`;
-    if (!t.tier || !t.snap.items.some((i) => i.id === 'vault')) return `${lot.owner}’s house has no vault: nothing worth stealing.`;
-    if (t.vault < 100) return `${lot.owner}’s vault is empty: nothing worth stealing.`;
+    // No vault, or an empty one: you can still break in (there's just nothing to take).
     const cd = this.houseCooldownOf(pid);
     if (cd.until > now && cd.last) {
       const who = cd.last.by === this.player.name ? 'You' : cd.last.by;
@@ -1925,7 +1924,9 @@ export class Game implements World, ItemHost {
       const h = this.heist;
       this.events.emit('toast', {
         text: h
-          ? `🦹 You’re in ${lot.owner}’s house. Find the ${h.vaultTierName} and crack it${h.guards.length ? `, and watch out for ${h.guards.length} guard${h.guards.length === 1 ? '' : 's'}` : ''}. Guns work in here.`
+          ? h.vault
+            ? `🦹 You’re in ${lot.owner}’s house. Find the ${h.vaultTierName} and crack it${h.guards.length ? `, and watch out for ${h.guards.length} guard${h.guards.length === 1 ? '' : 's'}` : ''}. Guns work in here.`
+            : `🦹 You’re in ${lot.owner}’s house. There’s no vault here, so nothing to steal${h.guards.length ? `, and ${h.guards.length} guard${h.guards.length === 1 ? '' : 's'} on watch` : ''}. Guns work in here.`
           : `You’re in ${lot.owner}’s house.`,
         kind: 'event',
       });
@@ -3988,7 +3989,16 @@ export class Game implements World, ItemHost {
     const tz = Math.floor(this.player.z);
     const lot = this.street.doorAt(tx, tz);
     if (lot) {
-      if (!this.enterLot(lot)) {
+      // Walking into someone's front door asks whether you want to break in (or says why you can't).
+      const robbable = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
+      if (robbable) {
+        const block = this.entryBlock(lot);
+        if (block) {
+          audio.play('error');
+          this.notify(block, 'bad');
+        } else if (!this.modalOpen) this.events.emit('heistAsk', lot);
+      }
+      if (robbable || !this.enterLot(lot)) {
         // Bounced: step back onto the sidewalk in front of that door.
         const l = this.street.map(this.street.activeId, lot.id, this.player.x, this.player.z);
         const back = this.street.toActive(lot.id, l.x, FACADE_Z + 1.3);

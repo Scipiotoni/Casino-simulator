@@ -1351,6 +1351,15 @@ input:focus-visible {
   font-size: 12px;
 }
 
+.heist-empty {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 197, 61, 0.45);
+  background: rgba(255, 197, 61, 0.1);
+  font-weight: 700;
+  font-size: 13px;
+}
 .lead {
   margin: 0;
   font-size: 15px;
