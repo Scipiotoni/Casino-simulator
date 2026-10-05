@@ -281,6 +281,22 @@ export class Grid {
     return null;
   }
 
+  /**
+   * Can a double door hang across these two tiles side by side (`a` west or north of `b`)?
+   * Each may be a wall or a gap: what counts is a wall (or the outer wall) beyond both ends,
+   * so a double door fills a two-tile gap in a wall as well as two tiles of wall.
+   */
+  doorPair(a: [number, number], b: [number, number]): 'x' | 'z' | null {
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    if (Math.abs(dx) + Math.abs(dz) !== 1 || dx < 0 || dz < 0) return null;
+    const side = (tx: number, tz: number) => this.inWallLine(tx, tz) || !this.isOwned(tx, tz);
+    const [ox, oz] = [a[0] - dx, a[1] - dz];
+    const [px, pz] = [b[0] + dx, b[1] + dz];
+    if (!side(ox, oz) || !side(px, pz) || !(this.inWallLine(ox, oz) || this.inWallLine(px, pz))) return null;
+    return dx ? 'x' : 'z';
+  }
+
   get wallCount(): number {
     let n = 0;
     for (let i = 0; i < this.wall.length; i++) if (this.wall[i] > 0 && this.wall[i] < DOOR_BASE) n++;

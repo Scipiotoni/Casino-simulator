@@ -245,7 +245,23 @@ export class ItemManager {
     if (g.doorAt(x, z) >= 0) return { ok: false, reason: 'There’s already a door there' };
     if (g.occ[i]) return { ok: false, reason: 'Something is standing there' };
     if (this.isReserved(floor, x, z)) return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
-    if (!g.doorRun(x, z)) return { ok: false, reason: 'A door goes in a wall: put it between two walls' };
+    if (!g.doorRun(x, z)) {
+      const two = g.doorPair([x - 1, z], [x, z]) || g.doorPair([x, z], [x + 1, z]) || g.doorPair([x, z - 1], [x, z]) || g.doorPair([x, z], [x, z + 1]);
+      return { ok: false, reason: two ? 'That gap is two tiles wide: switch the door to Double to fill it' : 'A door goes in a wall: put it between two walls' };
+    }
+    return { ok: true };
+  }
+
+  /** Can a double door hang across these two tiles (`a` west or north of `b`): in a wall, or a two-tile gap in one? */
+  canDoubleDoor(floor: number, a: [number, number], b: [number, number]): PlaceCheck {
+    const g = this.grid(floor);
+    for (const [x, z] of [a, b]) {
+      if (!g.isOwned(x, z)) return { ok: false, reason: 'Doors go inside your building' };
+      if (g.doorAt(x, z) >= 0) return { ok: false, reason: 'There’s already a door there' };
+      if (g.occ[g.idx(x, z)]) return { ok: false, reason: 'Something is standing there' };
+      if (this.isReserved(floor, x, z)) return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
+    }
+    if (!g.doorPair(a, b)) return { ok: false, reason: 'A double door goes in a wall, or in a two-tile gap between walls' };
     return { ok: true };
   }
 

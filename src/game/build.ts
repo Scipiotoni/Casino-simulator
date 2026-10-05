@@ -420,10 +420,13 @@ export class BuildController {
     const f = this.g.viewFloor;
     const grid = this.g.gridAt(f);
     const [x, z] = at;
+    // Along the wall line first; either neighbour (a two-tile gap counts as wall).
     const alongX = grid.inWallLine(x - 1, z) || grid.inWallLine(x + 1, z);
-    const cands: [number, number][] = alongX ? [[x + 1, z], [x - 1, z]] : [[x, z + 1], [x, z - 1]];
-    const next = cands.find(([cx, cz]) => this.g.items.canDoor(f, cx, cz).ok || grid.doorAt(cx, cz) === m.door) ?? cands[0];
-    return next[0] < x || next[1] < z ? [next, at] : [at, next];
+    const ax: [number, number][][] = [[at, [x + 1, z]], [[x - 1, z], at]];
+    const az: [number, number][][] = [[at, [x, z + 1]], [[x, z - 1], at]];
+    const pairs = alongX ? [...ax, ...az] : [...az, ...ax];
+    const ok = pairs.find(([a, b]) => this.g.items.canDoubleDoor(f, a, b).ok);
+    return ok ?? pairs[0];
   }
 
   private showWallPreview(line: [number, number][]): void {
@@ -450,11 +453,12 @@ export class BuildController {
     const st = WALL_STYLES[m.style] ?? WALL_STYLES[0];
     const h = BUILT_WALL_H * 0.42;
     const door = m.door >= 0 ? DOOR_TYPES[m.door] : null;
+    const pairOk = !!door && !!m.double && line.length === 2 && this.g.items.canDoubleDoor(this.g.viewFloor, line[0], line[1]).ok;
     for (const [x, z] of line) {
       let ok: boolean;
       if (m.erase) ok = grid.inWallLine(x, z);
       else if (door) {
-        ok = this.g.items.canDoor(this.g.viewFloor, x, z).ok && this.g.money >= cost + door.price;
+        ok = (m.double && line.length === 2 ? pairOk : this.g.items.canDoor(this.g.viewFloor, x, z).ok) && this.g.money >= cost + door.price;
         if (ok) cost += door.price;
       } else {
         ok = this.g.items.canWall(this.g.viewFloor, x, z).ok;
@@ -500,17 +504,18 @@ export class BuildController {
       }
     } else if (m.door >= 0) {
       const door = DOOR_TYPES[m.door] ?? DOOR_TYPES[0];
-      // A double door goes in whole or not at all.
-      if (m.double && tiles.length === 2) {
-        const bad = tiles.map(([x, z]) => this.g.items.canDoor(f, x, z)).find((c) => !c.ok);
-        if (bad || this.g.money < door.price * 2) {
+      // A double door goes in whole or not at all: in a wall, or a two-tile gap in one.
+      const pair = m.double && tiles.length === 2;
+      if (pair) {
+        const c = this.g.items.canDoubleDoor(f, tiles[0], tiles[1]);
+        if (!c.ok || this.g.money < door.price * 2) {
           audio.play('error');
-          this.g.notify(bad ? `${bad.reason ?? 'No room here'} (a double door needs two wall tiles side by side)` : `A double ${door.name} costs ${formatMoney(door.price * 2)}`, 'bad');
+          this.g.notify(!c.ok ? c.reason ?? 'No room for a double door here' : `A double ${door.name} costs ${formatMoney(door.price * 2)}`, 'bad');
           return;
         }
       }
       for (const [x, z] of tiles) {
-        const c = this.g.items.canDoor(f, x, z);
+        const c = pair ? { ok: true, reason: '' } : this.g.items.canDoor(f, x, z);
         if (!c.ok) {
           reason = c.reason ?? '';
           continue;
