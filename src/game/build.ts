@@ -14,7 +14,7 @@ export type Mode =
   | { kind: 'play' }
   | { kind: 'place'; def: ItemDef; rot: number; color: number; moving: PlacedItem | null }
   | { kind: 'paint'; style: number }
-  | { kind: 'wall'; style: number; erase: boolean; door: number };
+  | { kind: 'wall'; style: number; erase: boolean; door: number; double?: boolean };
 
 const MAX_WALL_RUN = 48;
 
@@ -106,10 +106,11 @@ export class BuildController {
     this.g.emitMode();
   }
 
-  /** Hang doors of this type: click a wall (or a gap between two walls) to put one in. */
-  setDoorType(type: number): void {
+  /** Hang doors of this type: click a wall (or a gap between two walls) to put one in (`double`: two side by side). */
+  setDoorType(type: number, double = this.mode.kind === 'wall' && !!this.mode.double): void {
     if (this.mode.kind !== 'wall') return;
     this.mode.door = Math.max(0, Math.min(DOOR_TYPES.length - 1, type));
+    this.mode.double = double;
     this.mode.erase = false;
     this.wallStart = null;
     this.wallKey = '';
@@ -383,13 +384,13 @@ export class BuildController {
     const p = input.pointer.over || input.isTouch ? this.groundAt(input.pointer.x, input.pointer.y) : null;
     const cur: [number, number] | null = p ? [Math.floor(p.x), Math.floor(p.z)] : null;
     if (m.door >= 0) {
-      // Doors go in one at a time: click the wall where it should be.
+      // Doors go in one at a time (or a double door, two side by side): click the wall where it should be.
       this.wallStart = null;
-      this.wallLine = cur ? [cur] : [];
+      this.wallLine = cur ? this.doorTiles(cur) : [];
       this.showWallPreview(this.wallLine);
       const c = input.clicks[input.clicks.length - 1];
       const q = c ? this.groundAt(c.x, c.y) : null;
-      if (q) this.applyWall([[Math.floor(q.x), Math.floor(q.z)]]);
+      if (q) this.applyWall(this.doorTiles([Math.floor(q.x), Math.floor(q.z)]));
       return;
     }
     if (input.primaryDown && cur && !this.wallStart) this.wallStart = cur;
@@ -409,11 +410,27 @@ export class BuildController {
     }
   }
 
+  /**
+   * The tiles a door goes on when you click this one: just it, or for a double door, it and its
+   * neighbour along the wall (the next one east or south, else west or north).
+   */
+  private doorTiles(at: [number, number]): [number, number][] {
+    const m = this.mode;
+    if (m.kind !== 'wall' || !m.double) return [at];
+    const f = this.g.viewFloor;
+    const grid = this.g.gridAt(f);
+    const [x, z] = at;
+    const alongX = grid.inWallLine(x - 1, z) || grid.inWallLine(x + 1, z);
+    const cands: [number, number][] = alongX ? [[x + 1, z], [x - 1, z]] : [[x, z + 1], [x, z - 1]];
+    const next = cands.find(([cx, cz]) => this.g.items.canDoor(f, cx, cz).ok || grid.doorAt(cx, cz) === m.door) ?? cands[0];
+    return next[0] < x || next[1] < z ? [next, at] : [at, next];
+  }
+
   private showWallPreview(line: [number, number][]): void {
     const m = this.mode;
     if (m.kind !== 'wall') return;
     const grid = this.g.gridAt(this.g.viewFloor);
-    const key = `${line.map((t) => t.join(',')).join(';')}|${m.style}|${m.erase}|${m.door}|${grid.version}|${this.g.money > 0}`;
+    const key = `${line.map((t) => t.join(',')).join(';')}|${m.style}|${m.erase}|${m.door}|${m.double}|${grid.version}|${this.g.money > 0}`;
     if (key === this.wallKey) return;
     this.wallKey = key;
     if (!this.wallPreview) {
@@ -437,7 +454,7 @@ export class BuildController {
       let ok: boolean;
       if (m.erase) ok = grid.inWallLine(x, z);
       else if (door) {
-        ok = this.g.items.canDoor(this.g.viewFloor, x, z).ok && this.g.money >= door.price;
+        ok = this.g.items.canDoor(this.g.viewFloor, x, z).ok && this.g.money >= cost + door.price;
         if (ok) cost += door.price;
       } else {
         ok = this.g.items.canWall(this.g.viewFloor, x, z).ok;
@@ -483,6 +500,15 @@ export class BuildController {
       }
     } else if (m.door >= 0) {
       const door = DOOR_TYPES[m.door] ?? DOOR_TYPES[0];
+      // A double door goes in whole or not at all.
+      if (m.double && tiles.length === 2) {
+        const bad = tiles.map(([x, z]) => this.g.items.canDoor(f, x, z)).find((c) => !c.ok);
+        if (bad || this.g.money < door.price * 2) {
+          audio.play('error');
+          this.g.notify(bad ? `${bad.reason ?? 'No room here'} (a double door needs two wall tiles side by side)` : `A double ${door.name} costs ${formatMoney(door.price * 2)}`, 'bad');
+          return;
+        }
+      }
       for (const [x, z] of tiles) {
         const c = this.g.items.canDoor(f, x, z);
         if (!c.ok) {
@@ -519,7 +545,7 @@ export class BuildController {
     }
     if (built) {
       this.g.onWallsChanged(m.door >= 0 ? 0 : built, m.erase);
-      if (m.door >= 0 && !m.erase) this.g.notify(`${DOOR_TYPES[m.door]?.name ?? 'Door'} hung.`, 'good');
+      if (m.door >= 0 && !m.erase) this.g.notify(`${m.double && built === 2 ? 'Double ' : ''}${DOOR_TYPES[m.door]?.name ?? 'Door'} hung.`, 'good');
       audio.play(m.erase ? 'break' : 'place', { pitch: 0.9 + Math.random() * 0.2 });
       for (const [x, z] of tiles.slice(0, 6)) this.g.effects.dust(x + 0.5, z + 0.5, 0.6);
     }

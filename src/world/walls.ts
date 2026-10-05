@@ -353,7 +353,7 @@ export class WallRenderer {
   heightTarget = 1;
   /** Doors in the walls: their swinging leaves. */
   private doorGroup = new THREE.Group();
-  private doorList: { x: number; z: number; type: number; pivot: THREE.Group; base: number; open: number; want: boolean }[] = [];
+  private doorList: { x: number; z: number; type: number; pivot: THREE.Group; base: number; dir: number; open: number; want: boolean; pair: [number, number] | null }[] = [];
   /** Should the door on this tile be open now (somebody it lets through is close)? Set by the game. */
   doorOpen: ((x: number, z: number, type: number) => boolean) | null = null;
   private doorT = 0;
@@ -363,11 +363,15 @@ export class WallRenderer {
     this.group.add(this.doorGroup);
   }
 
-  /** The swinging leaf of one door: hinged on one jamb, it folds down with the walls in the cutaway. */
-  private addDoorLeaf(x: number, z: number, type: number, run: 'x' | 'z'): void {
+  /**
+   * The swinging leaf of one door: hinged on one jamb, it folds down with the walls in the
+   * cutaway. Half of a double door (`pair`, the other half's tile) is wider, hinged on its outer
+   * jamb, and swings the same way as its partner.
+   */
+  private addDoorLeaf(x: number, z: number, type: number, run: 'x' | 'z', pair: [number, number] | null = null): void {
     const dt = doorType(type);
     const pivot = new THREE.Group();
-    const W = 0.84;
+    const W = pair ? 0.9 : 0.84;
     const LH = DOOR_H - 0.06;
     const th = dt.id === 'blast' ? 0.13 : 0.06;
     const part = (sx: number, sy: number, sz: number, px: number, py: number, pz: number, m: THREE.Material, shadow = true) => {
@@ -426,15 +430,20 @@ export class WallRenderer {
         wheel.dispose();
       }
     }
-    // Hinged on one jamb; the leaf runs along the wall line when it's shut.
+    // Hinged on one jamb; the leaf runs along the wall line when it's shut. The second half of a
+    // double door is mirrored: hinged on the far jamb, meeting its partner in the middle.
     const cx = x + 0.5;
     const cz = z + 0.5;
     const base = run === 'x' ? 0 : -Math.PI / 2;
-    if (run === 'x') pivot.position.set(cx - W / 2, 0, cz);
-    else pivot.position.set(cx, 0, cz - W / 2);
+    const second = !!pair && (pair[0] < x || pair[1] < z);
+    const hinge = pair ? 0.5 - 0.09 : W / 2;
+    const off = second ? hinge : -hinge;
+    if (run === 'x') pivot.position.set(cx + off, 0, cz);
+    else pivot.position.set(cx, 0, cz + off);
+    if (second) pivot.scale.x = -1;
     pivot.rotation.y = base;
     this.doorGroup.add(pivot);
-    this.doorList.push({ x, z, type, pivot, base, open: 0, want: false });
+    this.doorList.push({ x, z, type, pivot, base, dir: second ? 1 : -1, open: 0, want: false, pair });
   }
 
   rebuild(): void {
@@ -562,7 +571,11 @@ export class WallRenderer {
       const along = (len: number, thick: number): [number, number] => (run === 'x' ? [len, thick] : [thick, len]);
       const [lx, lz] = along(1, T);
       body.add(cx, (DOOR_H + H) / 2, cz, lx, H - DOOR_H, lz);
+      // A double door has no jamb where its two halves meet.
+      const pair = g.doorPartner(d.x, d.z);
+      const pairSide = pair ? (pair[0] > d.x || pair[1] > d.z ? 1 : -1) : 0;
       for (const sd of [-1, 1]) {
+        if (sd === pairSide) continue;
         const off = sd * (0.5 - 0.045);
         const [jx, jz] = along(0.09, T + 0.07);
         trim.add(run === 'x' ? cx + off : cx, DOOR_H / 2, run === 'x' ? cz : cz + off, jx, DOOR_H, jz);
@@ -580,7 +593,7 @@ export class WallRenderer {
         const [nx, nz] = along(1, T + 0.09);
         nb2.add(cx, H - 0.17, cz, nx, 0.04, nz);
       }
-      this.addDoorLeaf(d.x, d.z, d.type, run);
+      this.addDoorLeaf(d.x, d.z, d.type, run, pair);
     }
     for (const [s, b] of bodies) {
       const st = WALL_STYLES[s] ?? WALL_STYLES[0];
@@ -608,12 +621,14 @@ export class WallRenderer {
     this.doorT -= dt;
     const check = this.doorT <= 0;
     if (check) this.doorT = 0.12;
+    if (check) for (const d of this.doorList) d.want = !!this.doorOpen?.(d.x, d.z, d.type);
     for (const d of this.doorList) {
-      if (check) d.want = !!this.doorOpen?.(d.x, d.z, d.type);
-      const want = d.want ? 1 : 0;
+      // Both halves of a double door open together.
+      const other = d.pair ? this.doorList.find((o) => o.x === d.pair![0] && o.z === d.pair![1]) : null;
+      const want = d.want || other?.want ? 1 : 0;
       const before = d.open;
       d.open = damp(d.open, want, want ? 7 : 4, dt);
-      if (Math.abs(d.open - before) > 1e-4) d.pivot.rotation.y = d.base - d.open * 1.5;
+      if (Math.abs(d.open - before) > 1e-4) d.pivot.rotation.y = d.base + d.dir * d.open * 1.5;
     }
   }
 

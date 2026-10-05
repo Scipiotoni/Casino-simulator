@@ -1351,6 +1351,27 @@ input:focus-visible {
   font-size: 12px;
 }
 
+.door-size {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.door-size .chip {
+  min-height: 30px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 800 12px var(--font-body);
+  cursor: pointer;
+}
+.door-size .chip.on {
+  color: var(--gold-ink);
+  background: var(--gold);
+}
 .heist-empty {
   margin: 0;
   padding: 8px 10px;

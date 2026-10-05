@@ -287,6 +287,25 @@ export class Grid {
     return n;
   }
 
+  /**
+   * Two doors of the same kind side by side in a wall line make a double door: the other half
+   * of the one on this tile, or null. Longer runs pair up from their west (or north) end.
+   */
+  doorPartner(x: number, z: number): [number, number] | null {
+    const t = this.doorAt(x, z);
+    if (t < 0) return null;
+    for (const [dx, dz] of [[1, 0], [0, 1]] as const) {
+      const same = (k: number) => this.doorAt(x + dx * k, z + dz * k) === t;
+      if (!same(1) && !same(-1)) continue;
+      // Where this door sits in its run of same doors.
+      let i = 0;
+      while (same(-(i + 1))) i++;
+      if (i % 2 === 1) return [x - dx, z - dz];
+      return same(1) ? [x + dx, z + dz] : null;
+    }
+    return null;
+  }
+
   /** Every door on this floor. */
   doors(): { x: number; z: number; type: number }[] {
     const out: { x: number; z: number; type: number }[] = [];

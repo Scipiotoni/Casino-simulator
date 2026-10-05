@@ -467,12 +467,20 @@ export class Hud {
       }, h('span', { class: 'sw-chip door-chip', style: `background:${d.swatch}` }, h('i', { text: d.lock ? '🔒' : '' })),
       h('span', { class: 'sw-name', text: d.name }), h('span', { class: 'sw-price', text: `${formatMoney(d.price)} · ${locks}` })));
     });
-    const title = m.erase ? 'Knock down walls & doors' : m.door >= 0 ? `Hang a ${DOOR_TYPES[m.door].name}` : 'Build walls';
-    this.wallBar.append(
-      h('div', { class: 'paint-head' }, h('span', { text: m.door >= 0 ? '🚪' : '🧱' }), h('b', { text: title }), this.wallInfo,
-        h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } })),
-      row,
-    );
+    const title = m.erase ? 'Knock down walls & doors' : m.door >= 0 ? `Hang a ${m.double ? 'double ' : ''}${DOOR_TYPES[m.door].name}` : 'Build walls';
+    // Doors: one leaf, or a double door (two side by side, swinging open together).
+    const size = m.door >= 0
+      ? h('div', { class: 'door-size', role: 'radiogroup', 'aria-label': 'Door size' },
+        ...([[false, 'Single'], [true, 'Double']] as const).map(([dbl, label]) => h('button', {
+          class: `chip${!!m.double === dbl ? ' on' : ''}`, role: 'radio', 'aria-checked': !!m.double === dbl ? 'true' : 'false',
+          title: dbl ? 'Two doors side by side that open together (twice the price)' : 'One door',
+          onClick: () => { g.build.setDoorType(m.door, dbl); audio.play('click'); },
+        }, dbl ? '🚪🚪 ' : '🚪 ', label)))
+      : null;
+    const head = h('div', { class: 'paint-head' }, h('span', { text: m.door >= 0 ? '🚪' : '🧱' }), h('b', { text: title }), this.wallInfo);
+    if (size) head.append(size);
+    head.append(h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } }));
+    this.wallBar.append(head, row);
     this.updateWallInfo();
   }
 
@@ -482,7 +490,9 @@ export class Hud {
     if (m.kind !== 'wall') return;
     const n = g.build.wallLine.length;
     if (m.door >= 0) {
-      this.wallInfo.textContent = `${g.input.isTouch ? 'Tap' : 'Click'} a wall (or the gap between two walls) to hang it`;
+      this.wallInfo.textContent = m.double
+        ? `${g.input.isTouch ? 'Tap' : 'Click'} a wall two tiles wide to hang a double door${n === 2 ? ` · ${formatMoney(g.build.wallCost)}` : ''}`
+        : `${g.input.isTouch ? 'Tap' : 'Click'} a wall (or the gap between two walls) to hang it`;
       return;
     }
     const help = g.input.isTouch ? 'Drag a line across the floor' : 'Click and drag a line · right-click cancels';

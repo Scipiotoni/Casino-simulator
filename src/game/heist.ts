@@ -686,6 +686,9 @@ export class Heist {
   /** You beat the door's lock. */
   doorCracked(floor: number, x: number, z: number): void {
     this.unlocked.add(this.key(floor, x, z));
+    // Both halves of a double door share the lock.
+    const pair = this.g.gridAt(floor).doorPartner(x, z);
+    if (pair) this.unlocked.add(this.key(floor, pair[0], pair[1]));
     audio.play('vaultClunk', { pitch: 1.4 });
     this.g.effects.sparkle(x + 0.5, 1.1, z + 0.5, 12, 0x9fe8ff, 0.6);
     this.g.notify(`🔓 The ${doorType(this.g.gridAt(floor).doorAt(x, z)).name} is open.`, 'good');
