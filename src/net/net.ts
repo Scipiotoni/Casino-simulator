@@ -21,7 +21,9 @@ import { decodeGunMods, encodeGunMods, gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, ROLL_TIME, bountyFor, type RemoteTarget } from '../game/combat';
 import { remoteShotEnd } from '../game/gunplay';
-import { buildCar, carDef, sanitizeMods, seatSpots } from '../world/vehicles';
+import { type CarDef, type CarMods, buildCar, carDef, sanitizeMods, seatSpots } from '../world/vehicles';
+import { Car } from '../world/cityView';
+import { groundAt } from '../world/terrain';
 import { openGround } from '../world/city';
 import { type HeistRecord, cleanRecords } from '../game/heistRules';
 import type { HouseTarget } from '../game/heist';
@@ -147,6 +149,26 @@ interface HouseView {
   vm: number;
   /** The last robbery of this house (the owner publishes it so everyone shares the cooldown). */
   rb: HeistRecord | null;
+}
+
+/** Another player's car parked out on the street (global frame). */
+interface ParkedView {
+  key: string;
+  pid: string;
+  owner: string;
+  uid: number;
+  def: CarDef | null;
+  /** Body and paint of a car they took out of the traffic. */
+  kind: number;
+  color: number;
+  mods: CarMods | null;
+  x: number;
+  z: number;
+  yaw: number;
+  root: THREE.Object3D;
+  len: number;
+  /** Model + paint + mods (a change rebuilds it). */
+  look: string;
 }
 
 interface Remote {
@@ -325,6 +347,13 @@ export class Net {
   private chatN = 0;
   /** When you last hit each player (to credit you with the knockout). */
   private lastHitAt: Record<string, number> = {};
+  /** Other players' cars parked out on the street (global frame), by `pid:uid`. */
+  private parked = new Map<string, ParkedView>();
+  private parkedGroup = new THREE.Group();
+  /** Cars you took from other players lately (theirs may still show for a moment): `pid:uid` → when. */
+  private tookCars = new Map<string, number>();
+  /** The car you just took: tells its owner (so it disappears from their street). */
+  private took: { pid: string; uid: number; x: number; z: number; until: number } | null = null;
   /** Riding in another player's car: theirs (player id), the seat, their name and how long their car's been missing. */
   private ride: { pid: string; seat: number; name: string; lost: number } | null = null;
   /** Burglars whose alarm you've already been warned about. */
@@ -340,6 +369,7 @@ export class Net {
     game.houseTarget = (pid) => this.houseTarget(pid);
     game.heistRecords = () => this.allRecords();
     game.rideTarget = () => this.rideTarget();
+    game.street.city.group.add(this.parkedGroup);
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.openPlayers = () => this.openPlayers();
     hud.modals.social = this.socialApi();
@@ -499,6 +529,8 @@ export class Net {
       this.readCombat(r, pr);
       this.readCar(r, pr);
       this.readRide(r, pr);
+      this.readParked(r, pr);
+      this.readTook(r, pr);
       this.readChat(r, pr);
       r.tx = num(pr.x);
       r.tz = num(pr.z);
@@ -570,6 +602,11 @@ export class Net {
       if (seen.has(k)) continue;
       r.fx.dispose();
       r.car?.removeFromParent();
+      for (const [k, pv] of this.parked) {
+        if (pv.pid !== r.pid) continue;
+        pv.root.removeFromParent();
+        this.parked.delete(k);
+      }
       r.model.root.removeFromParent();
       r.model.dispose();
       r.label.remove();
@@ -764,6 +801,99 @@ export class Net {
     else if (was && !now) this.game.notify(`🚗 ${r.name} got out of your car.`, 'info');
   }
 
+  // ------------------------------------------------------------------ parked cars
+
+  /** Their cars parked out on the street: shown where they are, for anyone to take. */
+  private readParked(r: Remote, pr: Record<string, unknown>): void {
+    const list = Array.isArray(pr.pk) ? pr.pk.slice(0, 3) : [];
+    const now = Date.now();
+    const keep = new Set<string>();
+    for (const raw of list) {
+      if (!raw || typeof raw !== 'object') continue;
+      const o = raw as Record<string, unknown>;
+      const uid = Math.round(num(o.u));
+      const x = num(o.x);
+      const z = num(o.z);
+      if (uid <= 0 || Math.abs(x) > 30000 || Math.abs(z) > 30000) continue;
+      const key = `${r.pid}:${uid}`;
+      if (now - (this.tookCars.get(key) ?? 0) < 20000) continue;
+      const def = typeof o.k === 'string' ? carDef(o.k) : null;
+      const kind = Math.max(0, Math.min(4, Math.round(num(o.t))));
+      const color = Math.max(0, Math.min(0xffffff, Math.round(num(o.c))));
+      const mods = def && o.m ? { ...sanitizeMods(def, o.m), color } : null;
+      const look = `${def?.id ?? `t${kind}`}|${color}|${JSON.stringify(mods ?? null).slice(0, 400)}`;
+      keep.add(key);
+      let pv = this.parked.get(key);
+      if (pv && pv.look !== look) {
+        pv.root.removeFromParent();
+        pv = undefined;
+      }
+      if (!pv) {
+        let root: THREE.Object3D;
+        let len: number;
+        if (def) {
+          const m = buildCar(def, color, mods ?? undefined);
+          root = m.root;
+          len = m.length;
+        } else {
+          const c = new Car(kind, color);
+          root = c.root;
+          len = c.length;
+        }
+        this.parkedGroup.add(root);
+        pv = { key, pid: r.pid, owner: r.name, uid, def, kind, color, mods, x, z, yaw: 0, root, len, look };
+        this.parked.set(key, pv);
+      }
+      pv.owner = r.name;
+      pv.x = x;
+      pv.z = z;
+      pv.yaw = num(o.y);
+      pv.root.position.set(x, groundAt(x, z), z);
+      pv.root.rotation.y = pv.yaw;
+    }
+    for (const [k, pv] of this.parked) {
+      if (pv.pid !== r.pid || keep.has(k)) continue;
+      pv.root.removeFromParent();
+      this.parked.delete(k);
+    }
+  }
+
+  /** They took one of your parked cars: it's gone from your street. */
+  private readTook(r: Remote, pr: Record<string, unknown>): void {
+    const tk = pr.tk;
+    if (!Array.isArray(tk) || tk[0] !== this.pid) return;
+    const lost = this.game.drive.giveUp(Math.round(num(tk[1])), num(tk[2]), num(tk[3]));
+    if (!lost) return;
+    audio.play('carAlarm');
+    this.game.notify(`🚨 ${r.name} took your ${lost.name}!${lost.owned ? ' Call it back any time from My cars.' : ''}`, 'bad');
+    this.game.requestSave();
+  }
+
+  /** Walk up to another player's parked car and take it: yours to drive (theirs disappears). */
+  private takeCar(pv: ParkedView): void {
+    const g = this.game;
+    pv.root.removeFromParent();
+    this.parked.delete(pv.key);
+    this.tookCars.set(pv.key, Date.now());
+    this.took = { pid: pv.pid, uid: pv.uid, x: pv.x, z: pv.z, until: Date.now() + 6000 };
+    this.presenceT = 0;
+    const v = g.drive.takeFrom({ def: pv.def, kind: pv.kind, color: pv.color, mods: pv.mods, x: pv.x, z: pv.z, yaw: pv.yaw, owner: pv.owner });
+    g.drive.enter(v);
+    audio.play('carAlarm', { volume: 0.5 });
+    g.notify(`🚗 You took ${pv.owner}'s ${pv.def?.name ?? 'car'}.`, 'good');
+  }
+
+  /** Show other players' parked cars near you (and forget old "just took it" marks). */
+  private updateParked(): void {
+    const g = this.game;
+    const me = g.street.worldToGlobal(g.player.x, g.player.z);
+    const out = !g.inside && g.player.floor === 0;
+    for (const pv of this.parked.values()) pv.root.visible = out && Math.hypot(pv.x - me.x, pv.z - me.z) < 160;
+    const now = Date.now();
+    for (const [k, t] of this.tookCars) if (now - t > 20000) this.tookCars.delete(k);
+    if (this.took && now > this.took.until) this.took = null;
+  }
+
   // ------------------------------------------------------------------ passengers
 
   /** Seats taken in a player's car (by riders other than `except`). */
@@ -803,11 +933,18 @@ export class Net {
     return { ...at, y: d.car.position.y, h: seat.y, open: d.carOpen };
   }
 
-  /** Another player's car close by that you could ride in. */
+  /** Another player's car close by that you could ride in, or one they parked that you could take. */
   private rideTarget(): { label: string; d: number; act: () => void } | null {
     const g = this.game;
     if (this.ride || g.drive.driving || g.inside || g.player.floor !== 0 || g.combat.ko > 0) return null;
     let best: { label: string; d: number; act: () => void } | null = null;
+    const me = g.street.worldToGlobal(g.player.x, g.player.z);
+    for (const pv of this.parked.values()) {
+      if (!pv.root.visible) continue;
+      const d = Math.max(0, Math.hypot(pv.x - me.x, pv.z - me.z) - pv.len / 2 + 1);
+      if (d > 2.2 || (best && d >= best.d)) continue;
+      best = { d, label: `🚗 Take ${pv.owner}'s ${pv.def?.name ?? 'car'}`, act: () => this.takeCar(pv) };
+    }
     for (const r of this.remotes.values()) {
       if (!r.car || !r.visible || r.ko || r.ride || r.carSeats.length < 2) continue;
       const d = Math.hypot(r.car.position.x - g.player.x, r.car.position.z - g.player.z);
@@ -1236,6 +1373,7 @@ export class Net {
     }
     this.updateRemotes(dt);
     this.updateRide(dt);
+    this.updateParked();
     if (!this.online) return;
     this.presenceT -= dt;
     if (this.presenceT <= 0) {
@@ -1305,6 +1443,13 @@ export class Net {
       heists: cleanRecords(g.net.heists ?? []),
       // Riding in someone's car: theirs and which seat.
       rd: this.ride ? [this.ride.pid, this.ride.seat] : undefined,
+      // Your cars parked out on the street (anyone can take them), and the one you just took.
+      pk: g.drive.myCars().slice(-3).map((v) => ({
+        u: v.uid, k: v.def?.id ?? 't', t: v.kept?.kind ?? 0, c: v.kept?.color ?? v.color,
+        m: v.mods ? { ...v.mods, engine: 0, turbo: 0, tires: 0, nitro: 0 } : undefined,
+        x: Math.round(v.x * 10) / 10, z: Math.round(v.z * 10) / 10, y: Math.round(v.yaw * 100) / 100,
+      })),
+      tk: this.took && Date.now() < this.took.until ? [this.took.pid, this.took.uid, Math.round(this.took.x), Math.round(this.took.z)] : undefined,
       car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color, m: g.drive.driving.mods ? { ...g.drive.driving.mods, engine: 0, turbo: 0, tires: 0, nitro: 0 } : undefined } : null,
       chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
@@ -1338,6 +1483,8 @@ export class Net {
     const casino = data.casino as Record<string, unknown>;
     if (JSON.stringify(data).length > 3800) delete data.owes;
     if (JSON.stringify(data).length > 3800) data.gf = (data.gf as unknown[]).slice(-1);
+    if (JSON.stringify(data).length > 3800) for (const c of data.pk as Record<string, unknown>[]) delete c.m;
+    if (JSON.stringify(data).length > 3800) data.pk = (data.pk as unknown[]).slice(-1);
     if (JSON.stringify(data).length > 3800) casino.hotel = (casino.hotel as unknown[]).slice(0, 2);
     if (JSON.stringify(data).length > 3800) delete casino.house;
     if (JSON.stringify(data).length > 3800) delete data.cos;

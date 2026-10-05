@@ -112,3 +112,25 @@ describe('traffic out of town', () => {
     }
   });
 });
+
+describe('seats in a car', () => {
+  it('fit the body: the driver first, the front passenger beside, then rows behind', async () => {
+    const THREE = await import('three');
+    const { seatSpots, seatsIn } = await import('../src/world/vehicles');
+    expect(seatsIn('super')).toBe(2);
+    expect(seatsIn('sedan')).toBe(4);
+    expect(seatsIn('limo')).toBe(8);
+    expect(seatsIn(null)).toBe(4);
+    const driver = new THREE.Vector3(-0.38, 0.6, 0.3);
+    const s = seatSpots('sedan', driver, 4.6);
+    expect(s).toHaveLength(4);
+    expect(s[0].equals(driver)).toBe(true);
+    expect(s[1].x).toBeCloseTo(0.38);
+    expect(s[1].z).toBeCloseTo(0.3);
+    expect(s[2].x).toBeCloseTo(-0.38);
+    expect(s[2].z).toBeLessThan(s[0].z - 0.7);
+    expect(s[3].x).toBeCloseTo(0.38);
+    // Everyone inside the car.
+    for (const p of seatSpots('limo', driver, 7.5)) expect(Math.abs(p.z)).toBeLessThan(7.5 / 2);
+  });
+});

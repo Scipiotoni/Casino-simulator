@@ -41,6 +41,10 @@ export interface Vehicle {
   brakeLights: THREE.Mesh[];
   /** A traffic car you took (its body and paint), so it can be kept in your garage. */
   kept?: { kind: number; color: number };
+  /** One you've driven (or brought to the curb): yours out on the street, on the map. */
+  mine?: boolean;
+  /** Taken from another player (their name). */
+  from?: string;
   /** Durability left (0 = blown up), out of `maxHp`. */
   hp: number;
   maxHp: number;
@@ -347,9 +351,52 @@ export class Driving {
     };
     // Your own cars keep their damage until you pay to have them fixed.
     if (owned) v.hp = Math.max(1, Math.round(v.maxHp * conditionOf(this.g.garage, def.id)));
+    v.mine = owned;
     this.vehicles.push(v);
     this.settle(v);
     return v;
+  }
+
+  /** Your cars out on the street (not the one you're in): on the map, and other players can take them. */
+  myCars(): Vehicle[] {
+    return this.vehicles.filter((v) => v.mine && v !== this.driving && v.wreck < 0 && !v.base);
+  }
+
+  /**
+   * Another player's car you walked up to and took: a copy of it here (their model, paint and
+   * look), parked where theirs was. Theirs disappears from their street when they hear of it.
+   */
+  takeFrom(o: { def: CarDef | null; kind: number; color: number; mods: CarMods | null; x: number; z: number; yaw: number; owner: string }): Vehicle {
+    let v: Vehicle;
+    if (o.def) {
+      const m = buildCar(o.def, o.color, o.mods ?? undefined);
+      v = this.addVehicle(o.def, m, o.color, o.x, o.z, o.yaw, false, false, o.mods);
+      v.name = `${o.owner}'s ${o.def.name}`;
+    } else {
+      // A car they took out of the traffic.
+      const c = new Car(o.kind, o.color);
+      c.root.position.set(o.x, groundAt(o.x, o.z), o.z);
+      c.root.rotation.y = o.yaw;
+      this.group.add(c.root);
+      v = {
+        uid: nextUid++, def: null, name: `${o.owner}'s car`, color: o.color, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+        x: o.x, z: o.z, yaw: o.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: false, mods: null, flames: [], brakeLights: [],
+        kept: { kind: o.kind, color: o.color }, hp: c.hp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
+      };
+      this.vehicles.push(v);
+      this.settle(v);
+    }
+    v.from = o.owner;
+    v.mine = true;
+    return v;
+  }
+
+  /** Another player took this car of yours (it was parked near x, z): it's gone from here. What it was, or null. */
+  giveUp(uid: number, x: number, z: number): { name: string; owned: boolean } | null {
+    const v = this.vehicles.find((q) => q.uid === uid && q.mine && q !== this.driving && q.wreck < 0);
+    if (!v || Math.hypot(v.x - x, v.z - z) > 30) return null;
+    this.remove(v);
+    return { name: v.owned && v.def ? v.def.name : v.name, owned: v.owned };
   }
 
   private remove(v: Vehicle): void {
@@ -405,6 +452,7 @@ export class Driving {
     g.standUp();
     if (g.build.active) g.build.cancel();
     this.driving = v;
+    v.mine = true;
     v.speed = 0;
     this.gear = 1;
     if (!this.prevCam) this.prevCam = { mode: g.cam.mode, dist: g.cam.distTarget };

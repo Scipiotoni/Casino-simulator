@@ -669,6 +669,42 @@ export class Minimap {
       c.fill();
       c.restore();
     }
+    // Your car(s) out on the street: a gold car badge. On the small map one that's off the edge
+    // sits on the rim, pointing the way, so you can always find it.
+    const rr = Math.max(7, Math.min(12, s * 0.9));
+    const pinR = Math.min(W, H) / 2 - rr - 10 * Math.min(2, window.devicePixelRatio || 1);
+    for (const v of g.drive.myCars()) {
+      let px = X(v.x);
+      let pz = Z(v.z);
+      const dx = px - W / 2;
+      const dz = pz - H / 2;
+      const dist = Math.hypot(dx, dz);
+      const pinned = !this.big && dist > pinR;
+      if (pinned) {
+        px = W / 2 + (dx / dist) * pinR;
+        pz = H / 2 + (dz / dist) * pinR;
+      } else if (out(px, pz, 30)) continue;
+      c.fillStyle = '#ffc53d';
+      c.strokeStyle = '#17151f';
+      c.lineWidth = 2.5;
+      c.beginPath();
+      c.arc(px, pz, rr, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
+      c.font = `${Math.round(rr * 1.25)}px system-ui, sans-serif`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      txt('🚗', px, pz, 1);
+      if (labels || pinned) {
+        c.font = `800 ${Math.max(10, Math.min(14, font))}px system-ui, sans-serif`;
+        c.shadowColor = 'rgba(0,0,0,0.95)';
+        c.shadowBlur = 4;
+        c.fillStyle = '#ffd877';
+        const m = Math.hypot(v.x - me.x, v.z - me.z);
+        txt(pinned ? `Your car · ${m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`}` : `Your ${v.name}`, px, pz, -rr - 8);
+        c.shadowBlur = 0;
+      }
+    }
     // You: an arrow showing which way you face
     const yaw = g.player.yaw + (st.placeOf(st.activeId).side ? Math.PI : 0);
     const r = Math.max(6, s * 1.1);
@@ -711,12 +747,28 @@ export class Minimap {
   private renderList(): void {
     const g = this.game;
     const players = this.big ? g.mapPlayers : [];
-    const key = players.map((p) => `${p.pid}|${p.name}|${p.inside}|${p.where}|${p.wanted}|${p.driving}`).join(';') + `|${this.follow}`;
+    const cars = this.big ? g.drive.myCars() : [];
+    const key = players.map((p) => `${p.pid}|${p.name}|${p.inside}|${p.where}|${p.wanted}|${p.driving}`).join(';') + `|${cars.map((v) => v.uid).join(',')}|${this.follow}`;
     if (key === this.listKey) return;
     this.listKey = key;
     this.list.replaceChildren();
     this.list.hidden = !this.big;
     if (!this.big) return;
+    // Your car: find it on the map.
+    for (const v of cars) {
+      this.list.appendChild(h('button', {
+        class: 'mm-pbtn mm-car', text: `🚗 Your ${v.name}`, title: 'Show where you left it',
+        onClick: (e: Event) => {
+          e.stopPropagation();
+          this.follow = '';
+          this.center = { x: v.x, z: v.z };
+          this.zoomBig = Math.max(this.zoomBig, 5);
+          this.listKey = '';
+          this.t = 0;
+          audio.play('click');
+        },
+      }));
+    }
     this.list.appendChild(h('span', { class: 'mm-ptitle', text: players.length ? `Players online (${players.length}):` : 'No other players online right now.' }));
     for (const p of players) {
       this.list.appendChild(h('button', {
