@@ -62,13 +62,7 @@ export class Input {
   constructor(private canvas: HTMLElement) {
     window.addEventListener('keydown', (e) => this.onKey(e, true));
     window.addEventListener('keyup', (e) => this.onKey(e, false));
-    window.addEventListener('blur', () => {
-      this.keys.clear();
-      this.primaryDown = false;
-      this.rightHeld = false;
-      this.leftHeld = false;
-      this.endJoystick();
-    });
+    window.addEventListener('blur', () => this.releaseAll());
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
     window.addEventListener('pointermove', (e) => this.onMove(e));
     window.addEventListener('pointerup', (e) => this.onUp(e));
@@ -170,6 +164,16 @@ export class Input {
     } catch {
       this.lockFailed = true;
     }
+  }
+
+  /** Let go of everything (keys, buttons, the joystick): nothing stays held down. */
+  releaseAll(): void {
+    this.keys.clear();
+    this.pressed.clear();
+    this.primaryDown = false;
+    this.rightHeld = false;
+    this.leftHeld = false;
+    this.endJoystick();
   }
 
   exitLock(): void {

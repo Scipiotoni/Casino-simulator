@@ -12,7 +12,7 @@ import {
 import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
 import { NPC_OWNER, Street, type StreetLot } from '../world/street';
-import { MAX_DEPTH_STEPS, openGround } from '../world/city';
+import { MAX_DEPTH_STEPS, avenueMid, openGround, streetZ } from '../world/city';
 import { MilitaryBase, armoryPayroll, armoryRefillLeft } from '../world/militaryBase';
 import { VIEW, type ViewDist, viewScale } from '../world/viewDistance';
 import { buildCar, carDef } from '../world/vehicles';
@@ -3840,6 +3840,150 @@ export class Game implements World, ItemHost {
 
   private pushOutT = 0;
   private pushNoteT = 0;
+  private unstuckAt = 0;
+
+  /**
+   * Can you walk away from this tile? Floods out from it the way you walk: inside, you have to
+   * be able to reach the way out (the front door, or the stairs upstairs); outside, there has to
+   * be more open ground round you than a little pocket between walls.
+   */
+  private canWalkAway(tx: number, tz: number): boolean {
+    if (!this.playerWalk(tx, tz)) return false;
+    const goal = this.inside ? this.gridAt(this.player.floor).entries : null;
+    const seen = new Set<number>();
+    const key = (x: number, z: number) => (x + 2048) * 4096 + (z + 2048);
+    const queue: [number, number][] = [[tx, tz]];
+    seen.add(key(tx, tz));
+    for (let i = 0; i < queue.length && queue.length < 2500; i++) {
+      const [x, z] = queue[i];
+      if (goal) {
+        if (goal.some(([gx, gz]) => Math.abs(gx - x) <= 1 && Math.abs(gz - z) <= 1)) return true;
+      } else if (queue.length >= 600) return true;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = x + dx;
+        const nz = z + dz;
+        const k = key(nx, nz);
+        if (seen.has(k) || Math.abs(nx - tx) > 60 || Math.abs(nz - tz) > 60) continue;
+        seen.add(k);
+        if (this.playerWalk(nx, nz)) queue.push([nx, nz]);
+      }
+    }
+    return !goal && queue.length >= 600;
+  }
+
+  /**
+   * The Unstuck button: frees you from whatever has you stuck. Lets go of every key and button,
+   * leaves seats, activities, the build tools and photo mode, resets the camera, puts a car
+   * wedged in a wall back on the road, and if you're shut in (inside walls, in the water, up a
+   * cliff, boxed in by furniture) moves you to the nearest spot you can walk away from: inside,
+   * the way out; outside, the nearest street or road. As a last resort you go back to your casino.
+   */
+  unstuck(): void {
+    if (this.state !== 'playing') return;
+    const now = performance.now();
+    if (now - this.unstuckAt < 2000) return;
+    this.unstuckAt = now;
+    const fixed: string[] = [];
+    this.input.releaseAll();
+    this.input.exitLock();
+    this.actionHeld = false;
+    this.actionPressed = false;
+    this.holdT = 0;
+    this.floaters.ring(null, 0);
+    if (this.build.active) this.build.cancel();
+    this.select(null);
+    if (this.activity || this.player.seat || this.tableFocus) {
+      if (!this.drive.driving) {
+        this.stopActivity(false);
+        this.standUp();
+        this.player.seat = null;
+        fixed.push('got up');
+      }
+    }
+    this.player.emote = null;
+    this.player.halt();
+    this.combat.rollT = 0;
+    this.camFocus = null;
+    this.cam.orbit = false;
+    this.doorCooldown = 0.5;
+    if (this.combat.ko > 0) {
+      this.notify('You’re knocked out: you’ll come round at home in a moment.', 'info');
+      return;
+    }
+    const p = this.player;
+    // In a car: back on the road if it's wedged somewhere.
+    if (this.drive.driving) {
+      if (this.drive.unstick()) fixed.push('your car is back on the road');
+    } else if (!this.canWalkAway(Math.floor(p.x), Math.floor(p.z))) {
+      if (this.inside) {
+        // Shut in: back to the way out of this floor (the front door, or the stairs).
+        const g = this.gridAt(p.floor);
+        const [ex, ez] = g.entries[0];
+        const spot = g.nearestWalkable(ex, p.floor === 0 ? ez - 1 : ez, true) ?? [ex, ez];
+        p.x = spot[0] + 0.5;
+        p.z = spot[1] + 0.5;
+        fixed.push(p.floor === 0 ? 'moved you to the front door' : 'moved you to the stairs');
+      } else {
+        const spot = this.nearestOpenSpot(p.x, p.z);
+        if (spot) {
+          p.x = spot.x;
+          p.z = spot.z;
+          fixed.push('moved you to the nearest street');
+        } else if (this.combat.teleportLock > 0) {
+          this.notify(`Still stuck? You were just hurt: try again in ${Math.ceil(this.combat.teleportLock)} s and you’ll go back to your casino.`, 'bad');
+        } else {
+          const lot = this.travelLot('casino');
+          if (lot && this.goInside(lot)) fixed.push('took you back to your casino');
+        }
+      }
+      p.halt();
+      this.cam.snap(p.x, p.z);
+    }
+    audio.play('whoosh', { volume: 0.6 });
+    this.notify(fixed.length ? `🆘 Unstuck: ${fixed.join(', ')}.` : '🆘 Everything’s reset. If you still can’t move, press it again.', 'good');
+  }
+
+  /**
+   * The nearest point you can walk away from, outside (world frame): on a street or an avenue
+   * of the city, or a road out in the country, close to where you are.
+   */
+  private nearestOpenSpot(wx: number, wz: number): { x: number; z: number } | null {
+    const st = this.street;
+    const gp = st.worldToGlobal(wx, wz);
+    const cands: { x: number; z: number; d: number }[] = [];
+    const push = (x: number, z: number) => cands.push({ x, z, d: Math.hypot(x - gp.x, z - gp.z) });
+    const plan = st.plan;
+    plan.streets.forEach((sp, r) => {
+      if (!sp) return;
+      const z = streetZ(r);
+      // The sidewalk on your side of the road, level with you.
+      const side = gp.z < z ? -6 : 6;
+      push(Math.max(sp.xa + 2, Math.min(sp.xb - 2, gp.x)), z + side);
+    });
+    plan.avenues.forEach((av, k) => {
+      if (!av) return;
+      push(avenueMid(k), Math.max(av.za + 2, Math.min(av.zb - 2, gp.z)));
+    });
+    for (const road of st.outskirts.roads) {
+      const pts = road.path.pts;
+      let best = 0;
+      let bd = Infinity;
+      for (let i = 0; i < pts.length; i += 2) {
+        const d = (pts[i].x - gp.x) ** 2 + (pts[i].z - gp.z) ** 2;
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      if (pts.length) push(pts[best].x, pts[best].z);
+    }
+    cands.sort((a, b) => a.d - b.d);
+    for (const c of cands.slice(0, 12)) {
+      const w = st.globalToWorld(c.x, c.z);
+      if (this.canWalkAway(Math.floor(w.x), Math.floor(w.z))) return { x: w.x, z: w.z };
+    }
+    return null;
+  }
 
   /**
    * A building grew (or appeared) where you stand outside, or your car got wedged in one: you

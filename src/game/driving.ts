@@ -205,6 +205,35 @@ export class Driving {
     return true;
   }
 
+  /**
+   * Unstuck: if the car you're in is wedged in a wall, a building, the water or a cliff, put it
+   * back on open road nearby (stopped). Returns whether it had to move.
+   */
+  unstick(): boolean {
+    const v = this.driving;
+    if (!v) return false;
+    v.speed = 0;
+    v.lat = 0;
+    v.yawRate = 0;
+    if (this.fits(v.x, v.z, v.yaw, v.length * 0.8, v.width * 0.72)) return false;
+    for (let r = 2; r < 160; r += 2) {
+      for (let k = 0; k < 32; k++) {
+        const a = (k / 32) * Math.PI * 2;
+        const x = v.x + Math.cos(a) * r;
+        const z = v.z + Math.sin(a) * r;
+        for (const yaw of [v.yaw, v.yaw + Math.PI / 2]) {
+          if (!this.fits(x, z, yaw, v.length, v.width)) continue;
+          v.x = x;
+          v.z = z;
+          v.yaw = yaw;
+          this.settle(v);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** A curbside spot on the nearest road (global), lined up with it. */
   private roadSpot(px: number, pz: number, len: number): { x: number; z: number; yaw: number } | null {
     const cands: { x: number; z: number; yaw: number; d: number }[] = [];

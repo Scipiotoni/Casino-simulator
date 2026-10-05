@@ -35,6 +35,8 @@ export class Modals {
   onMainMenu: (() => void) | null = null;
   onNewCasino: (() => void) | null = null;
   onSettingsChanged: (() => void) | null = null;
+  /** The HUD's Unstuck (it also leaves photo mode and closes the shop). */
+  onUnstuck: (() => void) | null = null;
   /** The players list with blacklist controls (set by the net layer). */
   openPlayers: (() => void) | null = null;
   /** One line about multiplayer (set by the net layer). */
@@ -785,6 +787,7 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
       h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
       h('button', { class: 'btn', text: '🧭 Fast travel', onClick: () => { this.close(); this.openTravel(); } }),
+      h('button', { class: 'btn', text: '🆘 Unstuck', title: 'Frees you if you’re stuck anywhere: in a wall, the water, a seat, a car or a camera angle', onClick: () => { this.closeAll(); this.onUnstuck ? this.onUnstuck() : g.unstuck(); } }),
       h('button', { class: 'btn', text: '🚗 My cars', onClick: () => { this.close(); openDealer(g, this, true); } }),
       h('button', { class: 'btn', text: '📖 Casino school', onClick: () => { this.close(); openSchool(g, this); } }),
       h('button', { class: 'btn', text: '👥 Players & blacklist', onClick: () => (this.openPlayers ? this.openPlayers() : g.notify('Multiplayer isn’t connected here.', 'bad')) }),
