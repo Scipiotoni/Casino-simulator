@@ -185,7 +185,8 @@ export class GunPlay {
   get canShoot(): boolean {
     const g = this.g;
     const p = g.player;
-    if (g.state !== 'playing' || p.seat || g.photoMode || g.combat.ko > 0) return false;
+    // Seated you can't shoot, except riding along in someone's car: a drive-by.
+    if (g.state !== 'playing' || (p.seat && !g.riding) || g.photoMode || g.combat.ko > 0) return false;
     if (g.indoorFight) return true;
     return !g.inside && p.floor === 0 && g.street.isOutdoors(p.x, p.z);
   }
@@ -201,6 +202,11 @@ export class GunPlay {
     if (!grid.isOwned(tx, tz)) return true;
     if (grid.solidAt(grid.idx(tx, tz))) return true;
     return grid.doorAt(tx, tz) >= 0 && (g.levels[f]?.floor.walls.doorOpenness(tx, tz) ?? 1) < 0.45;
+  }
+
+  /** Where you're aiming the gun right now (world yaw), or null when you're not. */
+  get facing(): number | null {
+    return this.drawn && this.aimHold > 0 && this.aimYaw !== null ? this.aimYaw : null;
   }
 
   /** The gun is drawn and visible in your hand. */

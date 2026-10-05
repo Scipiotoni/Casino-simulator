@@ -1036,10 +1036,13 @@ export class Net {
     }
     ride.lost = 0;
     const p = g.player;
-    p.seat = { x: at.x, z: at.z, yaw: at.yaw, sit: true, height: at.h };
+    // A drive-by: you turn in your seat to face where you're shooting.
+    const aim = g.gunplay.facing;
+    const yaw = aim ?? at.yaw;
+    p.seat = { x: at.x, z: at.z, yaw, sit: true, height: at.h };
     p.playEmote('sit', 999);
-    p.yaw = at.yaw;
-    if (g.cam.mode === 'third') g.cam.followYaw = at.yaw;
+    p.yaw = yaw;
+    if (g.cam.mode === 'third' && aim === null) g.cam.followYaw = at.yaw;
     if (g.riding) g.riding.open = at.open;
   }
 
@@ -1050,6 +1053,11 @@ export class Net {
       if (!r.visible || r.ko || r.prot) continue;
       // Out on the street, or in the same house as you while a heist is going down there.
       if (!(r.out && r.floor === 0) && !this.fighting(r)) continue;
+      // A drive-by doesn't hit the car you're riding in: its driver, or the others riding along.
+      const ride = this.ride;
+      if (ride && (r.pid === ride.pid || r.ride?.pid === ride.pid)) continue;
+      // Nor anyone riding in the car you're driving.
+      if (g.drive.driving && r.ride?.pid === this.pid) continue;
       out.push({ pid: r.pid, name: r.name, x: r.x, z: r.z, y: r.model.root.position.y, height: r.model.height });
     }
     return out;
