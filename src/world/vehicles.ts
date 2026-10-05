@@ -150,6 +150,38 @@ export function carDef(id: string | null | undefined): CarDef | null {
   return CARS.find((c) => c.id === id) ?? null;
 }
 
+/** Seats (the driver's included) by body type: other players can ride in the rest. */
+const SEATS: Partial<Record<CarModelKind, number>> = {
+  hatch: 4, taxi: 4, van: 6, buggy: 2, cabrio: 4, coupe: 2, rally: 2, pickup: 4, muscle: 4, suv: 6, classic: 4, limo: 8,
+  truck: 2, ev: 4, roadster: 2, super: 2, sedan: 4, wagon: 5, lowrider: 4, drift: 2, interceptor: 4, gt: 2, hyper: 2,
+  jeep: 4, apc: 8, tank: 3, stealth: 1,
+};
+
+/** How many people fit in a vehicle (a car taken from the traffic seats four). */
+export function seatsIn(kind: CarModelKind | null | undefined): number {
+  return (kind && SEATS[kind]) ?? 4;
+}
+
+/**
+ * Where everyone sits (car frame, the driver's seat first): the front passenger beside the
+ * driver, then rows further back, two to a row. On a tank they ride up on the hull.
+ */
+export function seatSpots(kind: CarModelKind | null | undefined, driver: THREE.Vector3, length: number): THREE.Vector3[] {
+  const n = seatsIn(kind);
+  const out = [driver.clone()];
+  const side = Math.abs(driver.x) > 0.1 ? Math.abs(driver.x) : 0.8;
+  const rows = Math.ceil(n / 2);
+  const gap = rows > 1 ? Math.min(1.05, Math.max(0.8, (length * 0.5) / (rows - 1))) : 0;
+  for (let i = 1; i < n; i++) {
+    const row = Math.floor(i / 2);
+    // The driver's side for even seats, the other side for odd ones.
+    const x = i % 2 === 1 ? (Math.abs(driver.x) > 0.1 ? -driver.x : side) : Math.abs(driver.x) > 0.1 ? driver.x : -side;
+    const z = kind === 'tank' ? driver.z - 1.2 - (row - 1) * 1.1 : driver.z - row * gap;
+    out.push(new THREE.Vector3(x, kind === 'tank' ? driver.y + 0.2 : driver.y, z));
+  }
+  return out;
+}
+
 /** A traffic car you took: how it drives. */
 export const STOLEN_SPECS = { top: 23, accel: 8, grip: 1 };
 

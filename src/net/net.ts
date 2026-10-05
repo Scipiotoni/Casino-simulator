@@ -21,7 +21,8 @@ import { decodeGunMods, encodeGunMods, gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, ROLL_TIME, bountyFor, type RemoteTarget } from '../game/combat';
 import { remoteShotEnd } from '../game/gunplay';
-import { buildCar, carDef, sanitizeMods } from '../world/vehicles';
+import { buildCar, carDef, sanitizeMods, seatSpots } from '../world/vehicles';
+import { openGround } from '../world/city';
 import { type HeistRecord, cleanRecords } from '../game/heistRules';
 import type { HouseTarget } from '../game/heist';
 import { GIFT_LOG, GIFT_KEEP_MS, type GiftOut, cleanGifts, cleanIds, cleanNote, giftBlock, giftId, openedIds, pruneSeen, roundSig, unopenedGifts } from '../game/social';
@@ -205,6 +206,10 @@ interface Remote {
   carKey: string;
   car: THREE.Object3D | null;
   carOpen: boolean;
+  /** Where everyone sits in that car (car frame, the driver first). */
+  carSeats: THREE.Vector3[];
+  /** Riding in someone's car: whose (player id) and which seat. */
+  ride: { pid: string; seat: number } | null;
   /** Recent positions (their own lot frame, stamped with their clock) for smooth playback. */
   buf: Snap[];
   /** Which lot those positions are in (a change resets the buffer: they went through a door). */
@@ -320,6 +325,8 @@ export class Net {
   private chatN = 0;
   /** When you last hit each player (to credit you with the knockout). */
   private lastHitAt: Record<string, number> = {};
+  /** Riding in another player's car: theirs (player id), the seat, their name and how long their car's been missing. */
+  private ride: { pid: string; seat: number; name: string; lost: number } | null = null;
   /** Burglars whose alarm you've already been warned about. */
   private alarmWarned = new Set<string>();
   status = 'Offline: just you and the rival down the street.';
@@ -332,6 +339,7 @@ export class Net {
     game.bannedBy = (pid) => this.bannedBy(pid);
     game.houseTarget = (pid) => this.houseTarget(pid);
     game.heistRecords = () => this.allRecords();
+    game.rideTarget = () => this.rideTarget();
     hud.remoteCard = (pid, el) => this.renderCard(pid, el);
     hud.modals.openPlayers = () => this.openPlayers();
     hud.modals.social = this.socialApi();
@@ -470,7 +478,7 @@ export class Net {
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, gm: '', shots: 0, held: null, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, wl: 0,
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, carSeats: [], ride: null, wl: 0,
           buf: [], bufLot: '', gap: 120, vel: 0, rolls: -1, reloading: false, rollT: 0, reloadT: 0, ks: 0, feedSeen: new Set(), gifts: [],
           hz: '', al: false, heists: [],
           blocking: false, charge: 0, stunned: false,
@@ -490,6 +498,7 @@ export class Net {
       r.nameEl.textContent = `${r.rb ? `⟳${roman(r.rb)} ` : ''}${r.name}${lux ? ` ${lux}` : ''}${wl ? ` ${'★'.repeat(wl)}` : ''}${ks >= 3 ? ` 💰${formatMoney(bountyFor(ks))}` : ''}`;
       this.readCombat(r, pr);
       this.readCar(r, pr);
+      this.readRide(r, pr);
       this.readChat(r, pr);
       r.tx = num(pr.x);
       r.tz = num(pr.z);
@@ -733,12 +742,168 @@ export class Net {
     r.car?.removeFromParent();
     r.car = null;
     r.carOpen = false;
+    r.carSeats = [];
     if (!c) return;
     const color = typeof c.c === 'number' && Number.isFinite(c.c) ? Math.max(0, Math.min(0xffffff, c.c)) : 0x9aa0ab;
     const m = def ? buildCar(def, color, c.m ? { ...sanitizeMods(def, c.m), color } : undefined) : buildCar(carDef('hatch')!, 0x9aa0ab);
     r.car = m.root;
     r.carOpen = m.open;
+    r.carSeats = seatSpots(def?.kind ?? 'hatch', m.seat, m.length);
     this.game.renderer.scene.add(m.root);
+  }
+
+  /** Riding in someone's car: [their player id, seat]. Says hello and goodbye when it's yours. */
+  private readRide(r: Remote, pr: Record<string, unknown>): void {
+    const rd = pr.rd;
+    const ride = Array.isArray(rd) && typeof rd[0] === 'string' && typeof rd[1] === 'number' && rd[1] >= 1 && rd[1] < 9
+      ? { pid: rd[0].slice(0, 80), seat: Math.floor(rd[1]) } : null;
+    const was = r.ride?.pid === this.pid;
+    r.ride = ride;
+    const now = ride?.pid === this.pid;
+    if (now && !was && this.game.drive.driving) this.game.notify(`🚗 ${r.name} got in your car.`, 'good');
+    else if (was && !now) this.game.notify(`🚗 ${r.name} got out of your car.`, 'info');
+  }
+
+  // ------------------------------------------------------------------ passengers
+
+  /** Seats taken in a player's car (by riders other than `except`). */
+  private takenSeats(driver: string, except = ''): Set<number> {
+    const out = new Set<number>();
+    for (const o of this.remotes.values()) if (o.ride?.pid === driver && o.pid !== except) out.add(o.ride.seat);
+    if (this.ride?.pid === driver && except !== this.pid) out.add(this.ride.seat);
+    return out;
+  }
+
+  /** Where a seat of a car is (world frame): the car's model, its heading and the seat (car frame). */
+  private seatAt(car: THREE.Object3D, seat: THREE.Vector3): { x: number; z: number; yaw: number } {
+    const yaw = car.rotation.y;
+    const c = Math.cos(yaw);
+    const s = Math.sin(yaw);
+    return { x: car.position.x + c * seat.x + s * seat.z, z: car.position.z - s * seat.x + c * seat.z, yaw };
+  }
+
+  /** Where a rider sits (world frame), in your car or another player's, or null if that car isn't here. */
+  private riderSpot(ride: { pid: string; seat: number }): { x: number; y: number; z: number; yaw: number; h: number; open: boolean } | null {
+    const g = this.game;
+    if (ride.pid === this.pid) {
+      const v = g.drive.driving;
+      if (!v) return null;
+      const seat = seatSpots(v.def?.kind ?? 'hatch', v.seat, v.length)[ride.seat];
+      if (!seat) return null;
+      const c = Math.cos(v.yaw);
+      const s = Math.sin(v.yaw);
+      const w = g.street.globalToWorld(v.x + c * seat.x + s * seat.z, v.z - s * seat.x + c * seat.z);
+      const flip = g.street.placeOf(g.street.activeId).side === 1;
+      return { x: w.x, y: g.streetDrop + g.street.groundY(w.x, w.z), z: w.z, yaw: v.yaw + (flip ? Math.PI : 0), h: seat.y, open: v.open };
+    }
+    const d = [...this.remotes.values()].find((o) => o.pid === ride.pid && o.car && o.visible);
+    const seat = d?.carSeats[ride.seat];
+    if (!d?.car || !seat) return null;
+    const at = this.seatAt(d.car, seat);
+    return { ...at, y: d.car.position.y, h: seat.y, open: d.carOpen };
+  }
+
+  /** Another player's car close by that you could ride in. */
+  private rideTarget(): { label: string; d: number; act: () => void } | null {
+    const g = this.game;
+    if (this.ride || g.drive.driving || g.inside || g.player.floor !== 0 || g.combat.ko > 0) return null;
+    let best: { label: string; d: number; act: () => void } | null = null;
+    for (const r of this.remotes.values()) {
+      if (!r.car || !r.visible || r.ko || r.ride || r.carSeats.length < 2) continue;
+      const d = Math.hypot(r.car.position.x - g.player.x, r.car.position.z - g.player.z);
+      if (d > 3.4 || (best && d >= best.d)) continue;
+      const taken = this.takenSeats(r.pid);
+      let seat = -1;
+      for (let i = 1; i < r.carSeats.length && seat < 0; i++) if (!taken.has(i)) seat = i;
+      const free = r.carSeats.length - 1 - taken.size;
+      best = seat < 0
+        ? { d, label: `🚗 ${r.name}'s car is full`, act: () => g.notify(`Every seat in ${r.name}'s car is taken.`, 'bad') }
+        : { d, label: `🚗 Ride with ${r.name} (${free} seat${free === 1 ? '' : 's'} free)`, act: () => this.joinRide(r, seat) };
+    }
+    return best;
+  }
+
+  private joinRide(r: Remote, seat: number): void {
+    const g = this.game;
+    g.stopActivity();
+    g.standUp();
+    this.ride = { pid: r.pid, seat, name: r.name, lost: 0 };
+    g.riding = { open: r.carOpen, leave: () => this.leaveRide(true) };
+    this.presenceT = 0;
+    audio.play('doorbell', { pitch: 0.6 });
+    g.notify(`🚗 You’re riding with ${r.name}. Press E to get out.`, 'good');
+  }
+
+  /** Get out of the car you're riding in: beside it (`place`), or wherever you already are. */
+  private leaveRide(place: boolean): void {
+    const g = this.game;
+    if (!this.ride) return;
+    this.ride = null;
+    g.riding = null;
+    this.presenceT = 0;
+    g.player.seat = null;
+    g.player.emote = null;
+    if (place) {
+      const p = g.player;
+      const fx = Math.sin(p.yaw);
+      const fz = Math.cos(p.yaw);
+      // Out the side you sat on, the other side, or behind the car.
+      const spots = [[fz, -fx, 1.4], [-fz, fx, 1.4], [fz, -fx, 2.6], [-fz, fx, 2.6], [-fx, -fz, 3.2]] as const;
+      for (const [dx, dz, d] of spots) {
+        const x = p.x + dx * d;
+        const z = p.z + dz * d;
+        const gp = g.street.worldToGlobal(x, z);
+        if (openGround(gp.x, gp.z, g.street.cols)) {
+          p.x = x;
+          p.z = z;
+          break;
+        }
+      }
+      p.halt();
+      audio.play('doorbell', { pitch: 0.5 });
+    }
+  }
+
+  /** Riding along: stay in your seat in their car (and get out if they stop driving or leave). */
+  private updateRide(dt: number): void {
+    const g = this.game;
+    const ride = this.ride;
+    if (!ride) return;
+    if (g.state !== 'playing' || g.drive.driving || g.combat.ko > 0 || g.inside || g.player.floor !== 0) {
+      this.leaveRide(false);
+      return;
+    }
+    // Two of you took the same seat: the lower player id keeps it, the other moves along.
+    if ([...this.remotes.values()].some((o) => o.ride?.pid === ride.pid && o.ride?.seat === ride.seat && o.pid < this.pid)) {
+      const d = [...this.remotes.values()].find((o) => o.pid === ride.pid);
+      const taken = this.takenSeats(ride.pid, this.pid);
+      let seat = -1;
+      for (let i = 1; i < (d?.carSeats.length ?? 0) && seat < 0; i++) if (!taken.has(i)) seat = i;
+      if (seat < 0) {
+        g.notify(`${ride.name}'s car is full.`, 'bad');
+        this.leaveRide(true);
+        return;
+      }
+      ride.seat = seat;
+      this.presenceT = 0;
+    }
+    const at = this.riderSpot(ride);
+    if (!at) {
+      // Their car's gone (they got out, drove off out of reach or left): you get out too.
+      ride.lost += dt;
+      if (ride.lost > 1.2) {
+        g.notify(`${ride.name} got out of the car.`, 'info');
+        this.leaveRide(true);
+      }
+      return;
+    }
+    ride.lost = 0;
+    const p = g.player;
+    p.seat = { x: at.x, z: at.z, yaw: at.yaw, sit: true, height: at.h };
+    p.playEmote('sit', 999);
+    p.yaw = at.yaw;
+    if (g.cam.mode === 'third') g.cam.followYaw = at.yaw;
+    if (g.riding) g.riding.open = at.open;
   }
 
   /** Other players you could shoot right now: out on the street, awake, not just woken up. */
@@ -1070,6 +1235,7 @@ export class Net {
       return;
     }
     this.updateRemotes(dt);
+    this.updateRide(dt);
     if (!this.online) return;
     this.presenceT -= dt;
     if (this.presenceT <= 0) {
@@ -1137,6 +1303,8 @@ export class Net {
       hz: g.heist && !g.heist.over ? g.heist.target.pid : undefined,
       al: g.heist?.alarmed ? 1 : undefined,
       heists: cleanRecords(g.net.heists ?? []),
+      // Riding in someone's car: theirs and which seat.
+      rd: this.ride ? [this.ride.pid, this.ride.seat] : undefined,
       car: g.drive.driving ? { k: g.drive.driving.def?.id ?? 't', c: g.drive.driving.color, m: g.drive.driving.mods ? { ...g.drive.driving.mods, engine: 0, turbo: 0, tires: 0, nitro: 0 } : undefined } : null,
       chat: this.chatOut.filter((m) => Date.now() - m.at < 120_000).map((m) => ({ i: m.i, t: m.t })),
       hits: this.hits,
@@ -1315,6 +1483,8 @@ export class Net {
       const smp = sampleSnaps(r.buf, Date.now() - (r.clockOff ?? 0) - delay);
       const sp = known && smp ? g.street.toActive(lotId, CENTER_X + smp.x, smp.z) : { x: wx, z: wz };
       const yawNow = smp ? smp.yaw : r.yaw;
+      // A passenger sits in the driver's car, wherever their own updates put them.
+      const seated = r.ride ? this.riderSpot(r.ride) : null;
       let visible = known && (outside || (lotId === g.street.activeId && g.inside && r.floor === g.viewFloor));
       if (visible && Math.hypot(wx - g.player.x, wz - g.player.z) > 90) visible = false;
       if (visible && (!r.visible || Math.hypot(sp.x - r.x, sp.z - r.z) > 12)) {
@@ -1330,22 +1500,32 @@ export class Net {
         continue;
       }
       // A light touch of smoothing on top, to hide any remaining step.
-      const k = 1 - Math.exp(-dt * 25);
+      const k = seated ? 1 : 1 - Math.exp(-dt * 25);
       const px = r.x;
       const pz = r.z;
-      r.x += (sp.x - r.x) * k;
-      r.z += (sp.z - r.z) * k;
+      r.x += ((seated?.x ?? sp.x) - r.x) * k;
+      r.z += ((seated?.z ?? sp.z) - r.z) * k;
       const inst = dt > 0 ? Math.hypot(r.x - px, r.z - pz) / dt : 0;
       r.vel += (Math.min(12, inst) - r.vel) * Math.min(1, dt * 8);
       const m = r.model;
-      m.root.position.set(r.x, outside ? g.streetDrop + g.street.groundY(r.x, r.z) : 0, r.z);
+      m.root.position.set(r.x, seated ? seated.y : outside ? g.streetDrop + g.street.groundY(r.x, r.z) : 0, r.z);
       r.fx.update(dt, true);
-      m.root.rotation.y = dampAngle(m.root.rotation.y, yawNow + (known ? g.street.rotOf(lotId) : 0), 14, dt);
+      m.root.rotation.y = seated ? seated.yaw : dampAngle(m.root.rotation.y, yawNow + (known ? g.street.rotOf(lotId) : 0), 14, dt);
       if (r.car) {
+        // They sit in the driver's seat: the car sits round them.
         r.car.visible = true;
-        r.car.position.set(r.x, m.root.position.y, r.z);
-        r.car.rotation.y = m.root.rotation.y;
+        const yaw = m.root.rotation.y;
+        const s0 = r.carSeats[0];
+        const ox = s0 ? Math.cos(yaw) * s0.x + Math.sin(yaw) * s0.z : 0;
+        const oz = s0 ? -Math.sin(yaw) * s0.x + Math.cos(yaw) * s0.z : 0;
+        r.car.position.set(r.x - ox, m.root.position.y, r.z - oz);
+        r.car.rotation.y = yaw;
         m.root.visible = r.carOpen;
+        if (s0) m.seatHeight = s0.y;
+      }
+      if (seated) {
+        m.root.visible = seated.open;
+        m.seatHeight = seated.h;
       }
       // Their dodge roll and reload, animated here.
       if (r.rollT > 0) {
@@ -1367,7 +1547,7 @@ export class Net {
       }
       if (r.stunned && Math.random() < dt * 3) g.floaters.text(new THREE.Vector3(r.x, m.height + 0.5, r.z), '💫', '', 0.6, 0.4);
       if (r.ko) m.setPose('ko');
-      else if (r.car) m.setPose('sit');
+      else if (r.car || seated) m.setPose('sit');
       else if (r.blocking && r.vel < 2.5) m.setPose('handsUp');
       else if (r.vel > 0.35 || (r.moving && r.vel > 0.1)) {
         // Walk or run at the pace they're really going (no stepping in place, no sliding).

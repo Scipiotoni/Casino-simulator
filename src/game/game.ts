@@ -344,6 +344,10 @@ export class Game implements World, ItemHost {
   private buzz = 0;
   private autosaveT = 30;
   private objectiveT = 0;
+  /** Riding in another player's car (set by the multiplayer layer): is it open-topped, and how to get out. */
+  riding: { open: boolean; leave: () => void } | null = null;
+  /** Another player's car you could hop into right now (set by the multiplayer layer). */
+  rideTarget: (() => { label: string; d: number; act: () => void } | null) | null = null;
   private interactTarget: {
     kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void;
     /** The key that does it, if not Space (getting out of a car is E: Space is the handbrake). */
@@ -3582,6 +3586,13 @@ export class Game implements World, ItemHost {
     // Context action
     let target: typeof this.interactTarget = null;
     let bestD = Infinity;
+    const ride = this.riding;
+    if (ride) {
+      const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
+      this.interactTarget = { kind: 'rideout', label: 'Get out (you’re a passenger)', hold: false, anchor, act: () => ride.leave(), key: 'KeyE' };
+      this.handleTarget(dt, this.interactTarget);
+      return;
+    }
     const car = this.drive.driving;
     if (car) {
       const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
@@ -3602,6 +3613,12 @@ export class Game implements World, ItemHost {
         const label = v ? (v.owned ? `🚗 Drive your ${v.name}` : '🚗 Get in') : cr ? '🚓 Steal the police car' : '🚗 Steal this car';
         bestD = near.d;
         target = { kind: `car${v ? v.uid : cr ? 'p' : 't'}`, label, hold: false, anchor, act: () => (v ? this.drive.enter(v) : cr ? this.drive.stealCruiser(cr) : tc && this.drive.steal(tc)) };
+      }
+      // Another player's car with a free seat: ride along.
+      const ride = this.rideTarget?.();
+      if (ride && ride.d < bestD) {
+        bestD = ride.d;
+        target = { kind: 'ride', label: ride.label, hold: false, anchor: () => new THREE.Vector3(this.player.x, 2.4, this.player.z), act: ride.act };
       }
       // Your garage door
       if (!target && this.house && this.drive.playerAtGarage) {
@@ -3942,6 +3959,10 @@ export class Game implements World, ItemHost {
     this.floaters.ring(null, 0);
     if (this.build.active) this.build.cancel();
     this.select(null);
+    if (this.riding) {
+      this.riding.leave();
+      fixed.push('got out of the car');
+    }
     if (this.activity || this.player.seat || this.tableFocus) {
       if (!this.drive.driving) {
         this.stopActivity(false);
@@ -4178,7 +4199,7 @@ export class Game implements World, ItemHost {
   /** Walking into a doorway on the street takes you inside that casino. */
   private checkDoors(dt: number): void {
     this.doorCooldown = Math.max(0, this.doorCooldown - dt);
-    if (this.doorCooldown > 0 || this.player.floor !== 0 || this.drive.driving) return;
+    if (this.doorCooldown > 0 || this.player.floor !== 0 || this.drive.driving || this.riding) return;
     const tx = Math.floor(this.player.x);
     const tz = Math.floor(this.player.z);
     const lot = this.street.doorAt(tx, tz);
@@ -4920,7 +4941,7 @@ export class Game implements World, ItemHost {
     this.cam.followYaw = this.player.yaw;
     // In first person you don't see your own head (you'd be looking out through it).
     const ownBody = playing && (!first || !!this.tableFocus);
-    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving && !this.drive.driving.open);
+    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving && !this.drive.driving.open) && !(this.riding && !this.riding.open);
     if (first) {
       const ko = this.combat.ko > 0;
       const st = this.player.seat;
