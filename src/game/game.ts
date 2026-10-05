@@ -3540,8 +3540,15 @@ export class Game implements World, ItemHost {
     const g = this.gridAt(this.player.floor);
     // A burglar can't walk through a locked door they haven't cracked.
     if (this.heist && !this.heist.doorOpenFor(this.player.floor, tx, tz)) return false;
-    if (this.player.floor > 0 || g.isOwned(tx, tz)) return g.isWalkable(tx, tz);
+    if (this.player.floor > 0) return g.isWalkable(tx, tz);
+    // The building's outer walls: in and out only through the front door. The yards round it
+    // are open ground, so without this you'd step straight through a wall onto the floor.
+    const p = this.player;
+    const r = g.rect;
+    const within = p.x > r.x0 && p.x < r.x1 + 1 && p.z > r.z0 && p.z < r.z1 + 1;
+    if (g.isOwned(tx, tz)) return (within || g.isDoor(tx, tz + 1)) && g.isWalkable(tx, tz);
     if (tz === FACADE_Z && g.isDoor(tx, tz)) return true;
+    if (within) return false;
     // Decorations in the yard out front are solid.
     if (g.inBounds(tx, tz) && tz > FACADE_Z && g.occupant(tx, tz)) return false;
     return this.street.isStreetWalkable(tx, tz);
