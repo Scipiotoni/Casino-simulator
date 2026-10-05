@@ -784,7 +784,8 @@ export class Net {
     const color = typeof c.c === 'number' && Number.isFinite(c.c) ? Math.max(0, Math.min(0xffffff, c.c)) : 0x9aa0ab;
     const m = def ? buildCar(def, color, c.m ? { ...sanitizeMods(def, c.m), color } : undefined) : buildCar(carDef('hatch')!, 0x9aa0ab);
     r.car = m.root;
-    r.carOpen = m.open;
+    // You see who's in a car through its windows (not inside a tank).
+    r.carOpen = m.open || def?.kind !== 'tank';
     r.carSeats = seatSpots(def?.kind ?? 'hatch', m.seat, m.length);
     this.game.renderer.scene.add(m.root);
   }
@@ -924,7 +925,7 @@ export class Net {
       const s = Math.sin(v.yaw);
       const w = g.street.globalToWorld(v.x + c * seat.x + s * seat.z, v.z - s * seat.x + c * seat.z);
       const flip = g.street.placeOf(g.street.activeId).side === 1;
-      return { x: w.x, y: g.streetDrop + g.street.groundY(w.x, w.z), z: w.z, yaw: v.yaw + (flip ? Math.PI : 0), h: seat.y, open: v.open };
+      return { x: w.x, y: g.streetDrop + g.street.groundY(w.x, w.z), z: w.z, yaw: v.yaw + (flip ? Math.PI : 0), h: seat.y, open: v.open || v.def?.kind !== 'tank' };
     }
     const d = [...this.remotes.values()].find((o) => o.pid === ride.pid && o.car && o.visible);
     const seat = d?.carSeats[ride.seat];
@@ -1048,6 +1049,7 @@ export class Net {
 
   /** Other players you could shoot right now: out on the street, awake, not just woken up. */
   private targets(): RemoteTarget[] {
+    const g = this.game;
     const out: RemoteTarget[] = [];
     for (const r of this.remotes.values()) {
       if (!r.visible || r.ko || r.prot) continue;

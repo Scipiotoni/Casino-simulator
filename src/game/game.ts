@@ -4941,7 +4941,7 @@ export class Game implements World, ItemHost {
     this.cam.followYaw = this.player.yaw;
     // In first person you don't see your own head (you'd be looking out through it).
     const ownBody = playing && (!first || !!this.tableFocus);
-    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving && !this.drive.driving.open) && !(this.riding && !this.riding.open);
+    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving?.def?.kind === 'tank') && !(this.riding && !this.riding.open);
     if (first) {
       const ko = this.combat.ko > 0;
       const st = this.player.seat;

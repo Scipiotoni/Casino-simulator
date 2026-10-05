@@ -12,6 +12,7 @@ import { RING } from './outskirts';
 import { instancedChunks, place } from './nature';
 import { audio } from '../core/audio';
 import { VIEW } from './viewDistance';
+import { occupantMesh } from '../entities/occupant';
 
 /** Half size of the base (metres) and the gate's half width. */
 export const BASE_HW = 150;
@@ -111,10 +112,19 @@ export interface Machine {
   /** Patrol route (tank) and the next waypoint. */
   route?: { x: number; z: number }[];
   wp?: number;
-  /** Helicopter: flying (0 parked .. 1 up), its orbit angle. */
+  /** Helicopter: flying (0 parked .. 1 up), its orbit angle, and its crew under the canopy. */
+  crew?: Crew[];
   lift?: number;
   orbit?: number;
   rotor?: THREE.Object3D;
+}
+
+/** Someone in the helicopter's cockpit (the pilot flies it; the gunner works the chain gun). */
+export interface Crew {
+  mesh: THREE.Mesh;
+  hp: number;
+  dead: boolean;
+  pilot: boolean;
 }
 
 /** A mine under the sand. */
@@ -789,40 +799,71 @@ export class MilitaryBase {
     this.machines.push(t);
   }
 
-  /** The attack helicopter on its pad: it lifts off when the alarm sounds and hunts you. */
+  /**
+   * The attack helicopter on its pad: it lifts off when the alarm sounds and hunts you. Its
+   * crew sit under a glass canopy, the gunner in front and the pilot behind and higher up:
+   * shoot the gunner and the chain gun falls silent, shoot the pilot and it comes down.
+   */
   private spawnHeli(): void {
     const dark = mat(0x23252a, { rough: 0.7 });
     const green = mat(0x3f4628, { rough: 0.7 });
     const heli = new THREE.Group();
+    // Fuselage behind the cockpit, and the tub the crew sit in.
     const body = new THREE.Mesh(new THREE.SphereGeometry(1.5, 16, 12), green);
-    body.scale.set(0.9, 0.85, 1.9);
-    body.position.y = 1.6;
-    const glass = new THREE.Mesh(new THREE.SphereGeometry(1.0, 14, 10), new THREE.MeshStandardMaterial({ color: 0x1b2a33, metalness: 0.7, roughness: 0.1 }));
-    glass.scale.set(0.9, 0.8, 1.1);
-    glass.position.set(0, 1.95, 1.9);
+    body.scale.set(0.9, 0.85, 1.4);
+    body.position.set(0, 1.6, -1.2);
+    const tub = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.62, 2.5), green);
+    tub.position.set(0, 0.98, 1.65);
+    const nose = new THREE.Mesh(new THREE.SphereGeometry(0.65, 12, 8), green);
+    nose.scale.set(1, 0.5, 0.9);
+    nose.position.set(0, 1.0, 2.9);
+    const canopy = new THREE.Mesh(
+      new THREE.SphereGeometry(1, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0x9fc4d8, metalness: 0.4, roughness: 0.05, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    canopy.scale.set(0.66, 1.15, 1.45);
+    canopy.position.set(0, 1.28, 1.7);
+    canopy.renderOrder = 2;
     const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.38, 6, 8), green);
     tail.rotation.x = Math.PI / 2;
-    tail.position.set(0, 1.9, -4.2);
+    tail.position.set(0, 1.9, -4.6);
     const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.4, 0.9), green);
-    fin.position.set(0, 2.5, -7);
-    heli.add(body, glass, tail, fin);
+    fin.position.set(0, 2.5, -7.4);
+    heli.add(body, tub, nose, canopy, tail, fin);
+    // Seats and the instrument panel.
+    const seatMat = mat(0x1d1f1a, { rough: 0.9 });
+    const crew: Crew[] = [];
+    for (const [z, y, pilot] of [[2.25, 1.15, false], [1.05, 1.42, true]] as const) {
+      const back = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.1), seatMat);
+      back.position.set(0, y + 0.35, z - 0.22);
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.2, 0.25), seatMat);
+      panel.position.set(0, y + 0.3, z + 0.55);
+      heli.add(back, panel);
+      const mesh = occupantMesh({ skin: [0xe0ac86, 0x9b6544, 0xf1c7a5][Math.floor(Math.random() * 3)], shirt: 0x4b5320, hair: 0x2b2f24, helmet: true, driver: true });
+      mesh.position.set(0, y, z);
+      heli.add(mesh);
+      crew.push({ mesh, hp: 50, dead: false, pilot });
+    }
     for (const sx of [-1, 1]) {
       const skid = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 3.6), dark);
       skid.position.set(sx * 1.15, 0.1, 0);
       heli.add(skid);
       // Stub wings with rocket pods.
       const wing = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.7), green);
-      wing.position.set(sx * 1.6, 1.5, 0.3);
+      wing.position.set(sx * 1.6, 1.5, -0.9);
       heli.add(wing);
       const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.3, 8), dark);
       pod.rotation.x = Math.PI / 2;
-      pod.position.set(sx * 2.2, 1.35, 0.3);
+      pod.position.set(sx * 2.2, 1.35, -0.9);
       heli.add(pod);
     }
     const gun = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.2, 6), dark);
     gun.rotation.x = Math.PI / 2;
-    gun.position.set(0, 0.8, 2.6);
+    gun.position.set(0, 0.55, 3.0);
     heli.add(gun);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.5, 8), dark);
+    mast.position.set(0, 2.85, -0.7);
+    heli.add(mast);
     const rotor = new THREE.Group();
     for (let i = 0; i < 4; i++) {
       const blade = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.05, 6), dark);
@@ -832,18 +873,68 @@ export class MilitaryBase {
       arm.add(blade);
       rotor.add(arm);
     }
-    rotor.position.y = 3.1;
+    rotor.position.set(0, 3.1, -0.7);
     heli.add(rotor);
     const x = this.cx - 5;
     const z = this.cz + 45;
     heli.position.set(x, 0, z);
     heli.rotation.y = -0.6;
     this.group.add(heli);
-    const m = this.machine('heli', 'attack helicopter', heli, null, x, z, 1.6, 3.2, 2.6, 650, 0.35, -0.6);
+    // Lighter armour than the tank: it goes down after a few dozen rifle rounds.
+    const m = this.machine('heli', 'attack helicopter', heli, null, x, z, 1.6, 3.2, 2.6, 280, 0.6, -0.6);
     m.lift = 0;
     m.orbit = Math.random() * 6;
     m.rotor = rotor;
+    m.crew = crew;
     this.machines.push(m);
+  }
+
+  /**
+   * The helicopter's crew in a bullet's way (world ray o + dir·t, t up to maxT): who, at what t,
+   * and whether it's their head. `flat` aims ignore heights.
+   */
+  crewHit(m: Machine, o: THREE.Vector3, dir: THREE.Vector3, flat: boolean, maxT: number): { crew: Crew; t: number; head: boolean } | null {
+    if (!m.crew || m.dead >= 0) return null;
+    let best: { crew: Crew; t: number; head: boolean } | null = null;
+    const p = new THREE.Vector3();
+    for (const c of m.crew) {
+      if (c.dead) continue;
+      c.mesh.getWorldPosition(p);
+      const hipY = p.y;
+      p.y += 0.42;
+      const v = p.clone().sub(o);
+      if (flat) {
+        const h = Math.hypot(dir.x, dir.z) || 1;
+        const s = (v.x * dir.x + v.z * dir.z) / h;
+        if (s < 0 || s > maxT * h) continue;
+        if (Math.hypot(v.x - (dir.x / h) * s, v.z - (dir.z / h) * s) > 0.32) continue;
+        const t = s / h;
+        if (!best || t < best.t) best = { crew: c, t, head: false };
+        continue;
+      }
+      const t = v.dot(dir) / (dir.lengthSq() || 1);
+      if (t < 0 || t > maxT) continue;
+      const q = o.clone().addScaledVector(dir, t);
+      if (q.distanceTo(p) > 0.36) continue;
+      if (!best || t < best.t) best = { crew: c, t, head: q.y > hipY + 0.56 };
+    }
+    return best;
+  }
+
+  /** You shot one of the helicopter's crew. Returns true if that finished them. */
+  hitCrew(m: Machine, c: Crew, dmg: number): boolean {
+    if (c.dead || m.dead >= 0 || dmg <= 0) return false;
+    c.hp -= dmg;
+    if (!this.own) this.raise();
+    if (c.hp > 0) return false;
+    c.dead = true;
+    c.mesh.rotation.x = 0.7;
+    c.mesh.position.y -= 0.12;
+    if (c.pilot) {
+      this.host.notify('🎯 You shot the pilot: the helicopter is going down!', 'good');
+      this.destroy(m);
+    } else this.host.notify('🎯 You shot the gunner: the chain gun falls silent.', 'good');
+    return true;
   }
 
   private addSoldier(kind: SoldierKind, lx: number, lz: number, tower: boolean, ax = lx, az = lz, bx = lx, bz = lz): void {
@@ -1452,7 +1543,11 @@ export class MilitaryBase {
       this.own = wasOwn;
       return;
     }
-    // Chain gun bursts.
+    // Chain gun bursts (once the gunner's down, only rockets).
+    if (m.crew?.some((c) => !c.pilot && c.dead)) {
+      m.cool = 1.2;
+      return;
+    }
     m.burst = m.burst > 0 ? m.burst - 1 : 8;
     m.cool = m.burst > 0 ? 0.08 : 1.4;
     this.shootFrom(m.x, alt + 0.8, m.z, p, dist, Math.random() < this.dodge(p, Math.max(0.1, 0.34 - dist * 0.003)), 3, 'smg');

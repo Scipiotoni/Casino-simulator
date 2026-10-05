@@ -11,6 +11,18 @@ import {
 } from './city';
 import { type CityPlan, crosses } from './plan';
 import { CITY_LANE, type RoadNet } from './roadNet';
+import { OCC_HEAD, OCC_TOP, occupantMesh, randomLook } from '../entities/occupant';
+
+/** Someone sitting in a traffic car: which seat, their figure, how much more they can take. */
+export interface Occupant {
+  seat: number;
+  mesh: THREE.Mesh;
+  hp: number;
+  dead: boolean;
+}
+
+/** Car windows: clear enough to see who's inside. */
+const GLASS = new THREE.MeshBasicMaterial({ color: 0x2a3a44, transparent: true, opacity: 0.2, depthWrite: false });
 
 /** Global x of the gun shop's door (column 1, north side of the Casino Strip). */
 function colGallery(): number {
@@ -69,6 +81,12 @@ interface Turn {
   v?: number;
 }
 
+/** Where you sit driving a car taken from the traffic: the driver's seat, low enough for your head to clear the roof. */
+export function trafficSeat(kind: number): THREE.Vector3 {
+  const { seats, roof } = carSeats(kind);
+  return new THREE.Vector3(seats[0].x, Math.min(seats[0].y, roof - 0.98), seats[0].z);
+}
+
 /** One car driving around the city (global frame). */
 export class Car {
   readonly root = new THREE.Group();
@@ -95,6 +113,11 @@ export class Car {
   s = 0;
   y = 0;
   pitch = 0;
+  /** The people inside (traffic cars; police cruisers and stolen cars have none). */
+  readonly people: Occupant[] = [];
+  /** The driver was shot: it rolls to a stop and stays put (hazards on) until it's towed away. */
+  dead = false;
+  deadT = 0;
   /** Pulling out onto another road: which way along it (0 = not). */
   merging: 0 | 1 | -1 = 0;
   /** Seconds spent waiting for a gap to pull out. */
@@ -102,12 +125,18 @@ export class Car {
   readonly lights: THREE.Mesh;
   readonly hazard: THREE.Mesh;
 
-  constructor(readonly kind: number, readonly color: number) {
+  constructor(readonly kind: number, readonly color: number, withPeople = false) {
     const proto = carProto(kind);
-    const paint = mat(color, { rough: 0.25, metal: 0.55 });
+    // Satin, not mirror-bright: a glossy roof in the sun blooms white and hides who's inside.
+    const paint = mat(color, { rough: 0.45, metal: 0.2 });
     const body = new THREE.Mesh(proto.paint, paint);
     body.castShadow = true;
     this.root.add(body, new THREE.Mesh(proto.dark, mat(0x15141a, { rough: 0.3, metal: 0.4 })), new THREE.Mesh(proto.trim, mat(0xd8d8e0, { rough: 0.25, metal: 0.8 })));
+    this.root.add(new THREE.Mesh(proto.inner, mat(0x2a2630, { rough: 0.85 })));
+    const glass = new THREE.Mesh(proto.glass, GLASS);
+    glass.renderOrder = 2;
+    this.root.add(glass);
+    if (withPeople) this.seatPeople();
     this.lights = new THREE.Mesh(proto.lights, glow(0xfff2c8, 2.2));
     this.hazard = new THREE.Mesh(proto.rear, glow(0xff8a1f, 2.4));
     this.hazard.visible = false;
@@ -119,14 +148,67 @@ export class Car {
   }
 
   readonly length: number;
+
+  /** A driver, and now and then passengers (a bus is never empty). */
+  seatPeople(): void {
+    this.clearPeople();
+    const { seats } = carSeats(this.kind);
+    const free = seats.map((_, i) => i).slice(1).sort(() => Math.random() - 0.5);
+    const extra = this.kind === 4 ? 3 + Math.floor(Math.random() * 8) : Math.random() < 0.45 ? 1 + Math.floor(Math.random() * free.length) : 0;
+    for (const i of [0, ...free.slice(0, extra)]) {
+      const mesh = occupantMesh(randomLook(i === 0));
+      mesh.position.copy(seats[i]);
+      this.root.add(mesh);
+      this.people.push({ seat: i, mesh, hp: 60, dead: false });
+    }
+    this.dead = false;
+    this.deadT = 0;
+  }
+
+  /** Everyone out (the car was stolen or towed away). */
+  clearPeople(): void {
+    for (const o of this.people) {
+      o.mesh.removeFromParent();
+      o.mesh.geometry.dispose();
+    }
+    this.people.length = 0;
+  }
 }
 
-/** Shared geometry per car type, split by material: paint, dark glass/tyres, chrome, lamps. */
-const protoCache = new Map<number, { paint: THREE.BufferGeometry; dark: THREE.BufferGeometry; trim: THREE.BufferGeometry; lights: THREE.BufferGeometry; rear: THREE.BufferGeometry }>();
-function carProto(kind: number) {
+/** Shared geometry per car type, split by material: paint, glass, interior, tyres, chrome, lamps. */
+interface CarProto {
+  paint: THREE.BufferGeometry;
+  glass: THREE.BufferGeometry;
+  inner: THREE.BufferGeometry;
+  dark: THREE.BufferGeometry;
+  trim: THREE.BufferGeometry;
+  lights: THREE.BufferGeometry;
+  rear: THREE.BufferGeometry;
+}
+const protoCache = new Map<number, CarProto>();
+
+/**
+ * The seats in a traffic car (car frame, hips; the driver's first) and the height of its
+ * window line: below it the body is solid, above it you see in through the glass.
+ */
+export function carSeats(kind: number): { seats: THREE.Vector3[]; belt: number; roof: number } {
+  const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  if (kind === 3) return { belt: 0.9, roof: 1.46, seats: [V(-0.38, 0.58, -0.3), V(0.38, 0.58, -0.3)] };
+  if (kind === 2) return { belt: 1.3, roof: 1.85, seats: [V(-0.42, 1.0, 1.0), V(0.42, 1.0, 1.0), V(-0.42, 1.0, -0.1), V(0.42, 1.0, -0.1), V(-0.42, 1.0, -1.1), V(0.42, 1.0, -1.1)] };
+  if (kind === 4) {
+    const seats = [V(-0.75, 1.15, 3.25)];
+    for (let z = 2.0; z > -3.6; z -= 1.1) seats.push(V(-0.72, 1.15, z), V(0.72, 1.15, z));
+    return { belt: 1.45, roof: 2.35, seats };
+  }
+  return { belt: 1.05, roof: 1.6, seats: [V(-0.4, 0.72, 0.15), V(0.4, 0.72, 0.15), V(-0.4, 0.72, -0.8), V(0.4, 0.72, -0.8)] };
+}
+
+function carProto(kind: number): CarProto {
   const hit = protoCache.get(kind);
   if (hit) return hit;
   const paint: THREE.BufferGeometry[] = [];
+  const glass: THREE.BufferGeometry[] = [];
+  const inner: THREE.BufferGeometry[] = [];
   const dark: THREE.BufferGeometry[] = [];
   const trim: THREE.BufferGeometry[] = [];
   const lights: THREE.BufferGeometry[] = [];
@@ -142,21 +224,44 @@ function carProto(kind: number) {
   const W = kind === 4 ? 2.4 : 1.8;
   const bodyH = kind === 4 ? 2.4 : kind === 2 ? 1.7 : kind === 3 ? 0.55 : 0.7;
   const base = 0.35;
-  bx(paint, W, bodyH, L, 0, base + bodyH / 2, 0);
-  if (kind === 0 || kind === 1) {
-    bx(paint, W * 0.86, 0.55, L * 0.5, 0, base + bodyH + 0.27, -0.2);
-    bx(dark, W * 0.88, 0.42, L * 0.46, 0, base + bodyH + 0.26, -0.2);
-  } else if (kind === 3) {
-    bx(paint, W * 0.8, 0.42, L * 0.38, 0, base + bodyH + 0.2, -0.35);
-    bx(dark, W * 0.82, 0.32, L * 0.36, 0, base + bodyH + 0.2, -0.35);
+  const { seats, belt } = carSeats(kind);
+  // The body up to the window line; above it a glass cabin under a roof on pillars, so you
+  // can see who's inside (and shoot them through the glass).
+  bx(paint, W, belt - base, L, 0, (base + belt) / 2, 0);
+  const cabin = (cw: number, z0: number, z1: number, top: number, posts: number[]) => {
+    bx(glass, cw, top - belt - 0.04, z1 - z0, 0, (belt + top) / 2 - 0.02, (z0 + z1) / 2);
+    // The cabin floor (the shiny paint under it would glare through the glass).
+    bx(inner, cw - 0.03, 0.03, z1 - z0 - 0.03, 0, belt + 0.016, (z0 + z1) / 2);
+    bx(paint, cw + 0.03, 0.07, z1 - z0 + 0.04, 0, top, (z0 + z1) / 2);
+    for (const z of posts) for (const sx of [-1, 1]) bx(paint, 0.07, top - belt, 0.08, sx * (cw / 2 + 0.005), (belt + top) / 2, z);
+  };
+  if (kind === 0 || kind === 1) cabin(W * 0.86, -1.25, 0.85, 1.6, [-1.25, -0.2, 0.85]);
+  else if (kind === 3) {
+    cabin(W * 0.8, -1.13, 0.43, 1.46, [-1.13, 0.43]);
     bx(paint, W, 0.08, 0.5, 0, base + bodyH + 0.35, -L / 2 + 0.3);
   } else if (kind === 2) {
-    bx(dark, W + 0.02, 0.6, 0.9, 0, base + bodyH - 0.4, L / 2 - 0.5);
-    bx(dark, W + 0.02, 0.5, L * 0.5, 0, base + bodyH - 0.4, -0.3);
+    cabin(W - 0.04, -L / 2 + 0.2, L / 2 - 0.25, 1.85, [-L / 2 + 0.2, -0.6, 0.5, L / 2 - 0.25]);
+    bx(paint, W, 2.05 - 1.85, L, 0, 1.95, 0);
   } else {
-    for (let i = 0; i < 6; i++) bx(dark, W + 0.02, 0.8, 1.0, 0, base + 1.6, -L / 2 + 1 + i * 1.25);
-    bx(dark, W * 0.9, 1.2, 0.05, 0, base + 1.5, L / 2 + 0.01);
+    const posts: number[] = [];
+    for (let z = -L / 2 + 0.2; z < L / 2 - 0.1; z += 1.25) posts.push(z);
+    posts.push(L / 2 - 0.15);
+    cabin(W - 0.04, -L / 2 + 0.2, L / 2 - 0.15, 2.35, posts);
+    bx(paint, W, 2.75 - 2.35, L, 0, 2.55, 0);
   }
+  // Inside: seats with headrests, the dashboard and the wheel.
+  const front = kind === 3 ? 0.43 : kind === 2 ? L / 2 - 0.25 : kind === 4 ? L / 2 - 0.15 : 0.85;
+  for (const st of seats) {
+    bx(inner, kind === 4 ? 0.5 : 0.46, 0.62, 0.1, st.x, st.y + 0.33, st.z - 0.2);
+    bx(inner, 0.26, 0.15, 0.09, st.x, st.y + 0.72, st.z - 0.21);
+    bx(inner, kind === 4 ? 0.5 : 0.46, 0.1, 0.46, st.x, st.y - 0.02, st.z + 0.03);
+  }
+  bx(inner, W * 0.8, 0.14, 0.36, 0, belt + 0.04, front - 0.22);
+  const dr = seats[0];
+  const wheel = new THREE.TorusGeometry(0.16, 0.025, 6, 16);
+  wheel.rotateX(-0.45);
+  wheel.translate(dr.x, dr.y + 0.42, dr.z + 0.42);
+  inner.push(wheel);
   if (kind === 1) {
     bx(lights, 0.7, 0.22, 0.3, 0, base + bodyH + 0.66, -0.2);
   }
@@ -183,7 +288,7 @@ function carProto(kind: number) {
     for (const g of list) g.dispose();
     return out;
   };
-  const p = { paint: m(paint), dark: m(dark), trim: m(trim), lights: m(lights), rear: m(rear) };
+  const p = { paint: m(paint), glass: m(glass), inner: m(inner), dark: m(dark), trim: m(trim), lights: m(lights), rear: m(rear) };
   protoCache.set(kind, p);
   return p;
 }
@@ -854,7 +959,7 @@ export class CityView {
     const n = 64;
     for (let i = 0; i < n; i++) {
       const kind = i % 9 === 0 ? 4 : i % 5 === 0 ? 1 : i % 7 === 0 ? 3 : i % 4 === 0 ? 2 : 0;
-      const car = new Car(kind, kind === 1 ? 0xffc21a : kind === 4 ? 0x2fb8c9 : CAR_COLORS[i % CAR_COLORS.length]);
+      const car = new Car(kind, kind === 1 ? 0xffc21a : kind === 4 ? 0x2fb8c9 : CAR_COLORS[i % CAR_COLORS.length], true);
       this.respawn(car, true);
       this.cars.push(car);
       this.carGroup.add(car.root);
@@ -1024,7 +1129,10 @@ export class CityView {
     }
     this.roadCars = 0;
     for (const c of this.cars) if (outOfTown(c)) this.roadCars++;
-    if (sim > 0) for (const c of this.cars) this.drive(c, sim, ph);
+    if (sim > 0) for (const c of this.cars) {
+      if (c.dead) c.deadT += sim;
+      this.drive(c, sim, ph);
+    }
     // Cars that drove far away from you come back on a road near you (out of sight).
     const n = this.cars.length;
     if (sim > 0 && n) {
@@ -1033,16 +1141,21 @@ export class CityView {
       for (let i = 0; i < n && moved < 3 && tried < 8; i++) {
         const c = this.cars[(this.scan + i) % n];
         const far = outOfTown(c) ? ROAD_BUBBLE : BUBBLE;
-        if (c.turn || c.shaken > 0 || Math.hypot(c.x - fx, c.z - fz) < far) continue;
+        // A car whose driver was shot is towed away after a while (once you've moved off).
+        const towed = c.dead && c.deadT > 45 && Math.hypot(c.x - fx, c.z - fz) > 50;
+        if (!towed && (c.turn || c.shaken > 0 || c.dead || Math.hypot(c.x - fx, c.z - fz) < far)) continue;
         tried++;
-        if (this.respawnNear(c, fx, fz)) moved++;
+        if (this.respawnNear(c, fx, fz)) {
+          moved++;
+          if (c.dead || c.people.some((o) => o.dead)) c.seatPeople();
+        }
       }
       this.scan = (this.scan + 7) % n;
     }
     this.updateTargets(dt);
     for (const c of this.cars) {
       c.root.visible = outOfTown(c) ? Math.hypot(c.x - fx, c.z - fz) < ROAD_SEEN : Math.abs(c.x - fx) < 150 && Math.abs(c.z - fz) < 150;
-      if (c.shaken > 0) c.hazard.visible = Math.floor(c.shaken * 3) % 2 === 0;
+      if (c.shaken > 0 || c.dead) c.hazard.visible = Math.floor((c.shaken || this.lightT) * 3) % 2 === 0;
       else if (c.hazard.visible) c.hazard.visible = false;
     }
   }
@@ -1052,8 +1165,8 @@ export class CityView {
     c.honkT = Math.max(0, c.honkT - dt);
     if (c.turn) {
       const tr = c.turn;
-      tr.t += (Math.max(c.speed, 1) * dt) / tr.len;
-      c.speed += ((tr.v ?? c.max * 0.55) - c.speed) * Math.min(1, dt * 2);
+      tr.t += (Math.max(c.speed, c.dead ? 0.3 : 1) * dt) / tr.len;
+      c.speed += (c.dead ? -c.speed : (tr.v ?? c.max * 0.55) - c.speed) * Math.min(1, dt * 2);
       if (tr.t >= 1) {
         c.dir = tr.next.dir;
         c.turn = null;
@@ -1087,7 +1200,7 @@ export class CityView {
       this.driveRoad(c, dt);
       return;
     }
-    let target = c.shaken > 0 ? 0 : c.max;
+    let target = c.shaken > 0 || c.dead ? 0 : c.max;
     const stops = this.stopsFor(c.axis, c.line);
     // Next intersection ahead
     let idx = -1;
@@ -1164,7 +1277,7 @@ export class CityView {
     const L = R.path.length;
     c.shaken = Math.max(0, c.shaken - dt);
     c.honkT = Math.max(0, c.honkT - dt);
-    let target = c.shaken > 0 ? 0 : R.speed * (c.max / 9);
+    let target = c.shaken > 0 || c.dead ? 0 : R.speed * (c.max / 9);
     // Bends: no faster than a comfortable sideways pull allows.
     const h0 = R.path.pointAt(net.wrap(c.rd, c.s));
     const h1 = R.path.pointAt(net.wrap(c.rd, c.s + c.dir * 25));
@@ -1332,6 +1445,52 @@ export class CityView {
     c.turn = { p0: entry, p1: corner, p2: exit, t: 0, len: len * 0.8, next: { ...next, pos: exitPos }, from: c.line };
   }
 
+  /**
+   * Whoever sits in a car's line of fire (global ray from o along unit h, between sMin and
+   * sMax), nearest first. `heightAt` gives the bullet's height above the road at a distance
+   * along the ray (null: aiming flat, heights don't count).
+   */
+  shootPeople(c: Car, ox: number, oz: number, hx: number, hz: number, sMin: number, sMax: number, heightAt: ((s: number) => number) | null): { occ: Occupant; s: number; head: boolean } | null {
+    const { seats } = carSeats(c.kind);
+    const co = Math.cos(c.yaw);
+    const si = Math.sin(c.yaw);
+    let best: { occ: Occupant; s: number; head: boolean } | null = null;
+    for (const o of c.people) {
+      if (o.dead) continue;
+      const st = seats[o.seat];
+      const px = c.x + co * st.x + si * st.z - ox;
+      const pz = c.z - si * st.x + co * st.z - oz;
+      const s = px * hx + pz * hz;
+      if (s < sMin - 0.4 || s > sMax || (best && s >= best.s)) continue;
+      if (Math.hypot(px - hx * s, pz - hz * s) > 0.24) continue;
+      let head = false;
+      if (heightAt) {
+        const y = heightAt(s);
+        if (y < st.y - 0.05 || y > st.y + OCC_TOP) continue;
+        head = y > st.y + OCC_HEAD;
+      }
+      best = { occ: o, s, head };
+    }
+    return best;
+  }
+
+  /** Someone in a car was shot. Returns true if that finished them (a shot driver stops the car). */
+  hurtPerson(c: Car, o: Occupant, dmg: number): boolean {
+    if (o.dead || dmg <= 0) return false;
+    o.hp -= dmg;
+    if (o.hp > 0) return false;
+    o.dead = true;
+    // Slumped forward in the seat.
+    o.mesh.rotation.x = 0.7;
+    o.mesh.position.y -= 0.12;
+    o.mesh.position.z += 0.1;
+    if (o.seat === 0) {
+      c.dead = true;
+      c.deadT = 0;
+    }
+    return true;
+  }
+
   /** First car a bullet hits along a ray (global frame), within `range`. */
   raycastCars(ox: number, oz: number, dx: number, dz: number, range: number): { car: Car; t: number } | null {
     let best: { car: Car; t: number } | null = null;
@@ -1354,6 +1513,9 @@ export class CityView {
     const i = this.cars.indexOf(c);
     if (i >= 0) this.cars.splice(i, 1);
     c.hazard.visible = false;
+    // You took it: whoever was inside is out on the road.
+    c.clearPeople();
+    c.dead = false;
   }
 
   hitCar(c: Car): void {

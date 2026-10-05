@@ -567,17 +567,20 @@ function paintMat(color: number, finish: Finish): THREE.Material {
     case 'matte':
       return new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.85 });
     case 'metallic':
-      return new THREE.MeshPhysicalMaterial({ color, metalness: 0.6, roughness: 0.32, clearcoat: 0.6, clearcoatRoughness: 0.15 });
+      return new THREE.MeshPhysicalMaterial({ color, metalness: 0.5, roughness: 0.4, clearcoat: 0.5, clearcoatRoughness: 0.3 });
     case 'pearl':
       return new THREE.MeshPhysicalMaterial({ color, metalness: 0.45, roughness: 0.28, clearcoat: 0.8, clearcoatRoughness: 0.1, iridescence: 0.35, iridescenceIOR: 1.6 });
     default:
-      return new THREE.MeshPhysicalMaterial({ color, metalness: 0.25, roughness: 0.3, clearcoat: 0.6, clearcoatRoughness: 0.12 });
+      return new THREE.MeshPhysicalMaterial({ color, metalness: 0.2, roughness: 0.4, clearcoat: 0.5, clearcoatRoughness: 0.3 });
   }
 }
 
+/** Window glass: every tint lets you see who's inside, darker tints less so. */
 function glassMat(t: Tint): THREE.Material {
-  const c = t === 'clear' ? 0x9fc4d8 : t === 'smoke' ? 0x2c3640 : t === 'limo' ? 0x08090c : 0x6a2cc2;
-  return new THREE.MeshStandardMaterial({ color: c, metalness: t === 'neon' ? 0.9 : 0.6, roughness: 0.06, transparent: t === 'clear', opacity: t === 'clear' ? 0.55 : 1, emissive: t === 'neon' ? 0x2a0f45 : 0 });
+  // Tinted, not shiny: a sunny sky reflected in shiny glass would glare white and hide the cabin.
+  if (t === 'neon') return new THREE.MeshStandardMaterial({ color: 0x6a2cc2, metalness: 0.6, roughness: 0.18, transparent: true, opacity: 0.45, depthWrite: false, emissive: 0x2a0f45 });
+  const c = t === 'clear' ? 0x2a3a44 : t === 'smoke' ? 0x111519 : 0x050608;
+  return new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: t === 'clear' ? 0.22 : t === 'smoke' ? 0.5 : 0.75, depthWrite: false });
 }
 
 /** A wheel: rounded tyre, a rim in the chosen style, hub cap and (tuned) brake caliper. */
@@ -670,6 +673,8 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
   const black = new THREE.MeshStandardMaterial({ color: 0x15141a, roughness: 0.6, metalness: 0.2 });
   const trim = chrome();
   const glass = glassMat(m.tint);
+  // Where the driver sits: low enough under a closed roof that their head clears it.
+  const seat = new THREE.Vector3(-0.38, s.open ? belt - 0.3 : Math.min(belt - 0.3, s.roof - 0.98), (s.cabR + s.cabF) / 2 + 0.2);
   const add = (mesh: THREE.Mesh, cast = true) => {
     mesh.castShadow = cast;
     g.add(mesh);
@@ -689,7 +694,22 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
   if (!s.open) {
     const gw = W * 0.84;
     const gh: [number, number][] = [[s.cabR, belt - 0.02], [s.cabF, belt - 0.02], [s.cabF - s.rakeF, s.roof], [s.cabR + s.rakeR, s.roof]];
-    add(new THREE.Mesh(extrudeProfile(gh, gw, 0.06), glass));
+    const pane = add(new THREE.Mesh(extrudeProfile(gh, gw, 0.06), glass), false);
+    pane.renderOrder = 2;
+    // Inside, seen through the glass: seats with headrests, the dashboard and the wheel.
+    const cloth = new THREE.MeshStandardMaterial({ color: 0x2a2630, roughness: 0.85 });
+    const top = Math.min(belt + 0.42, s.roof - 0.14);
+    // The cabin floor (the shiny paint under it would glare through the glass).
+    box(cloth, gw * 0.97, 0.03, Math.max(0.3, s.cabF - s.cabR - 0.1), 0, belt + 0.0, (s.cabF + s.cabR) / 2);
+    for (const st of seatSpots(k, seat, L)) {
+      box(cloth, 0.46, top - 0.1 - (belt - 0.3), 0.1, st.x, (top - 0.1 + belt - 0.3) / 2, st.z - 0.24);
+      box(cloth, 0.26, 0.14, 0.09, st.x, top, st.z - 0.25);
+    }
+    box(cloth, gw * 0.92, 0.12, 0.34, 0, belt + 0.02, s.cabF - 0.22);
+    const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.025, 6, 16), black);
+    wheel.position.set(seat.x, belt + 0.12, Math.min(seat.z + 0.5, s.cabF - 0.3));
+    wheel.rotation.x = -0.45;
+    add(wheel, false);
     // Roof skin and pillars in body colour
     const roofLen = s.cabF - s.rakeF - (s.cabR + s.rakeR);
     box(paint, gw + 0.02, 0.05, Math.max(0.3, roofLen + 0.05), 0, s.roof + 0.03, (s.cabF - s.rakeF + s.cabR + s.rakeR) / 2);
@@ -928,7 +948,7 @@ export function buildCar(def: CarDef, color?: number, mods?: CarMods): CarModel 
     const mesh = o as THREE.Mesh;
     if (mesh.isMesh) mesh.receiveShadow = false;
   });
-  return { root: g, wheels, front, seat: new THREE.Vector3(-0.38, belt - 0.3, (s.cabR + s.cabF) / 2 + 0.2), length: L, open: !!s.open, flames, brakeLights, beacons };
+  return { root: g, wheels, front, seat, length: L, open: !!s.open, flames, brakeLights, beacons };
 }
 
 let policeTex: THREE.Texture | null = null;

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Game } from './game';
 import { type CarDef, type CarMods, DEALER_CARS, STOLEN_SPECS, buildCar, carDef, carHp, carWidth, defaultMods, engineOf, repairCost, sanitizeMods, tunedSpecs } from '../world/vehicles';
-import { Car, rayBox } from '../world/cityView';
+import { Car, rayBox, trafficSeat } from '../world/cityView';
 import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
 import { NO_GARAGE_IDS, type ParkedCar, garageTier } from './house';
@@ -379,7 +379,7 @@ export class Driving {
       c.root.rotation.y = o.yaw;
       this.group.add(c.root);
       v = {
-        uid: nextUid++, def: null, name: `${o.owner}'s car`, color: o.color, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+        uid: nextUid++, def: null, name: `${o.owner}'s car`, color: o.color, root: c.root, wheels: [], front: [], open: false, seat: trafficSeat(o.kind),
         x: o.x, z: o.z, yaw: o.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: false, mods: null, flames: [], brakeLights: [],
         kept: { kind: o.kind, color: o.color }, hp: c.hp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
       };
@@ -410,7 +410,7 @@ export class Driving {
     const g = this.g;
     g.street.city.releaseCar(c);
     const v: Vehicle = {
-      uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+      uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: trafficSeat(c.kind),
       x: c.x, z: c.z, yaw: c.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: true, mods: null, flames: [], brakeLights: [],
       kept: { kind: c.kind, color: c.color }, hp: c.hp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
     };
@@ -1901,7 +1901,7 @@ export class Driving {
       c.root.rotation.y = yaw;
       this.group.add(c.root);
       v = {
-        uid: nextUid++, def: null, name: 'your car', color: p.color ?? 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+        uid: nextUid++, def: null, name: 'your car', color: p.color ?? 0, root: c.root, wheels: [], front: [], open: false, seat: trafficSeat(c.kind),
         x: at.x, z: at.z, yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: true, stolen: false, mods: null, flames: [], brakeLights: [],
         kept: { kind: c.kind, color: c.color }, hp: c.maxHp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
       };

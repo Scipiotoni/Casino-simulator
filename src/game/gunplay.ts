@@ -11,6 +11,7 @@ import { shotDamage } from './driving';
 import { mat } from '../render/materials';
 import { type Attack } from './melee';
 import { groundAt } from '../world/terrain';
+import { carSeats } from '../world/cityView';
 /** Chance a passer-by you punch (and don't knock out) fights back. */
 const BRAWL_CHANCE = 0.4;
 
@@ -64,6 +65,8 @@ type Hit =
   | { kind: 'wall' | 'ground' | 'air'; t: number }
   | { kind: 'target'; t: number; target: import('../world/cityView').Target }
   | { kind: 'car'; t: number; tg: import('./driving').CarTarget }
+  | { kind: 'occupant'; t: number; car: import('../world/cityView').Car; occ: import('../world/cityView').Occupant; head: boolean }
+  | { kind: 'crew'; t: number; machine: import('../world/militaryBase').Machine; crew: import('../world/militaryBase').Crew; head: boolean }
   | { kind: 'soldier'; t: number; soldier: import('../world/militaryBase').Soldier; head: boolean }
   | { kind: 'machine'; t: number; machine: import('../world/militaryBase').Machine }
   | { kind: 'ped'; t: number; ped: Ped; head: boolean }
@@ -841,7 +844,15 @@ export class GunPlay {
         const t = car.t / hlen;
         const y = yAt(t);
         const top = car.v?.def?.kind === 'tank' || car.v?.def?.kind === 'apc' ? 2.6 : 1.55;
-        if (t < best.t && (flat || (y > 0 && y < top))) best = { kind: 'car', t, tg: car };
+        if (t < best.t && (flat || (y > 0 && y < top))) {
+          best = { kind: 'car', t, tg: car };
+          // In through the glass: whoever sits in the line of fire takes the bullet.
+          const tc = car.traffic;
+          if (tc?.people.length && (flat || y > carSeats(tc.kind).belt - 0.05)) {
+            const p = city.shootPeople(tc, og.x, og.z, hx, hz, car.t, car.t + tc.length + 1, flat ? null : (s) => yAt(s / hlen));
+            if (p) best = { kind: 'occupant', t: p.s / hlen, car: tc, occ: p.occ, head: p.head };
+          }
+        }
       }
       // Soldiers at the military base (tower guards stand up high).
       for (const c of g.base.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
@@ -856,6 +867,12 @@ export class GunPlay {
       }
       // The base's machine-gun nests, its tank, the helicopter and the fuel tanks.
       for (const c of g.base.raycastMachines(og.x, og.z, hx, hz, best.t * hlen)) {
+        // The helicopter's cockpit: a bullet through the canopy finds the crew.
+        const cr = c.machine.kind === 'heli' ? g.base.crewHit(c.machine, o, dir, flat, best.t) : null;
+        if (cr && cr.t < best.t) {
+          best = { kind: 'crew', t: cr.t, machine: c.machine, crew: cr.crew, head: cr.head };
+          break;
+        }
         const t = c.s / hlen;
         const y = o.y + dir.y * t - g.streetDrop;
         if (t < best.t && (flat || (y > c.y0 && y < c.y1))) {
@@ -917,7 +934,7 @@ export class GunPlay {
     const t = best.t;
     const hit = new THREE.Vector3(o.x + dir.x * t, flat ? muzzle.y : o.y + dir.y * t, o.z + dir.z * t);
     const fx = g.effects;
-    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player' || best.kind === 'guard';
+    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player' || best.kind === 'guard' || best.kind === 'occupant' || best.kind === 'crew';
     if (done) {
       if (best.kind === 'ped') done.add(best.ped);
       else if (best.kind === 'cop') done.add(best.cop);
@@ -941,6 +958,40 @@ export class GunPlay {
         st.police.crime(HEAT.car, false);
         fx.sparkle(hit.x, Math.max(0.5, hit.y), hit.z, 8, 0xfff2c8, 0.4);
         if (Math.random() < 0.4) audio.playAt('ricochet', hit.x, hit.z, 0.6);
+        break;
+      }
+      case 'occupant': {
+        // Through the window: the glass goes, and so does whoever's behind it.
+        audio.playAt('glass', hit.x, hit.z, 0.8);
+        fx.sparkle(hit.x, hit.y, hit.z, 14, 0xbff6ff, 0.45);
+        if (flat) hit.y = 1.2;
+        if (best.car.shaken <= 0 && !best.car.dead && this.alarmT <= 0) {
+          this.alarmT = 1.5;
+          audio.playAt('carAlarm', hit.x, hit.z, 0.8);
+        }
+        city.hitCar(best.car);
+        const dmg = this.dmgOf(d, best.head, t);
+        if (dmg <= 0) break;
+        const ko = city.hurtPerson(best.car, best.occ, dmg);
+        st.police.crime(ko ? HEAT.knockout : HEAT.hitPerson);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
+        if (ko) {
+          g.stats.knockouts++;
+          if (best.occ.seat === 0) g.notify('🚗 You shot the driver: the car rolls to a stop.', 'bad');
+        }
+        break;
+      }
+      case 'crew': {
+        // The helicopter's canopy: hit the pilot and it goes down.
+        audio.playAt('glass', hit.x, hit.z, 0.8);
+        fx.sparkle(hit.x, hit.y, hit.z, 14, 0xbff6ff, 0.45);
+        const dmg = this.dmgOf(d, best.head, t);
+        if (dmg <= 0) break;
+        const ko = g.base.hitCrew(best.machine, best.crew, dmg);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
+        if (ko) g.stats.knockouts++;
         break;
       }
       case 'target': {
