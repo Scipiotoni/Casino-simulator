@@ -12,11 +12,15 @@ import { type CityPlan, fullPlan, makePlan, onPlannedRoad, slotOpen } from './pl
 import { cullChunks } from './nature';
 import { VIEW } from './viewDistance';
 import { CityView } from './cityView';
+import { RoadNet } from './roadNet';
 import { Crowd, type DoorSpot } from './crowd';
 import { Police } from './police';
 import { Outskirts } from './outskirts';
 import { SIDEWALK_Z0 } from './grid';
 export { ROAD_MID } from './grid';
+
+/** Highways cars drive fast on. */
+const FAST_ROADS = ['River Road', 'Mesa Drive', 'Interstate 15'];
 
 export type LotKind = 'me' | 'rival' | 'player' | 'hotel' | 'house' | 'filler' | 'shop';
 
@@ -465,6 +469,9 @@ export class Street {
       this.builtKey = this.planKey;
       this.city.build(this.plan);
       this.outskirts.build(this.plan, this.planKey);
+      // Traffic drives out of town onto the ring road and the highways.
+      const fast = new Set(this.outskirts.highways.filter((h) => FAST_ROADS.includes(h.name)).map((h) => h.road));
+      this.city.setRoads(new RoadNet(this.plan, this.outskirts.roads, this.outskirts.terrain, fast));
       this.park.build();
     }
     this.park.update(dt);

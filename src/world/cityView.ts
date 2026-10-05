@@ -10,6 +10,7 @@ import {
   blocksFor, colX, hash01, inParkSlot, slotToGlobal, streetZ,
 } from './city';
 import { type CityPlan, crosses } from './plan';
+import { CITY_LANE, type RoadNet } from './roadNet';
 
 /** Global x of the gun shop's door (column 1, north side of the Casino Strip). */
 function colGallery(): number {
@@ -17,7 +18,7 @@ function colGallery(): number {
 }
 
 /** Lane offset from the centre line (drive on the right). */
-const LANE = 2.2;
+const LANE = CITY_LANE;
 /** Half the width of a road (the box an intersection occupies). */
 const BOX = ROAD_HALF;
 /** Where a car's centre waits before an intersection. */
@@ -25,6 +26,30 @@ const STOP_AT = BOX + 2.8;
 const LIGHT_CYCLE = 22;
 /** Traffic further than this from you is brought back closer. */
 const BUBBLE = 320;
+/** Out of town you can see much further: cars on the roads there are kept (and shown) further out. */
+const ROAD_BUBBLE = 480;
+const ROAD_SEEN = 330;
+/** Cars out of town at once (the rest wait in town). */
+const ROAD_CARS = 22;
+/** Out-of-town roads are drawn this far above their profile. */
+const ROAD_LIFT = 0.06;
+
+/** Is the car out on the roads round town (or turning onto one)? */
+function outOfTown(c: Car): boolean {
+  return c.rd >= 0 || (c.turn?.next.rd ?? -1) >= 0;
+}
+
+/** The control point of a turn from (a, heading ha) to (b, heading hb): where the two headings meet. */
+function corner(ax: number, az: number, hax: number, haz: number, bx: number, bz: number, hbx: number, hbz: number): THREE.Vector2 {
+  // a + t·ha = b − u·hb
+  const den = hax * hbz - haz * hbx;
+  const mid = new THREE.Vector2((ax + bx) / 2, (az + bz) / 2);
+  if (Math.abs(den) < 0.08) return mid;
+  const t = ((bx - ax) * hbz - (bz - az) * hbx) / den;
+  const span = Math.hypot(bx - ax, bz - az);
+  if (t <= 0 || t > span * 1.5) return mid;
+  return new THREE.Vector2(ax + hax * t, az + haz * t);
+}
 
 type Axis = 'x' | 'z';
 
@@ -34,9 +59,14 @@ interface Turn {
   p2: THREE.Vector2;
   t: number;
   len: number;
-  next: { axis: Axis; line: number; dir: 1 | -1; pos: number };
+  /** Onto a city street (axis, line, pos) or, with `rd`, onto a road out of town at `s`. */
+  next: { axis: Axis; line: number; dir: 1 | -1; pos: number; rd?: number; s?: number };
   /** The road it turned off (it crosses the new one right here). */
   from: number;
+  /** Height at the start and the end, and how fast it takes the turn. */
+  y0?: number;
+  y1?: number;
+  v?: number;
 }
 
 /** One car driving around the city (global frame). */
@@ -60,6 +90,15 @@ export class Car {
   x = 0;
   z = 0;
   yaw = 0;
+  /** Out of town: the road it's on (in the road net) and how far along it; -1 = a city street. */
+  rd = -1;
+  s = 0;
+  y = 0;
+  pitch = 0;
+  /** Pulling out onto another road: which way along it (0 = not). */
+  merging: 0 | 1 | -1 = 0;
+  /** Seconds spent waiting for a gap to pull out. */
+  wait = 0;
   readonly lights: THREE.Mesh;
   readonly hazard: THREE.Mesh;
 
@@ -73,6 +112,7 @@ export class Car {
     this.hazard = new THREE.Mesh(proto.rear, glow(0xff8a1f, 2.4));
     this.hazard.visible = false;
     this.root.add(this.lights, new THREE.Mesh(proto.rear, glow(0xff2a2a, 1.4)), this.hazard);
+    this.root.rotation.order = 'YXZ';
     this.max = [9, 8, 7, 12, 6][kind] ?? 9;
     this.length = kind === 4 ? 8.5 : 4.2;
     this.hp = this.maxHp = kind === 4 ? 220 : kind === 3 ? 140 : 100;
@@ -281,6 +321,12 @@ export class CityView {
   private lastPhase = -1;
   /** Which streets and avenues exist, and how far they run. */
   plan: CityPlan | null = null;
+  /** The ring road and the highways out of town (cars drive out onto them). */
+  private net: RoadNet | null = null;
+  /** Cars out of town right now. */
+  private roadCars = 0;
+  /** Where the next look for far-away cars starts (a few are checked each frame). */
+  private scan = 0;
   /** Where the player stands (global), so cars stop for them. */
   player = { x: -9999, z: -9999 };
   readonly targets: Target[] = [];
@@ -789,6 +835,18 @@ export class CityView {
     if (lg) s.add(lg);
   }
 
+  /** The roads out of town are laid (or re-laid): cars out there come back into town first. */
+  setRoads(net: RoadNet | null): void {
+    this.net = net;
+    for (const c of this.cars) if (outOfTown(c)) this.respawn(c, true);
+  }
+
+  /** The road on out of town from the lo (0) or hi (1) end of a street or avenue, if cars may take it. */
+  private exitFor(axis: Axis, line: number, edge: 0 | 1): { road: number; s: number; dir: 1 | -1 } | null {
+    if (!this.net || this.roadCars >= ROAD_CARS) return null;
+    return this.net.exit(axis, line, edge);
+  }
+
   private spawnCars(): void {
     for (const c of this.cars) c.root.removeFromParent();
     this.cars = [];
@@ -827,6 +885,8 @@ export class CityView {
   /** Put a car on a random lane (at its starting end, or anywhere along it at first). */
   private respawn(c: Car, anywhere: boolean): void {
     const lines = this.lines();
+    c.rd = -1;
+    c.merging = 0;
     c.turn = null;
     c.decided = -999;
     c.speed = c.max * 0.6;
@@ -846,6 +906,9 @@ export class CityView {
     const near = this.lines().filter((ln) => (ln.axis === 'x'
       ? Math.abs(streetZ(ln.line) - fz) < BUBBLE * 0.8 && fx > ln.lo - BUBBLE && fx < ln.hi + BUBBLE
       : Math.abs(avenueMid(ln.line) - fx) < BUBBLE * 0.8 && fz > ln.lo - BUBBLE && fz < ln.hi + BUBBLE));
+    // Out of town (or near its edge): the ring road and the highways round you.
+    const spots = this.net && (this.roadCars < ROAD_CARS || outOfTown(c)) ? this.net.spotsNear(fx, fz, ROAD_SEEN + 10, ROAD_BUBBLE - 20) : [];
+    if (spots.length && Math.random() * (spots.length + near.length * 6) < spots.length) return this.respawnOnRoad(c, spots);
     for (let tries = 0; tries < 6 && near.length; tries++) {
       const ln = near[Math.floor(Math.random() * near.length)];
       const alongX = ln.axis === 'x';
@@ -858,6 +921,8 @@ export class CityView {
       const p = this.laneXY(axis, line, dir, pos);
       if (Math.hypot(p.x - fx, p.y - fz) < 160) continue;
       if (this.cars.some((o) => o !== c && o.axis === axis && o.line === line && o.dir === dir && Math.abs(o.pos - pos) < 12)) continue;
+      c.rd = -1;
+      c.merging = 0;
       c.axis = axis;
       c.line = line;
       c.dir = dir;
@@ -865,6 +930,27 @@ export class CityView {
       c.turn = null;
       c.decided = -999;
       c.speed = c.max * 0.6;
+      this.place(c);
+      return true;
+    }
+    return false;
+  }
+
+  /** Put a car on one of these spots out of town, if nothing's close to it already. */
+  private respawnOnRoad(c: Car, spots: { road: number; s: number }[]): boolean {
+    const net = this.net!;
+    for (let tries = 0; tries < 5; tries++) {
+      const sp = spots[Math.floor(Math.random() * spots.length)];
+      const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+      const p = net.lane(sp.road, sp.s, dir);
+      if (this.cars.some((o) => o !== c && Math.abs(o.x - p.x) < 40 && Math.abs(o.z - p.z) < 40 && Math.hypot(o.x - p.x, o.z - p.z) < 40)) continue;
+      c.rd = sp.road;
+      c.s = sp.s;
+      c.dir = dir;
+      c.turn = null;
+      c.merging = 0;
+      c.decided = -999;
+      c.speed = net.roads[sp.road].speed * 0.8;
       this.place(c);
       return true;
     }
@@ -889,14 +975,23 @@ export class CityView {
   }
 
   private place(c: Car): void {
-    if (!c.turn) {
+    if (!c.turn && c.rd >= 0 && this.net) {
+      const p = this.net.lane(c.rd, c.s, c.dir);
+      c.x = p.x;
+      c.z = p.z;
+      c.y = p.y + ROAD_LIFT;
+      c.yaw = Math.atan2(p.dx, p.dz);
+      c.pitch = -Math.atan(p.grade);
+    } else if (!c.turn) {
       const p = this.laneXY(c.axis, c.line, c.dir, c.pos);
       c.x = p.x;
       c.z = p.y;
+      c.y = 0;
+      c.pitch = 0;
       c.yaw = c.axis === 'x' ? (c.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : c.dir > 0 ? 0 : Math.PI;
     }
-    c.root.position.set(c.x, 0, c.z);
-    c.root.rotation.y = c.yaw;
+    c.root.position.set(c.x, c.y, c.z);
+    c.root.rotation.set(c.pitch, c.yaw, 0);
   }
 
   /** Which axis has green right now ('x' streets, 'z' avenues), and whether it's amber. */
@@ -927,19 +1022,26 @@ export class CityView {
       this.litLamps.instanceMatrix.needsUpdate = true;
       if (this.litLamps.instanceColor) this.litLamps.instanceColor.needsUpdate = true;
     }
+    this.roadCars = 0;
+    for (const c of this.cars) if (outOfTown(c)) this.roadCars++;
     if (sim > 0) for (const c of this.cars) this.drive(c, sim, ph);
     // Cars that drove far away from you come back on a road near you (out of sight).
-    if (sim > 0) {
+    const n = this.cars.length;
+    if (sim > 0 && n) {
       let moved = 0;
-      for (const c of this.cars) {
-        if (moved >= 3) break;
-        if (c.turn || c.shaken > 0 || Math.hypot(c.x - fx, c.z - fz) < BUBBLE) continue;
+      let tried = 0;
+      for (let i = 0; i < n && moved < 3 && tried < 8; i++) {
+        const c = this.cars[(this.scan + i) % n];
+        const far = outOfTown(c) ? ROAD_BUBBLE : BUBBLE;
+        if (c.turn || c.shaken > 0 || Math.hypot(c.x - fx, c.z - fz) < far) continue;
+        tried++;
         if (this.respawnNear(c, fx, fz)) moved++;
       }
+      this.scan = (this.scan + 7) % n;
     }
     this.updateTargets(dt);
     for (const c of this.cars) {
-      c.root.visible = Math.abs(c.x - fx) < 150 && Math.abs(c.z - fz) < 150;
+      c.root.visible = outOfTown(c) ? Math.hypot(c.x - fx, c.z - fz) < ROAD_SEEN : Math.abs(c.x - fx) < 150 && Math.abs(c.z - fz) < 150;
       if (c.shaken > 0) c.hazard.visible = Math.floor(c.shaken * 3) % 2 === 0;
       else if (c.hazard.visible) c.hazard.visible = false;
     }
@@ -950,16 +1052,23 @@ export class CityView {
     c.honkT = Math.max(0, c.honkT - dt);
     if (c.turn) {
       const tr = c.turn;
-      tr.t += (c.speed * dt) / tr.len;
-      c.speed += (c.max * 0.55 - c.speed) * Math.min(1, dt * 2);
+      tr.t += (Math.max(c.speed, 1) * dt) / tr.len;
+      c.speed += ((tr.v ?? c.max * 0.55) - c.speed) * Math.min(1, dt * 2);
       if (tr.t >= 1) {
-        c.axis = tr.next.axis;
-        c.line = tr.next.line;
         c.dir = tr.next.dir;
-        c.pos = tr.next.pos;
         c.turn = null;
+        c.merging = 0;
         // The road it came off is the one crossing here: don't decide about it again.
         c.decided = tr.from;
+        if (tr.next.rd !== undefined && tr.next.rd >= 0) {
+          c.rd = tr.next.rd;
+          c.s = tr.next.s ?? 0;
+        } else {
+          c.rd = -1;
+          c.axis = tr.next.axis;
+          c.line = tr.next.line;
+          c.pos = tr.next.pos;
+        }
         this.place(c);
         return;
       }
@@ -968,8 +1077,14 @@ export class CityView {
       const d = tr.p1.clone().sub(tr.p0).multiplyScalar(2 * (1 - t)).add(tr.p2.clone().sub(tr.p1).multiplyScalar(2 * t));
       c.x = a.x;
       c.z = a.y;
-      c.yaw = Math.atan2(d.x, d.y);
+      if (d.lengthSq() > 1e-6) c.yaw = Math.atan2(d.x, d.y);
+      c.y = (tr.y0 ?? 0) + ((tr.y1 ?? 0) - (tr.y0 ?? 0)) * t;
+      c.pitch *= Math.max(0, 1 - dt * 4);
       this.place(c);
+      return;
+    }
+    if (c.rd >= 0 && this.net) {
+      this.driveRoad(c, dt);
       return;
     }
     let target = c.shaken > 0 ? 0 : c.max;
@@ -993,7 +1108,7 @@ export class CityView {
     }
     // Keep a gap to the car ahead in the same lane
     for (const o of this.cars) {
-      if (o === c || o.turn) continue;
+      if (o === c || o.turn || o.rd >= 0) continue;
       if (o.axis === c.axis && o.line === c.line && o.dir === c.dir) {
         const gap = (o.pos - c.pos) * c.dir;
         if (gap > 0 && gap < 12) target = Math.min(target, Math.max(0, (gap - 5.5) * 1.6));
@@ -1020,10 +1135,169 @@ export class CityView {
     c.pos += c.dir * c.speed * dt;
     const [lo, hi] = this.span(c.axis, c.line);
     if (c.pos < lo - 1 || c.pos > hi + 1) {
+      // Off the end of town: on out along the road there, if there is one.
+      const out = c.pos < lo ? lo - c.pos : c.pos - hi;
+      const ex = this.exitFor(c.axis, c.line, c.pos < lo ? 0 : 1);
+      if (ex) {
+        c.rd = ex.road;
+        c.dir = ex.dir;
+        c.s = ex.s + ex.dir * out;
+        c.decided = -999;
+        c.merging = 0;
+        this.place(c);
+        return;
+      }
       this.respawn(c, false);
       return;
     }
     this.place(c);
+  }
+
+  /**
+   * Out of town: along the lane at the road's speed, easing off for bends, cars ahead and
+   * people in the road; turning off where other roads join, pulling out onto the road at the
+   * end (when there's a gap), turning round where a road just ends, or back into town.
+   */
+  private driveRoad(c: Car, dt: number): void {
+    const net = this.net!;
+    const R = net.roads[c.rd];
+    const L = R.path.length;
+    c.shaken = Math.max(0, c.shaken - dt);
+    c.honkT = Math.max(0, c.honkT - dt);
+    let target = c.shaken > 0 ? 0 : R.speed * (c.max / 9);
+    // Bends: no faster than a comfortable sideways pull allows.
+    const h0 = R.path.pointAt(net.wrap(c.rd, c.s));
+    const h1 = R.path.pointAt(net.wrap(c.rd, c.s + c.dir * 25));
+    const th = Math.acos(Math.max(-1, Math.min(1, h0.dx * h1.dx + h0.dz * h1.dz)));
+    if (th > 0.05) target = Math.min(target, Math.max(6, Math.sqrt(75 / th)));
+    // Whatever is in the lane ahead: cars (out here or turning), you, parked cars.
+    const fx = Math.sin(c.yaw);
+    const fz = Math.cos(c.yaw);
+    const look = 12 + c.speed * 1.3;
+    const ahead = (x: number, z: number, room: number): number => {
+      const dx = x - c.x;
+      const dz = z - c.z;
+      if (Math.abs(dx) > look || Math.abs(dz) > look) return Infinity;
+      const ah = dx * fx + dz * fz;
+      if (ah <= 0 || ah > look || Math.abs(dx * fz - dz * fx) > room) return Infinity;
+      return ah;
+    };
+    for (const o of this.cars) {
+      if (o === c) continue;
+      const ah = ahead(o.x, o.z, 2.1);
+      if (ah < Infinity) target = Math.min(target, Math.max(0, (ah - (o.length + c.length) / 2 - 2.5) * 1.3));
+    }
+    const pa = ahead(this.player.x, this.player.z, 1.8);
+    if (pa < Infinity) {
+      target = Math.min(target, Math.max(0, (pa - 4) * 1.5));
+      if (c.honkT <= 0 && pa < 9) {
+        c.honkT = 4;
+        this.onHonk?.(c);
+      }
+    }
+    for (const ob of this.obstacles) {
+      const oa = ahead(ob.x, ob.z, 2);
+      if (oa < Infinity) target = Math.min(target, Math.max(0, (oa - 5) * 1.5));
+    }
+    // The end of the road ahead: slow down for it.
+    const edge: 0 | 1 = c.dir > 0 ? 1 : 0;
+    const end = R.loop ? null : R.ends[edge];
+    const toEnd = c.dir > 0 ? L - c.s : c.s;
+    let stopAt = Infinity;
+    // Where it waits to pull out onto the road at the end.
+    let clearS = c.dir > 0 ? L : 0;
+    if (end?.kind === 'road') {
+      const j = net.roads[end.road].joins.find((x) => x.road === c.rd && x.end === edge);
+      if (j) clearS = j.clear;
+      stopAt = (clearS - c.s) * c.dir;
+    } else if (end?.kind === 'dead') stopAt = toEnd - 10;
+    if (stopAt < Infinity) target = Math.min(target, Math.max(end?.kind === 'road' ? 2 : 4, stopAt * 0.7));
+    c.speed += (target - c.speed) * Math.min(1, dt * (target < c.speed ? 3 : 0.8));
+    if (c.speed < 0.05 && target === 0) c.speed = 0;
+    c.s += c.dir * c.speed * dt;
+    if (R.loop) c.s = net.wrap(c.rd, c.s);
+    // Roads joining this one: now and then, turn off onto one.
+    for (const j of R.joins) {
+      if (c.decided === j.road) continue;
+      const d1 = net.ahead(c.rd, c.s, j.s, c.dir);
+      const jr = net.roads[j.road];
+      const away: 1 | -1 = j.end === 0 ? 1 : -1;
+      const tp = net.lane(j.road, j.clear, away);
+      const right = (tp.x - c.x) * -fz + (tp.z - c.z) * fx > 0;
+      const lead = (right ? 4 : 9) + jr.lane;
+      if (d1 > lead || d1 < lead - 6) continue;
+      c.decided = j.road;
+      if (Math.random() > 0.3) continue;
+      this.startTurn(c, tp.x, tp.z, tp.dx, tp.dz, tp.y + ROAD_LIFT, { axis: c.axis, line: c.line, dir: away, pos: 0, rd: j.road, s: j.clear }, c.rd, 9);
+      return;
+    }
+    if (end && !R.loop) {
+      if (end.kind === 'road' && (c.s - clearS) * c.dir >= -0.5) {
+        // Pull out onto the road at the end, when there's a gap.
+        c.s = clearS;
+        if (!c.merging) c.merging = Math.random() < 0.5 ? 1 : -1;
+        const mdir = c.merging;
+        const into = net.wrap(end.road, end.s + mdir * (R.line.half + 5));
+        const tp = net.lane(end.road, into, mdir);
+        const busy = this.cars.some((q) => q !== c && q.rd === end.road && q.dir === mdir && (() => {
+          const d = net.ahead(end.road, q.s, into, mdir);
+          return d > -6 && d < 32;
+        })());
+        c.wait += dt;
+        if (busy && c.wait < 8) {
+          c.speed = 0;
+        } else {
+          this.startTurn(c, tp.x, tp.z, tp.dx, tp.dz, tp.y + ROAD_LIFT, { axis: c.axis, line: c.line, dir: mdir, pos: 0, rd: end.road, s: into }, c.rd, 7);
+          return;
+        }
+      } else if (end.kind === 'dead' && toEnd < 11) {
+        // The road just ends: turn round.
+        const back = net.lane(c.rd, c.s, (-c.dir) as 1 | -1);
+        const mid = R.path.pointAt(net.wrap(c.rd, c.s + c.dir * Math.max(4, Math.min(9, toEnd - 1))));
+        c.turn = {
+          p0: new THREE.Vector2(c.x, c.z), p1: new THREE.Vector2(mid.x, mid.z), p2: new THREE.Vector2(back.x, back.z), t: 0, len: 4 * R.lane + 8,
+          next: { axis: c.axis, line: c.line, dir: (-c.dir) as 1 | -1, pos: 0, rd: c.rd, s: c.s }, from: -999, y0: c.y, y1: back.y + ROAD_LIFT, v: 4,
+        };
+        return;
+      } else if (end.kind === 'city' && toEnd <= 0.5) {
+        // Back into town.
+        if (end.edge >= 0) {
+          c.rd = -1;
+          c.axis = end.axis;
+          c.line = end.line;
+          c.dir = end.edge === 0 ? 1 : -1;
+          const [lo, hi] = this.span(end.axis, end.line);
+          c.pos = end.edge === 0 ? lo + 0.5 : hi - 0.5;
+          c.decided = -999;
+          this.place(c);
+          return;
+        }
+        const [lo, hi] = this.span(end.axis, end.line);
+        let d: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+        if ((d > 0 ? hi - end.pos : end.pos - lo) < 30) d = -d as 1 | -1;
+        const pos = Math.max(lo + 1, Math.min(hi - 1, end.pos + d * (BOX + 1)));
+        const p = this.laneXY(end.axis, end.line, d, pos);
+        const hx = end.axis === 'x' ? d : 0;
+        const hz = end.axis === 'z' ? d : 0;
+        this.startTurn(c, p.x, p.y, hx, hz, 0, { axis: end.axis, line: end.line, dir: d, pos }, -999, 6);
+        return;
+      }
+    }
+    if (!R.loop) c.s = Math.max(0, Math.min(L, c.s));
+    this.place(c);
+  }
+
+  /** Start a smooth turn from where the car is to a point and heading on another road. */
+  private startTurn(c: Car, x: number, z: number, hx: number, hz: number, y: number, next: Turn['next'], from: number, v: number): void {
+    const fx = Math.sin(c.yaw);
+    const fz = Math.cos(c.yaw);
+    const p0 = new THREE.Vector2(c.x, c.z);
+    const p2 = new THREE.Vector2(x, z);
+    const p1 = corner(c.x, c.z, fx, fz, x, z, hx, hz);
+    const len = p0.distanceTo(p1) + p1.distanceTo(p2);
+    c.merging = 0;
+    c.wait = 0;
+    c.turn = { p0, p1, p2, t: 0, len: Math.max(2, len * 0.85), next, from, y0: c.y, y1: y, v };
   }
 
   /**
@@ -1034,13 +1308,15 @@ export class CityView {
     c.decided = stop.cross;
     const centre = stop.at;
     const [lo, hi] = this.span(c.axis, c.line);
-    const straightOk = (c.dir > 0 ? hi - centre : centre - lo) > 45;
+    // A road that carries on out of town counts as room ahead.
+    const straightOk = (c.dir > 0 ? hi - centre : centre - lo) > 45 || !!this.exitFor(c.axis, c.line, c.dir > 0 ? 1 : 0);
     const roll = Math.random();
     if (roll < 0.55 && straightOk) return;
     // Which ways the crossing road goes from here (+1 / -1 along it).
-    const [clo, chi] = this.span(c.axis === 'x' ? 'z' : 'x', stop.cross);
+    const crossAxis: Axis = c.axis === 'x' ? 'z' : 'x';
+    const [clo, chi] = this.span(crossAxis, stop.cross);
     const here = c.axis === 'x' ? streetZ(c.line) : avenueMid(c.line);
-    const can = (d: 1 | -1) => (d > 0 ? chi - here : here - clo) > 30;
+    const can = (d: 1 | -1) => (d > 0 ? chi - here : here - clo) > 30 || !!this.exitFor(crossAxis, stop.cross, d > 0 ? 1 : 0);
     // Right turn: heading east (+x) a right turn heads south (+z); south (+z) → west (-x).
     const rightDir = (c.axis === 'x' ? c.dir : -c.dir) as 1 | -1;
     let dir: 1 | -1 = roll < 0.78 ? rightDir : (-rightDir as 1 | -1);
