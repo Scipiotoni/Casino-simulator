@@ -424,6 +424,11 @@ export class Game implements World, ItemHost {
     this.base = this.makeBase();
     this.street.city.group.add(this.base.group);
     this.street.outskirts.extraBlock = (x, z) => this.base.blocked(x, z);
+    // Out on the land you stand on the ground (and so does the camera, the dust and the smoke).
+    const ground = (x: number, z: number) => this.street.groundY(x, z);
+    this.player.groundFn = ground;
+    this.cam.groundFn = (x, z) => ground(x, z) + this.streetDrop;
+    this.effects.ground = ground;
     CharacterModel.crude = settings.quality === 'ult';
     this.setViewDistance(settings.viewDist ?? 'normal');
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : settings.quality === 'low' ? 14 : 8;
@@ -4654,12 +4659,12 @@ export class Game implements World, ItemHost {
       const st = this.player.seat;
       const rollDip = this.combat.rolling ? Math.sin((1 - this.combat.rollT / ROLL_TIME) * Math.PI) * 0.95 : 0;
       const eyeY = ko ? 0.35 : st && this.activity?.act.spot === 'lie' ? st.height + 0.35 : st?.sit ? st.height + 0.8 : this.player.model.height + 0.04 - rollDip;
-      this.cam.eye.set(this.player.x, eyeY, this.player.z);
+      this.cam.eye.set(this.player.x, this.player.y + eyeY, this.player.z);
       this.cam.bobSpeed = this.player.seat || ko ? 0 : this.player.speed;
       if (ko) this.player.model.root.visible = false;
     }
     this.playerFx?.update(dt, playing && !this.player.seat && ownBody);
-    this.playerPos.set(this.player.x, 0, this.player.z);
+    this.playerPos.set(this.player.x, this.player.y, this.player.z);
     const wasInside = this.inside;
     // Inside = within the building's own walls (the yards round the back and sides are outside).
     const rect = this.grid.rect;
@@ -4748,7 +4753,8 @@ export class Game implements World, ItemHost {
 
     const fx = this.tableFocus ? this.tableFocus.item.cx : this.camFocus?.x ?? this.player.x;
     const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
-    this.cam.update(dt, fx, fz);
+    const fy = this.tableFocus ? 0 : this.drive.driving ? this.drive.driving.y ?? 0 : this.camFocus ? 0 : this.player.y;
+    this.cam.update(dt, fx, fz, fy);
     this.building.update(dt, this.cam.yaw, this.cam.low, this.cam.mode === 'first' && !this.tableFocus);
     // Built walls stand to the ceiling; the ones between the camera and what you're looking
     // at drop down (never through your own eyes). Building mode cuts them all down.

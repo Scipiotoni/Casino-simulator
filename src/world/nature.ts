@@ -134,13 +134,13 @@ export class TreeBatch {
     return this.list.leafy.length + this.list.pine.length + this.list.palm.length + this.list.birch.length;
   }
 
-  build(parent: THREE.Object3D, shadows = true, far = 420): void {
+  build(parent: THREE.Object3D, shadows = true, far = 420, chunk = 120): void {
     const p = treeParts();
     for (const kind of Object.keys(this.list) as TreeKind[]) {
       const mats = this.list[kind];
       if (!mats.length) continue;
       for (const part of p[kind]) {
-        const g = instancedChunks(part.geo, part.mat, mats, shadows && part.shadow, 120, far);
+        const g = instancedChunks(part.geo, part.mat, mats, shadows && part.shadow, chunk, far);
         if (g) parent.add(g);
       }
     }

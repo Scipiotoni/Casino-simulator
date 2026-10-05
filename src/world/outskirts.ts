@@ -2,21 +2,27 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mat } from '../render/materials';
 import { asphaltTexture, canvasTexture, drawNeonText, lotTexture, makeCanvas, roundRect, seeded } from '../render/textures';
-import { ROAD_HALF, STREET_ROWS, WILDS, avenueMid, blocksFor, cityX, cityZ, setWildsObstacles, streetZ } from './city';
-import { inBaseArea } from './militaryBase';
-import { Obstacles, Strips, TreeBatch, instancedChunks, place } from './nature';
+import { MIN_COLS, ROAD_HALF, STREET_ROWS, WILDS, avenueMid, avenueX, blocksFor, cityX, cityZ, colX, rowZ, setWilds, slotAt, streetZ } from './city';
+import { BASE_HD, BASE_HW, baseSite, inBaseArea } from './militaryBase';
+import { Obstacles, TreeBatch, instancedChunks, place } from './nature';
+import { BELT, type CityPlan, LAKE_LEVEL, Path, type Pt, RIVER_HALF_TOWN, lakeOf, onPlannedRoad, outline, smoothPath } from './plan';
+import { CITY_GROUND, type RoadLine, type Site, Terrain, setTerrain, smooth } from './terrain';
+import { TerrainMesh } from './terrainMesh';
 
 /**
- * Everything around the city, in the global frame: the desert you can walk and drive out
- * into, the mountains that close the valley in (no invisible wall: the land just rises), a
- * ring road with roads out of every street and avenue, and things to find out there: the
- * "Welcome to Jackpot City" sign, billboards, an oasis, a solar farm, a scenic overlook,
- * wind turbines, a radio mast and hot-air balloons drifting over the Strip.
+ * Everything around the city, in the global frame: real land (see `Terrain`) with a ring road
+ * that follows the city's edge, roads out of every street and avenue that ends at it, highways
+ * cut into the hills (up the river canyon into the mountains, east to an overlook on the
+ * mesas, south across the dunes), the river through town between stone walls with bridges
+ * where the streets cross it, and things to find out there: the "Welcome to Jackpot City"
+ * sign, billboards, Lake Mojave, Pinewood Forest, an oasis, a solar farm, wind turbines, a
+ * radio mast and hot-air balloons drifting over the Strip.
  */
 
-/** Ring road: this far out from the city edge. */
+/** Old ring road distance from the city's box (the military base is laid out from it). */
 export const RING = 70;
-const RING_W = 11;
+const BELT_HALF = 5.5;
+const HIGHWAY_HALF = 5.5;
 
 interface Circle {
   x: number;
@@ -24,45 +30,156 @@ interface Circle {
   r: number;
 }
 
-// ------------------------------------------------------------------ noise
-
-function hash2(x: number, z: number): number {
-  let h = Math.imul(x | 0, 374761393) + Math.imul(z | 0, 668265263);
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+/** A road out in the country with a name (shown on the map). */
+export interface NamedRoad {
+  name: string;
+  road: RoadLine;
 }
 
-function vnoise(x: number, z: number): number {
-  const xi = Math.floor(x);
-  const zi = Math.floor(z);
-  const fx = x - xi;
-  const fz = z - zi;
-  const sx = fx * fx * (3 - 2 * fx);
-  const sz = fz * fz * (3 - 2 * fz);
-  const a = hash2(xi, zi);
-  const b = hash2(xi + 1, zi);
-  const c = hash2(xi, zi + 1);
-  const d = hash2(xi + 1, zi + 1);
-  return a + (b - a) * sx + (c - a) * sz + (a - b - c + d) * sx * sz;
+/** A point on a road with its direction and height. */
+interface Station {
+  x: number;
+  z: number;
+  y: number;
+  /** Unit direction along the road. */
+  dx: number;
+  dz: number;
 }
 
-function fbm(x: number, z: number): number {
-  let s = 0;
-  let amp = 0.5;
-  let f = 1;
-  for (let i = 0; i < 4; i++) {
-    s += vnoise(x * f, z * f) * amp;
-    f *= 2.03;
-    amp *= 0.5;
+/** A straight road from a to b, as a path with a point every 6 m. */
+function straight(a: Pt, b: Pt): Path {
+  const len = Math.hypot(b.x - a.x, b.z - a.z);
+  const n = Math.max(1, Math.ceil(len / 6));
+  const pts: Pt[] = [];
+  for (let i = 0; i <= n; i++) pts.push({ x: a.x + ((b.x - a.x) * i) / n, z: a.z + ((b.z - a.z) * i) / n });
+  return new Path(pts);
+}
+
+/** Clip a convex polygon to one side of an axis-aligned line. */
+function clipPoly(poly: Pt[], axis: 'x' | 'z', v: number, keepBelow: boolean): Pt[] {
+  const out: Pt[] = [];
+  const inside = (p: Pt) => (keepBelow ? p[axis] <= v : p[axis] >= v);
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    const ia = inside(a);
+    const ib = inside(b);
+    if (ia) out.push(a);
+    if (ia !== ib) {
+      const t = (v - a[axis]) / (b[axis] - a[axis]);
+      out.push({ x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t });
+    }
   }
-  return s / 0.9375;
+  return out;
 }
 
-const smooth = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+/** A convex polygon minus an axis-aligned rectangle: up to four convex pieces. */
+function subtractRect(poly: Pt[], r: { x0: number; x1: number; z0: number; z1: number }): Pt[][] {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (const p of poly) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minZ = Math.min(minZ, p.z);
+    maxZ = Math.max(maxZ, p.z);
+  }
+  if (maxX <= r.x0 || minX >= r.x1 || maxZ <= r.z0 || minZ >= r.z1) return [poly];
+  const out: Pt[][] = [];
+  const keep = (p: Pt[]) => {
+    if (p.length >= 3) out.push(p);
+  };
+  keep(clipPoly(poly, 'x', r.x0, true));
+  keep(clipPoly(poly, 'x', r.x1, false));
+  const mid = clipPoly(clipPoly(poly, 'x', r.x0, false), 'x', r.x1, true);
+  if (mid.length >= 3) {
+    keep(clipPoly(mid, 'z', r.z0, true));
+    keep(clipPoly(mid, 'z', r.z1, false));
+  }
+  return out;
+}
+
+/** Collects triangles (positions, uvs) and turns them into one mesh. */
+class Tris {
+  pos: number[] = [];
+  uv: number[] = [];
+
+  tri(a: [number, number, number], b: [number, number, number], c: [number, number, number], uvScale: number): void {
+    for (const p of [a, b, c]) {
+      this.pos.push(p[0], p[1], p[2]);
+      this.uv.push(p[0] / uvScale, p[2] / uvScale);
+    }
+  }
+
+  /** A flat convex polygon facing up. */
+  poly(pts: Pt[], y: number, uvScale: number): void {
+    // Wind it counter-clockwise seen from above.
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      area += a.x * b.z - b.x * a.z;
+    }
+    const p = area > 0 ? [...pts].reverse() : pts;
+    for (let i = 1; i < p.length - 1; i++) this.tri([p[0].x, y, p[0].z], [p[i].x, y, p[i].z], [p[i + 1].x, y, p[i + 1].z], uvScale);
+  }
+
+  mesh(m: THREE.Material): THREE.Mesh | null {
+    if (!this.pos.length) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.computeVertexNormals();
+    const mesh = new THREE.Mesh(g, m);
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+}
+
+/**
+ * A shape swept along a line of stations: `shape` is a closed cross-section of (across, up)
+ * points (across is to the left of travel). Both ends are capped.
+ */
+function sweep(st: Station[], shape: [number, number][], into: Tris, uvScale = 2): void {
+  if (st.length < 2) return;
+  const at = (s: Station, p: [number, number]): [number, number, number] => [s.x - s.dz * p[0], s.y + p[1], s.z + s.dx * p[0]];
+  for (let i = 0; i < st.length - 1; i++) {
+    for (let j = 0; j < shape.length; j++) {
+      const p = shape[j];
+      const q = shape[(j + 1) % shape.length];
+      const a = at(st[i], p);
+      const b = at(st[i], q);
+      const c = at(st[i + 1], q);
+      const d = at(st[i + 1], p);
+      into.tri(a, c, b, uvScale);
+      into.tri(a, d, c, uvScale);
+    }
+  }
+  for (const [s, flip] of [[st[0], true], [st[st.length - 1], false]] as const) {
+    const ring = shape.map((p) => at(s, p));
+    for (let i = 1; i < ring.length - 1; i++) {
+      if (flip) into.tri(ring[0], ring[i], ring[i + 1], uvScale);
+      else into.tri(ring[0], ring[i + 1], ring[i], uvScale);
+    }
+  }
+}
+
+/** A box cross-section `w` wide from `y0` to `y1`, centred `u` to the left of the line. */
+function boxShape(u: number, w: number, y0: number, y1: number): [number, number][] {
+  return [
+    [u - w / 2, y0],
+    [u + w / 2, y0],
+    [u + w / 2, y1],
+    [u - w / 2, y1],
+  ];
+}
 
 export class Outskirts {
   readonly group = new THREE.Group();
+  private key = '';
   private cols = -1;
+  private plan: CityPlan | null = null;
   private x0 = 0;
   private x1 = 0;
   private z0 = 0;
@@ -74,40 +191,50 @@ export class Outskirts {
   private beacon: THREE.Mesh | null = null;
   private signMats: THREE.MeshStandardMaterial[] = [];
   private t = 0;
-  /** More solid things out in the desert (the military base's fence and buildings). */
+  /** More solid things out in the country (the military base's fence and buildings). */
   extraBlock: ((gx: number, gz: number) => boolean) | null = null;
   /** Trees, cabins and rocks of the lake shore and the forest. */
   private wild = new Obstacles();
   /** Lake Mojave, south of town (its pier sticks out into the water). */
-  lake: { x: number; z: number; rx: number; rz: number; pierX: number; pierZ1: number } | null = null;
+  lake: { x: number; z: number; rx: number; rz: number; pierX: number; pierZ0: number; pierZ1: number } | null = null;
   /** Pinewood Forest, north-east of town, and the pond in it. */
   forest: { x0: number; x1: number; z0: number; z1: number } | null = null;
   pond: { x: number; z: number; rx: number; rz: number } | null = null;
   private sailboats: { o: THREE.Object3D; a: number; r: number; w: number }[] = [];
   private campfire: THREE.Mesh | null = null;
+  /** The land, and how it's drawn. */
+  terrain: Terrain | null = null;
+  private mesh: TerrainMesh | null = null;
+  /** The ring road round town. */
+  belt: Path | null = null;
+  /** Every road out in the country (the ring road first). */
+  roads: RoadLine[] = [];
+  /** The highways, by name. */
+  highways: NamedRoad[] = [];
+  /** The oasis, the overlook and the end of the canyon road (map labels). */
+  oasis: { x: number; z: number } | null = null;
+  overlook: { x: number; z: number; y: number } | null = null;
+  private waterTex: THREE.CanvasTexture | null = null;
 
-  /** Ground height (global) of the land around the city: flat where you can go, mountains beyond. */
-  height(gx: number, gz: number): number {
-    const din = Math.min(gx - this.x0, this.x1 - gx, gz - this.z0, this.z1 - gz);
-    if (din > 0) return din > 25 ? -0.6 : -0.06 - (din / 25) * 0.54;
-    const dx = Math.max(this.x0 - gx, 0, gx - this.x1);
-    const dz = Math.max(this.z0 - gz, 0, gz - this.z1);
-    const d = Math.hypot(dx, dz);
-    const start = WILDS - 6;
-    if (d < start) return -0.06;
-    const n = fbm(gx / 260, gz / 260);
-    const ridge = 1 - Math.abs(fbm(gx / 90 + 7, gz / 90 - 3) * 2 - 1);
-    const t = smooth((d - start) / 300);
-    return -0.06 + Math.pow(t, 1.3) * (45 + n * 150 + ridge * 40) + Math.max(0, d - start - 300) * 0.25 + smooth((d - start) / 40) * fbm(gx / 18, gz / 18) * 4;
+  /** Ground height (global) round the city: the land, the roads and bridges, the pier. */
+  groundAt(gx: number, gz: number): number {
+    const l = this.lake;
+    if (l && Math.abs(gx - l.pierX) < 1.8 && gz > l.pierZ0 && gz < l.pierZ1) return 0.2;
+    return this.terrain ? this.terrain.groundAt(gx, gz) : 0;
   }
 
-  /** In the water of the lake or the forest pond (the pier and its deck are dry)? */
+  /** Same as groundAt (kept for older callers). */
+  height(gx: number, gz: number): number {
+    return this.groundAt(gx, gz);
+  }
+
+  /** In the water of the lake or the forest pond (the pier is dry; the river is the land's business)? */
   inWater(gx: number, gz: number): boolean {
     const l = this.lake;
     if (l) {
       const u = (gx - l.x) / l.rx;
       const v = (gz - l.z) / l.rz;
-      if (u * u + v * v < 1 && !(Math.abs(gx - l.pierX) < 1.8 && gz < l.pierZ1)) return true;
+      if (u * u + v * v < 1.09 && !(Math.abs(gx - l.pierX) < 1.8 && gz < l.pierZ1)) return true;
     }
     const p = this.pond;
     if (p) {
@@ -122,15 +249,17 @@ export class Outskirts {
   private inNature(gx: number, gz: number, pad = 0): boolean {
     const l = this.lake;
     if (l) {
-      const u = (gx - l.x) / (l.rx + 30 + pad);
-      const v = (gz - l.z) / (l.rz + 30 + pad);
+      const u = (gx - l.x) / (l.rx + 40 + pad);
+      const v = (gz - l.z) / (l.rz + 40 + pad);
       if (u * u + v * v < 1) return true;
     }
+    const o = this.oasis;
+    if (o && Math.hypot(gx - o.x, gz - o.z) < 40 + pad) return true;
     const f = this.forest;
     return !!f && gx > f.x0 - pad && gx < f.x1 + pad && gz > f.z0 - pad && gz < f.z1 + pad;
   }
 
-  /** Is this desert point taken by a rock, cactus, pond or landmark? */
+  /** Is this point taken by a rock, cactus, pond or landmark? */
   blocked(gx: number, gz: number): boolean {
     if (this.inWater(gx, gz) || this.wild.blocked(gx, gz)) return true;
     for (const [a, b, c, d] of this.rects) if (gx > a && gx < b && gz > c && gz < d) return true;
@@ -138,6 +267,15 @@ export class Outskirts {
     if (!list) return false;
     for (const c of list) if ((gx - c.x) ** 2 + (gz - c.z) ** 2 < c.r * c.r) return true;
     return false;
+  }
+
+  /** Out of town (not on a lot): can you walk or drive here? */
+  open(gx: number, gz: number): boolean {
+    const t = this.terrain;
+    if (!t) return false;
+    const s = slotAt(gx, gz, this.cols);
+    if (s && this.plan?.has(s)) return false;
+    return t.walkable(gx, gz) && !this.blocked(gx, gz) && !(this.extraBlock?.(gx, gz) ?? false);
   }
 
   private cellKey(x: number, z: number): number {
@@ -156,40 +294,71 @@ export class Outskirts {
     }
   }
 
-  /** On the ring road, a connector or the overlook highway (keep scenery off them). */
+  /** On or near a road out in the country (keep scenery off it)? */
   private onRoad(gx: number, gz: number, pad = 3): boolean {
-    const R = RING;
-    const hw = RING_W / 2 + pad;
-    const inOuter = gx > this.x0 - R - hw && gx < this.x1 + R + hw && gz > this.z0 - R - hw && gz < this.z1 + R + hw;
-    const inInner = gx > this.x0 - R + hw && gx < this.x1 + R - hw && gz > this.z0 - R + hw && gz < this.z1 + R - hw;
-    if (inOuter && !inInner) return true;
-    for (let r = 0; r < STREET_ROWS; r++) {
-      if (Math.abs(gz - streetZ(r)) < ROAD_HALF + pad && (gx < this.x0 || gx > this.x1) && gx > this.x0 - R - hw && gx < this.x1 + R + hw) return true;
-    }
-    for (let k = 0; k <= blocksFor(this.cols); k++) {
-      if (Math.abs(gx - avenueMid(k)) < 5 + pad && (gz < this.z0 || gz > this.z1) && gz > this.z0 - R - hw && gz < this.z1 + R + hw) return true;
-    }
-    // Roads down to the beach and up to the forest trailhead.
-    const l = this.lake;
-    if (l && Math.abs(gx - l.x) < 5 + pad && gz > this.z1 + R && gz < l.z - l.rz - 18) return true;
-    const f = this.forest;
-    if (f && Math.abs(gx - (f.x0 + f.x1) / 2) < 5 + pad && gz < this.z0 - R && gz > f.z1 - 4) return true;
-    // Overlook highway: east from the ring along the middle of the city.
-    const mz = (this.z0 + this.z1) / 2;
-    if (Math.abs(gz - mz) < RING_W / 2 + pad && gx > this.x1 && gx < this.x1 + WILDS) return true;
-    if (Math.hypot(gx - (this.x1 + WILDS - 32), gz - mz) < 30 + pad) return true;
-    return false;
+    return !!this.terrain && this.terrain.roadDeck(gx, gz, pad) !== null;
   }
 
-  build(cols: number): void {
-    if (cols === this.cols) return;
-    this.cols = cols;
-    [this.x0, this.x1] = cityX(cols);
+  /** Pick each terrain tile's detail for a viewer at this global point. */
+  lod(fx: number, fz: number): void {
+    this.mesh?.update(fx, fz);
+  }
+
+  /** Triangles of land drawn right now. */
+  terrainTriangles(): number {
+    return this.mesh?.triangles() ?? 0;
+  }
+
+  private mapCanvas: HTMLCanvasElement | null = null;
+  /**
+   * The land for the map: one pixel per terrain sample, coloured like the land and shaded by
+   * its slopes (lit from the north-west). Made once per layout.
+   */
+  mapImage(): HTMLCanvasElement | null {
+    const t = this.terrain;
+    const m = this.mesh;
+    if (!t || !m || typeof document === 'undefined') return null;
+    if (this.mapCanvas) return this.mapCanvas;
+    const cv = document.createElement('canvas');
+    cv.width = t.nx;
+    cv.height = t.nz;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return null;
+    const img = ctx.createImageData(t.nx, t.nz);
+    const lx = -0.5;
+    const ly = 0.75;
+    const lz = -0.45;
+    for (let k = 0; k < t.nx * t.nz; k++) {
+      const nx = m.normals[k * 3];
+      const ny = m.normals[k * 3 + 1];
+      const nz = m.normals[k * 3 + 2];
+      const shade = Math.max(0.35, Math.min(1.25, (nx * lx + ny * ly + nz * lz) / 0.75));
+      img.data[k * 4] = Math.min(255, m.colors[k * 3] * 255 * shade);
+      img.data[k * 4 + 1] = Math.min(255, m.colors[k * 3 + 1] * 255 * shade);
+      img.data[k * 4 + 2] = Math.min(255, m.colors[k * 3 + 2] * 255 * shade);
+      img.data[k * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    this.mapCanvas = cv;
+    return cv;
+  }
+
+  /** Lay out the land for a city plan (`key` names the plan: nothing to do if it hasn't changed). */
+  build(plan: CityPlan, key = JSON.stringify([plan.cols, plan.streets, plan.avenues])): void {
+    if (key === this.key) return;
+    this.key = key;
+    this.plan = plan;
+    this.cols = plan.cols;
+    [this.x0, this.x1] = cityX(this.cols);
     [this.z0, this.z1] = cityZ();
     for (const c of [...this.group.children]) {
       this.group.remove(c);
-      c.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+      c.traverse((o) => {
+        if (!(o as THREE.InstancedMesh).userData?.sharedGeo) (o as THREE.Mesh).geometry?.dispose();
+      });
     }
+    this.mesh?.dispose();
+    this.mapCanvas = null;
     this.cells.clear();
     this.rects = [];
     this.rotors = [];
@@ -198,155 +367,625 @@ export class Outskirts {
     this.sailboats = [];
     this.wild.clear();
     this.beacon = null;
-    const midX = (this.x0 + this.x1) / 2;
-    this.lake = { x: midX + 120, z: this.z1 + RING + 175, rx: 150, rz: 78, pierX: midX + 80, pierZ1: this.z1 + RING + 175 - 78 + 42 };
+    this.campfire = null;
+    // Natural features stay where they are as the city grows: laid out on the original grid.
+    const [fx0, fx1] = cityX(MIN_COLS);
+    const midX = (fx0 + fx1) / 2;
+    const l = lakeOf(this.cols);
+    this.lake = { ...l, pierX: l.x - 40, pierZ0: l.z - l.rz - 8, pierZ1: l.z - l.rz + 42 };
     this.forest = { x0: midX + 90, x1: midX + 520, z0: this.z0 - RING - 340, z1: this.z0 - RING - 40 };
-    this.buildGround();
+    const fcx = (this.forest.x0 + this.forest.x1) / 2;
+    const fcz = (this.forest.z0 + this.forest.z1) / 2;
+    this.pond = { x: fcx + 20, z: fcz - 30, rx: 22, rz: 14 };
+    this.oasis = { x: midX - 60, z: this.z0 - RING - 120 };
+    this.overlook = { x: fx1 + 900, z: (this.z0 + this.z1) / 2, y: 26 };
+
+    const t = new Terrain(plan, this.sites());
+    this.terrain = t;
+    const belt = this.makeBelt(t, plan);
+    this.belt = belt;
+    this.roads = [{ path: belt, half: BELT_HALF }];
+    this.roads.push(...this.connectors(plan, belt, t));
+    this.highways = this.makeHighways(t, belt);
+    this.roads.push(...this.highways.map((h) => h.road));
+    t.finish(this.roads);
+    setTerrain(t, (x, z) => this.groundAt(x, z));
+
+    this.mesh = new TerrainMesh(t, (x, z, c) => this.tint(x, z, c));
+    this.mesh.update((this.x0 + this.x1) / 2, (this.z0 + this.z1) / 2);
+    this.group.add(this.mesh.group);
+    this.buildCityGround(plan);
     this.buildRoads();
+    this.buildRiver(plan);
+    this.buildRiverPark(plan);
     this.buildLake();
     this.buildForest();
     this.buildScatter();
     this.buildLandmarks();
-    setWildsObstacles((x, z) => this.blocked(x, z) || (this.extraBlock?.(x, z) ?? false));
+    setWilds((x, z) => this.open(x, z));
   }
 
-  private buildGround(): void {
-    const cx = (this.x0 + this.x1) / 2;
-    const cz = (this.z0 + this.z1) / 2;
-    // The city's own ground (lots, alleys) under the roads.
-    const lot = lotTexture().clone();
-    const w = this.x1 - this.x0 + 2;
-    const d = this.z1 - this.z0 + 2;
-    lot.repeat.set(w / 2, d / 2);
-    lot.needsUpdate = true;
-    const cityGround = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ map: lot, roughness: 1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
-    cityGround.rotation.x = -Math.PI / 2;
-    cityGround.position.set(cx, -0.03, cz);
-    cityGround.receiveShadow = true;
-    this.group.add(cityGround);
-
-    // Desert and mountains
-    const half = Math.max(this.x1 - this.x0, this.z1 - this.z0) / 2 + WILDS + 1000;
-    const seg = 300;
-    const geo = new THREE.PlaneGeometry(half * 2, half * 2, seg, seg);
-    geo.rotateX(-Math.PI / 2);
-    const pos = geo.getAttribute('position') as THREE.BufferAttribute;
-    const colors = new Float32Array(pos.count * 3);
-    const sand = new THREE.Color(0xd9a86c);
-    const sand2 = new THREE.Color(0xc58c55);
-    const rock = new THREE.Color(0xa35d3a);
-    const dark = new THREE.Color(0x6e3b2a);
-    const peak = new THREE.Color(0xd8c3ae);
-    const c = new THREE.Color();
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i) + cx;
-      const z = pos.getZ(i) + cz;
-      const y = this.height(x, z);
-      pos.setY(i, y);
-      const n = fbm(x / 40, z / 40);
-      c.copy(sand).lerp(sand2, n);
-      if (y > 2) c.lerp(rock, smooth((y - 2) / 40));
-      if (y > 40) c.lerp(dark, smooth((y - 40) / 90) * (0.4 + 0.6 * fbm(x / 30 + 3, z / 30)));
-      if (y > 160) c.lerp(peak, smooth((y - 160) / 80));
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
-    }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.computeVertexNormals();
-    const tex = sandTexture();
-    tex.repeat.set(half / 6, half / 6);
-    const terrain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, map: tex, roughness: 1 }));
-    terrain.position.set(cx, 0, cz);
-    terrain.receiveShadow = true;
-    terrain.name = 'terrain';
-    this.group.add(terrain);
+  /** The places the land is levelled for: the base, the lake shore, the oasis, the solar farm, the overlook, the forest clearings. */
+  private sites(): Site[] {
+    const b = baseSite(this.cols);
+    const l = this.lake!;
+    const f = this.forest!;
+    const o = this.oasis!;
+    const ov = this.overlook!;
+    const p = this.pond!;
+    const fcx = (f.x0 + f.x1) / 2;
+    const fcz = (f.z0 + f.z1) / 2;
+    const [, fx1] = cityX(MIN_COLS);
+    return [
+      { x: b.cx, z: b.cz, rx: BASE_HW + 24, rz: BASE_HD + 24, y: CITY_GROUND, blend: 160 },
+      { x: (b.roadX0 + b.roadX1) / 2, z: b.cz, rx: (b.roadX1 - b.roadX0) / 2 + 12, rz: 16, y: CITY_GROUND, blend: 60 },
+      { x: l.x, z: l.z, rx: l.rx + 70, rz: l.rz + 62, y: CITY_GROUND, blend: 120, round: true },
+      { x: o.x, z: o.z, rx: 48, rz: 48, blend: 50, round: true },
+      { x: fx1 + RING + 85, z: this.z1 + RING + 68, rx: 44, rz: 32, blend: 50 },
+      { x: ov.x, z: ov.z, rx: 46, rz: 46, y: ov.y, blend: 180, round: true },
+      { x: fcx - 40, z: fcz + 12, rx: 26, rz: 26, blend: 30, round: true },
+      { x: fcx + 60, z: f.z0 + 60, rx: 12, rz: 12, blend: 20, round: true },
+      { x: p.x, z: p.z, rx: p.rx + 10, rz: p.rz + 10, blend: 30, round: true },
+      { x: fcx, z: f.z1 - 6, rx: 18, rz: 14, blend: 30, round: true },
+    ];
   }
 
-  private road(x0: number, z0: number, x1: number, z1: number, width: number, lines = true): void {
-    const alongX = Math.abs(x1 - x0) > Math.abs(z1 - z0);
-    const len = alongX ? Math.abs(x1 - x0) : Math.abs(z1 - z0);
-    if (len < 0.5) return;
-    const t = (lines ? roadTexture() : asphaltTexture()).clone();
-    t.repeat.set(1, len / 12);
-    t.needsUpdate = true;
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(width, len), new THREE.MeshStandardMaterial({ map: t, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
-    m.rotation.x = -Math.PI / 2;
-    if (alongX) m.rotation.z = Math.PI / 2;
-    m.position.set((x0 + x1) / 2, -0.025, (z0 + z1) / 2);
-    m.receiveShadow = true;
-    this.group.add(m);
+  /** Is this point by the walled river in town, off the lots and streets (the riverside park)? */
+  private riverPark(x: number, z: number, plan: CityPlan): boolean {
+    const t = this.terrain;
+    if (!t || x < this.x0 || x > this.x1 || z < this.z0 || z > this.z1) return false;
+    const d = t.cityDist(x, z);
+    if (d <= 0 || d > 80) return false;
+    const n = t.river.nearest(x, z, 125);
+    return !!n && t.isWalled(n.s) && n.d > RIVER_HALF_TOWN + 17 && !onPlannedRoad(plan, x, z);
   }
 
-  private buildRoads(): void {
-    const R = RING;
-    const { x0, x1, z0, z1 } = this;
-    const hw = RING_W / 2;
-    this.road(x0 - R - hw, z0 - R, x1 + R + hw, z0 - R, RING_W);
-    this.road(x0 - R - hw, z1 + R, x1 + R + hw, z1 + R, RING_W);
-    this.road(x0 - R, z0 - R + hw, x0 - R, z1 + R - hw, RING_W);
-    this.road(x1 + R, z0 - R + hw, x1 + R, z1 + R - hw, RING_W);
-    for (let r = 0; r < STREET_ROWS; r++) {
-      const z = streetZ(r);
-      this.road(x0 - R + hw, z, x0, z, ROAD_HALF * 2);
-      this.road(x1, z, x1 + R - hw, z, ROAD_HALF * 2);
+  /** Lawns and shade trees on the empty ground along the river through town. */
+  private buildRiverPark(plan: CityPlan): void {
+    const t = this.terrain!;
+    const r = t.river;
+    const rnd = seeded(2024);
+    const trees = new TreeBatch();
+    for (let i = 0; i < r.pts.length; i++) {
+      if (!t.walled[i] || rnd() < 0.25) continue;
+      const p = r.pointAt(r.at[i]);
+      for (const side of [-1, 1]) {
+        const off = RIVER_HALF_TOWN + 22 + rnd() * 50;
+        const x = p.x - p.dz * off * side + (rnd() - 0.5) * 4;
+        const z = p.z + p.dx * off * side + (rnd() - 0.5) * 4;
+        const s = slotAt(x, z, this.cols);
+        if ((s && plan.has(s)) || !this.riverPark(x, z, plan) || this.onRoad(x, z, 4)) continue;
+        const k = 0.9 + rnd() * 0.6;
+        trees.add(rnd() < 0.3 ? 'palm' : 'leafy', x, z, k, rnd() * 6, t.sample(x, z));
+        this.wild.circle(x, z, 0.4 * k);
+      }
     }
-    for (let k = 0; k <= blocksFor(this.cols); k++) {
-      const x = avenueMid(k);
-      this.road(x, z0 - R + hw, x, z0, 9);
-      this.road(x, z1, x, z1 + R - hw, 9);
+    trees.build(this.group);
+  }
+
+  /** Recolour the land: mossy forest floor, beach sand round the lake, green round the oasis, lawns by the river. */
+  private tint(x: number, z: number, c: THREE.Color): void {
+    if (this.plan && this.riverPark(x, z, this.plan)) {
+      c.copy(LAWN);
+      return;
     }
-    // Highway out east to the scenic overlook at the foot of the mountains.
-    const mz = (z0 + z1) / 2;
-    const end = x1 + WILDS - 32;
-    this.road(x1 + R + hw, mz, end - 26, mz, RING_W);
-    const pad = new THREE.Mesh(new THREE.CircleGeometry(28, 40), new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
-    pad.rotation.x = -Math.PI / 2;
-    pad.position.set(end, -0.025, mz);
-    this.group.add(pad);
+    const f = this.forest;
+    if (f) {
+      const e = Math.min(x - f.x0, f.x1 - x, z - f.z0, f.z1 - z);
+      if (e > -20) c.lerp(FOREST_FLOOR, smooth((e + 20) / 40) * 0.9);
+    }
+    const l = this.lake;
+    if (l) {
+      const e = Math.hypot((x - l.x) / l.rx, (z - l.z) / l.rz);
+      if (e < 1.5) c.lerp(BEACH, smooth((1.5 - e) / 0.3));
+    }
+    const o = this.oasis;
+    if (o) {
+      const d = Math.hypot(x - o.x, z - o.z);
+      if (d < 45) c.lerp(OASIS, smooth((45 - d) / 15) * 0.7);
+    }
   }
 
   /**
-   * Lake Mojave, south of town: a big blue lake with a sandy beach, palms, umbrellas, a
-   * lifeguard tower, a wooden pier you can walk out on and sailboats on the water. A road
-   * comes down from the ring road to the beach car park.
+   * The ring road: a smooth loop round the city's outline, pushed out wherever it would run
+   * too close to a lot or a street.
+   */
+  private makeBelt(t: Terrain, plan: CityPlan): Path {
+    const ring = outline(plan, BELT);
+    const cx = ring.reduce((s, p) => s + p.x, 0) / ring.length;
+    const cz = ring.reduce((s, p) => s + p.z, 0) / ring.length;
+    const angle = (p: Pt) => Math.atan2(p.z - cz, p.x - cx);
+    for (let it = 0; it < 10; it++) {
+      const path = smoothPath(ring, 6, true);
+      const push = new Set<number>();
+      for (const p of path.pts) {
+        if (t.cityDist(p.x, p.z) >= 26) continue;
+        const a = angle(p);
+        let best = 0;
+        let bd = Infinity;
+        ring.forEach((q, i) => {
+          let d = Math.abs(angle(q) - a);
+          if (d > Math.PI) d = Math.PI * 2 - d;
+          if (d < bd) {
+            bd = d;
+            best = i;
+          }
+        });
+        push.add(best);
+      }
+      if (!push.size) return path;
+      for (const i of push) {
+        const q = ring[i];
+        const d = Math.hypot(q.x - cx, q.z - cz) || 1;
+        ring[i] = { x: q.x + ((q.x - cx) / d) * 14, z: q.z + ((q.z - cz) / d) * 14 };
+      }
+    }
+    return smoothPath(ring, 6, true);
+  }
+
+  /** Short roads from every street and avenue that ends at the edge of town out to the ring road. */
+  private connectors(plan: CityPlan, belt: Path, t: Terrain): RoadLine[] {
+    const out: RoadLine[] = [];
+    const march = (x: number, z: number, dx: number, dz: number) => {
+      let left = false;
+      for (let d = 3; d < 900; d += 3) {
+        const px = x + dx * d;
+        const pz = z + dz * d;
+        if (!t.inBounds(px, pz)) return;
+        if (belt.nearest(px, pz, 2)) {
+          out.push({ path: straight({ x, z }, { x: px + dx * 3, z: pz + dz * 3 }), half: ROAD_HALF, y0: 0, y1: 0 });
+          return;
+        }
+        const on = onPlannedRoad(plan, px, pz);
+        if (!on) left = true;
+        else if (left) {
+          // It runs into another street first: join that instead.
+          if (d > 16) out.push({ path: straight({ x, z }, { x: px, z: pz }), half: ROAD_HALF, y0: 0, y1: 0 });
+          return;
+        }
+      }
+    };
+    plan.streets.forEach((st, r) => {
+      if (!st) return;
+      march(st.xa, streetZ(r), -1, 0);
+      march(st.xb, streetZ(r), 1, 0);
+    });
+    plan.avenues.forEach((av, k) => {
+      if (!av) return;
+      march(avenueMid(k), av.za, 0, -1);
+      march(avenueMid(k), av.zb, 0, 1);
+    });
+    return out;
+  }
+
+  /** The belt's point nearest to (x, z). */
+  private beltPoint(belt: Path, x: number, z: number): Pt {
+    let best = belt.pts[0];
+    let bd = Infinity;
+    for (const p of belt.pts) {
+      const d = (p.x - x) ** 2 + (p.z - z) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    return { x: best.x, z: best.z };
+  }
+
+  /**
+   * The highways: River Road up the canyon into the mountains, Mesa Drive east to the overlook,
+   * Interstate 15 south across the dunes, and the roads to the lake, the forest and the base.
+   */
+  private makeHighways(t: Terrain, belt: Path): NamedRoad[] {
+    const out: NamedRoad[] = [];
+    const [fx0, fx1] = cityX(MIN_COLS);
+    const W = fx1 - fx0;
+    const z0 = this.z0;
+    const z1 = this.z1;
+    const mid = (z0 + z1) / 2;
+    const r = t.river;
+    // River Road: from the ring road up the river's north bank, into the canyon.
+    let sB = t.sIn;
+    for (let s = t.sIn; s > 0; s -= 12) {
+      const p = r.pointAt(s);
+      if (t.cityDist(p.x, p.z) > BELT + 60) {
+        sB = s;
+        break;
+      }
+    }
+    const canyon: Pt[] = [];
+    for (let s = sB; s > 600; s -= 90) {
+      const p = r.pointAt(s);
+      canyon.push({ x: p.x + p.dz * 38, z: p.z - p.dx * 38 });
+    }
+    if (canyon.length > 2) {
+      const start = this.beltPoint(belt, canyon[0].x, canyon[0].z);
+      const path = smoothPath([start, ...canyon], 6);
+      out.push({
+        name: 'River Road',
+        road: {
+          path,
+          half: HIGHWAY_HALF,
+          y0: 0,
+          grade: 0.08,
+          base: (x, z) => {
+            const n = r.nearest(x, z, 90);
+            const land = t.sample(x, z);
+            return n ? Math.min(land, t.riverLevel(n.s) + 4.5) : land;
+          },
+        },
+      });
+    }
+    // Mesa Drive: east to the overlook up on the mesas.
+    const ov = this.overlook!;
+    let east = belt.pts[0];
+    for (const p of belt.pts) if (Math.abs(p.z - mid) < 80 && p.x > east.x) east = p;
+    out.push({
+      name: 'Mesa Drive',
+      road: {
+        path: smoothPath([{ x: east.x, z: east.z }, { x: east.x + 220, z: mid + 40 }, { x: east.x + 480, z: mid - 30 }, { x: ov.x - 170, z: ov.z + 30 }, { x: ov.x - 26, z: ov.z }], 6),
+        half: HIGHWAY_HALF,
+        y0: 0,
+        y1: ov.y,
+      },
+    });
+    // Interstate 15: south-east across the dunes, as far as the eye can see.
+    const s0 = this.beltPoint(belt, fx0 + 0.8 * W, z1 + 100);
+    out.push({
+      name: 'Interstate 15',
+      road: {
+        path: smoothPath([s0, { x: s0.x + 110, z: s0.z + 300 }, { x: fx1 + 250, z: z1 + 820 }, { x: fx1 + 640, z: z1 + 1500 }, { x: fx1 + 980, z: z1 + 2300 }], 6),
+        half: HIGHWAY_HALF + 1,
+        y0: 0,
+      },
+    });
+    // Lake Road down to the beach car park.
+    const l = this.lake!;
+    const lk = this.beltPoint(belt, l.x, z1 + 60);
+    const parkZ = l.z - l.rz - 30;
+    out.push({ name: 'Lake Road', road: { path: smoothPath([lk, { x: l.x, z: (lk.z + parkZ) / 2 }, { x: l.x, z: parkZ - 8 }], 6), half: 4.5, y0: 0, y1: 0 } });
+    // Forest Road up to the trailhead.
+    const f = this.forest!;
+    const fcx = (f.x0 + f.x1) / 2;
+    const fk = this.beltPoint(belt, fcx, z0 - 60);
+    out.push({ name: 'Forest Road', road: { path: smoothPath([fk, { x: fcx, z: (fk.z + f.z1) / 2 }, { x: fcx, z: f.z1 + 2 }], 6), half: 4, y0: 0 } });
+    // Fort Mojave road: from the base gate east to the ring road.
+    const b = baseSite(this.cols);
+    for (let d = 0; d < 1200; d += 3) {
+      const x = b.roadX1 - 2 + d;
+      if (belt.nearest(x, b.cz, 2)) {
+        out.push({ name: 'Fort Mojave Rd', road: { path: straight({ x: b.roadX1 - 2, z: b.cz }, { x: x + 3, z: b.cz }), half: 6, y0: 0, y1: 0 } });
+        break;
+      }
+    }
+    return out;
+  }
+
+  /** The ground of every lot (under the buildings, yards and alleys). */
+  private buildCityGround(plan: CityPlan): void {
+    const tris = new Tris();
+    const nb = blocksFor(plan.cols);
+    for (let r = 0; r < STREET_ROWS; r++) {
+      for (const side of [0, 1] as const) {
+        const za = side === 0 ? rowZ(r) - 32 : rowZ(r) + 58;
+        const zb = side === 0 ? rowZ(r) + 41 : rowZ(r) + 131;
+        for (let k = 0; k < nb; k++) {
+          let run = -1;
+          for (let c = k * 4; c <= Math.min(plan.cols, (k + 1) * 4); c++) {
+            const has = c < Math.min(plan.cols, (k + 1) * 4) && plan.has({ row: r, col: c, side });
+            if (has && run < 0) run = c;
+            if (!has && run >= 0) {
+              const xa = colX(run) + 6;
+              const xb = colX(c - 1) + 42;
+              tris.poly([{ x: xa, z: za }, { x: xb, z: za }, { x: xb, z: zb }, { x: xa, z: zb }], -0.03, 2);
+              run = -1;
+            }
+          }
+        }
+      }
+    }
+    const lot = lotTexture().clone();
+    lot.repeat.set(1, 1);
+    lot.needsUpdate = true;
+    const m = tris.mesh(new THREE.MeshStandardMaterial({ map: lot, roughness: 1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
+    if (m) {
+      m.name = 'cityGround';
+      this.group.add(m);
+    }
+  }
+
+  /** Stations every few metres along a road (its height from its profile). */
+  private stations(road: RoadLine, lift: number, from = 0, to = road.path.pts.length - 1): Station[] {
+    const t = this.terrain!;
+    const out: Station[] = [];
+    const pts = road.path.pts;
+    for (let i = from; i <= to; i++) {
+      const a = pts[Math.max(0, i - 1)];
+      const b = pts[Math.min(pts.length - 1, i + 1)];
+      const l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+      out.push({ x: pts[i].x, z: pts[i].z, y: t.roadY(road, road.path.at[i]) + lift, dx: (b.x - a.x) / l, dz: (b.z - a.z) / l });
+    }
+    return out;
+  }
+
+  /** The roads as ribbons draped over the land, with bridges where they cross the river. */
+  private buildRoads(): void {
+    const t = this.terrain!;
+    const ribbon = (list: RoadLine[], lift: number, offset: number) => {
+      const pos: number[] = [];
+      const uv: number[] = [];
+      const idx: number[] = [];
+      for (const road of list) {
+        const st = this.stations(road, lift);
+        const base = pos.length / 3;
+        st.forEach((s, i) => {
+          const nx = -s.dz * road.half;
+          const nz = s.dx * road.half;
+          pos.push(s.x + nx, s.y, s.z + nz, s.x - nx, s.y, s.z - nz);
+          const v = road.path.at[i] / 12;
+          uv.push(0, v, 1, v);
+          if (i > 0) {
+            const a = base + (i - 1) * 2;
+            idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+          }
+        });
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: roadTexture(), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: offset, polygonOffsetUnits: offset * 2 }));
+      m.receiveShadow = true;
+      this.group.add(m);
+    };
+    ribbon([this.roads[0]], 0.07, -3);
+    ribbon(this.roads.slice(1), 0.06, -2);
+    // Bridges: a deck under the road and a parapet each side wherever it crosses the river.
+    const deck = new Tris();
+    const rail = new Tris();
+    for (const road of this.roads) {
+      const pts = road.path.pts;
+      const wet = pts.map((p) => {
+        const n = t.river.nearest(p.x, p.z, RIVER_HALF_TOWN + road.half + 4);
+        return !!n && n.d < t.riverHalf(n.s) + road.half * 0.7 + 3;
+      });
+      for (let i = 0; i < pts.length; i++) {
+        if (!wet[i]) continue;
+        let j = i;
+        while (j < pts.length - 1 && wet[j + 1]) j++;
+        const a = Math.max(0, i - 1);
+        const b = Math.min(pts.length - 1, j + 1);
+        const st = this.stations(road, 0.06, a, b);
+        sweep(st, boxShape(0, road.half * 2 + 0.6, -1.3, -0.02), deck, 3);
+        for (const side of [-1, 1]) sweep(st, boxShape(side * (road.half + 0.2), 0.4, -0.02, 0.95), rail, 2);
+        i = j;
+      }
+    }
+    const stone = new THREE.MeshStandardMaterial({ color: 0xb9ab98, roughness: 0.9, side: THREE.DoubleSide });
+    for (const m of [deck.mesh(stone), rail.mesh(stone)]) if (m) this.group.add(m);
+  }
+
+  /**
+   * The river: flowing water all the way from the canyon to the lake; through town, stone
+   * walls with a railing, a paved riverside walk each side and bridges where the streets and
+   * avenues cross.
+   */
+  private buildRiver(plan: CityPlan): void {
+    const t = this.terrain!;
+    const r = t.river;
+    const n = r.pts.length;
+    // Flowing water (sloped where the river runs downhill).
+    const pos: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const s = r.at[i];
+      const p = r.pointAt(s);
+      const half = t.riverHalf(s) + (t.walled[i] ? 0.1 : 5);
+      const y = t.riverLevel(s);
+      pos.push(p.x - p.dz * half, y, p.z + p.dx * half, p.x + p.dz * half, y, p.z - p.dx * half);
+      uv.push(0, s / 14, 1, s / 14);
+      if (i > 0) {
+        const a = (i - 1) * 2;
+        idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    this.waterTex = waterTexture();
+    const water = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x3f9fc0, map: this.waterTex, roughness: 0.25, metalness: 0.1, emissive: 0x06303f, emissiveIntensity: 0.6 }));
+    water.receiveShadow = true;
+    water.name = 'river';
+    this.group.add(water);
+    // Every street and avenue (with its sidewalks) as a rectangle: the walk stops there, the bridge takes over.
+    const rects: { x0: number; x1: number; z0: number; z1: number }[] = [];
+    plan.streets.forEach((st, k) => {
+      if (st) rects.push({ x0: st.xa, x1: st.xb, z0: streetZ(k) - 8.5, z1: streetZ(k) + 8.5 });
+    });
+    plan.avenues.forEach((av, k) => {
+      if (!av) return;
+      const [a, b] = avenueX(k);
+      rects.push({ x0: a, x1: b, z0: av.za, z1: av.zb });
+    });
+    const onRect = (x: number, z: number, pad = 0) => rects.some((q) => x > q.x0 - pad && x < q.x1 + pad && z > q.z0 - pad && z < q.z1 + pad);
+    // Walled runs (a few metres longer each end, under the natural banks).
+    const walls = new Tris();
+    const walk = new Tris();
+    const cope = new Tris();
+    const rails: THREE.Matrix4[] = [];
+    const railBars = new Tris();
+    const WALK = 18;
+    for (let i = 0; i < n; i++) {
+      if (!t.walled[i]) continue;
+      let j = i;
+      while (j < n - 1 && t.walled[j + 1]) j++;
+      const a = Math.max(0, i - 2);
+      const b = Math.min(n - 1, j + 2);
+      for (let q = a; q < b; q++) {
+        const p0 = r.pointAt(r.at[q]);
+        const p1 = r.pointAt(r.at[q + 1]);
+        const h0 = t.riverHalf(r.at[q]);
+        const h1 = t.riverHalf(r.at[q + 1]);
+        const y0 = t.riverLevel(r.at[q]) - 0.5;
+        const y1 = t.riverLevel(r.at[q + 1]) - 0.5;
+        for (const side of [-1, 1]) {
+          // Left of travel is (-dz, dx).
+          const e = (p: typeof p0, d: number) => ({ x: p.x - p.dz * d * side, z: p.z + p.dx * d * side });
+          const w0 = e(p0, h0);
+          const w1 = e(p1, h1);
+          const mx = (w0.x + w1.x) / 2;
+          const mz = (w0.z + w1.z) / 2;
+          const under = onRect(mx, mz, 0.5);
+          const top = under ? -0.06 : 0.12;
+          // The wall faces the water.
+          const A: [number, number, number] = [w0.x, y0, w0.z];
+          const B: [number, number, number] = [w1.x, y1, w1.z];
+          const C: [number, number, number] = [w1.x, top, w1.z];
+          const D: [number, number, number] = [w0.x, top, w0.z];
+          if (side > 0) {
+            walls.tri(A, C, B, 3);
+            walls.tri(A, D, C, 3);
+          } else {
+            walls.tri(A, B, C, 3);
+            walls.tri(A, C, D, 3);
+          }
+          if (under) continue;
+          // Coping stones along the top, the walk behind them.
+          const c0 = e(p0, h0 + 0.7);
+          const c1 = e(p1, h1 + 0.7);
+          cope.poly([w0, w1, c1, c0], 0.12, 2);
+          const o0 = e(p0, h0 + WALK);
+          const o1 = e(p1, h1 + WALK);
+          let pieces: Pt[][] = [[c0, c1, o1, o0]];
+          for (const q of rects) pieces = pieces.flatMap((pp) => subtractRect(pp, q));
+          for (const pp of pieces) walk.poly(pp, -0.02, 3);
+          // A railing post every other point, a rail between.
+          const rp = e(p0, h0 + 0.3);
+          if (q % 2 === 0) rails.push(place(rp.x, 0.62, rp.z));
+          const rq = e(p1, h1 + 0.3);
+          const len = Math.hypot(rq.x - rp.x, rq.z - rp.z) || 1;
+          const dx = (rq.x - rp.x) / len;
+          const dz = (rq.z - rp.z) / len;
+          sweep([{ x: rp.x, z: rp.z, y: 0, dx, dz }, { x: rq.x, z: rq.z, y: 0, dx, dz }], boxShape(0, 0.08, 1.02, 1.1), railBars, 2);
+        }
+      }
+      // Close the ends of the walk (nothing to see under it).
+      for (const q of [a, b]) {
+        const p = r.pointAt(r.at[q]);
+        const h = t.riverHalf(r.at[q]);
+        for (const side of [-1, 1]) {
+          const e = (d: number) => ({ x: p.x - p.dz * d * side, z: p.z + p.dx * d * side });
+          const u = e(h);
+          const v = e(h + WALK);
+          const y = t.riverLevel(r.at[q]) - 0.5;
+          walls.tri([u.x, y, u.z], [v.x, y, v.z], [v.x, -0.02, v.z], 3);
+          walls.tri([u.x, y, u.z], [v.x, -0.02, v.z], [u.x, -0.02, u.z], 3);
+          walls.tri([u.x, y, u.z], [v.x, -0.02, v.z], [v.x, y, v.z], 3);
+          walls.tri([u.x, y, u.z], [u.x, -0.02, u.z], [v.x, -0.02, v.z], 3);
+        }
+      }
+      i = j;
+    }
+    const stone = new THREE.MeshStandardMaterial({ map: stoneTexture(), roughness: 0.9, side: THREE.DoubleSide });
+    const wm = walls.mesh(stone);
+    if (wm) this.group.add(wm);
+    const cm = cope.mesh(mat(0xcfc4b2, { rough: 0.8 }));
+    if (cm) this.group.add(cm);
+    const pm = walk.mesh(new THREE.MeshStandardMaterial({ map: pavingTexture(), roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 }));
+    if (pm) {
+      pm.name = 'riverWalk';
+      this.group.add(pm);
+    }
+    const iron = new THREE.MeshStandardMaterial({ color: 0x2d3036, metalness: 0.6, roughness: 0.4, side: THREE.DoubleSide });
+    const rg = instancedChunks(new THREE.BoxGeometry(0.08, 1.0, 0.08), iron, rails, false, 200, 380);
+    if (rg) this.group.add(rg);
+    const rb = railBars.mesh(iron);
+    if (rb) this.group.add(rb);
+    // City bridges: a deck under each street or avenue where it crosses the walled river, parapets over the water.
+    const deck = new Tris();
+    const para = new Tris();
+    const span = (ax: number, az: number, bx: number, bz: number, halfW: number) => {
+      const len = Math.hypot(bx - ax, bz - az);
+      const dx = (bx - ax) / len;
+      const dz = (bz - az) / len;
+      const near: boolean[] = [];
+      const wet: boolean[] = [];
+      const N = Math.ceil(len / 2);
+      for (let i = 0; i <= N; i++) {
+        const x = ax + dx * (i * 2);
+        const z = az + dz * (i * 2);
+        const q = r.nearest(x, z, RIVER_HALF_TOWN + WALK + halfW);
+        const walled = !!q && t.isWalled(q.s);
+        near.push(walled && q!.d < t.riverHalf(q!.s) + WALK + 1);
+        wet.push(walled && q!.d < t.riverHalf(q!.s) + 0.5);
+      }
+      const run = (flags: boolean[], fn: (s0: number, s1: number) => void) => {
+        for (let i = 0; i <= N; i++) {
+          if (!flags[i]) continue;
+          let j = i;
+          while (j < N && flags[j + 1]) j++;
+          fn(Math.max(0, i * 2 - 2), Math.min(len, j * 2 + 2));
+          i = j;
+        }
+      };
+      const line = (s0: number, s1: number, y: number): Station[] => [
+        { x: ax + dx * s0, z: az + dz * s0, y, dx, dz },
+        { x: ax + dx * s1, z: az + dz * s1, y, dx, dz },
+      ];
+      run(near, (s0, s1) => sweep(line(s0, s1, 0), boxShape(0, halfW * 2, -1.2, -0.03), deck, 3));
+      run(wet, (s0, s1) => {
+        for (const side of [-1, 1]) sweep(line(s0, s1, 0), boxShape(side * (halfW - 0.2), 0.4, 0, 0.95), para, 2);
+      });
+    };
+    plan.streets.forEach((st, k) => {
+      if (st) span(st.xa, streetZ(k), st.xb, streetZ(k), 8.5);
+    });
+    plan.avenues.forEach((av, k) => {
+      if (av) span(avenueMid(k), av.za, avenueMid(k), av.zb, (avenueX(k)[1] - avenueX(k)[0]) / 2);
+    });
+    for (const m of [deck.mesh(stone), para.mesh(new THREE.MeshStandardMaterial({ color: 0xd8cdb8, roughness: 0.85, side: THREE.DoubleSide }))]) if (m) this.group.add(m);
+  }
+
+  /**
+   * Lake Mojave, south of town: a big blue lake in its basin with a sandy beach, palms,
+   * umbrellas, a lifeguard tower, a wooden pier you can walk out on and sailboats on the
+   * water. Lake Road comes down from the ring road to the beach car park.
    */
   private buildLake(): void {
     const l = this.lake!;
     const rnd = seeded(808);
     const g = this.group;
-    const beach = new Strips();
-    beach.disc(l.x, l.z, l.rx + 24, l.rz + 24, -0.045, 64);
-    const bm = beach.mesh(mat(0xe8d39c, { rough: 1 }));
-    if (bm) g.add(bm);
-    const shallow = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.MeshStandardMaterial({ color: 0x5fc4d0, roughness: 0.2, metalness: 0.1 }));
-    shallow.rotation.x = -Math.PI / 2;
-    shallow.scale.set(l.rx + 3, l.rz + 3, 1);
-    shallow.position.set(l.x, -0.035, l.z);
-    g.add(shallow);
-    const water = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.MeshStandardMaterial({ color: 0x1f7fa8, roughness: 0.3, metalness: 0, emissive: 0x052838 }));
+    const ground = (x: number, z: number) => this.terrain!.sample(x, z);
+    const water = new THREE.Mesh(new THREE.CircleGeometry(1, 72), new THREE.MeshStandardMaterial({ color: 0x1f7fa8, map: this.waterTex ?? waterTexture(), roughness: 0.3, metalness: 0, emissive: 0x052838 }));
     water.rotation.x = -Math.PI / 2;
-    water.scale.set(l.rx - 4, l.rz - 4, 1);
-    water.position.set(l.x, -0.02, l.z);
+    water.scale.set(l.rx * 1.08, l.rz * 1.08, 1);
+    water.position.set(l.x, LAKE_LEVEL, l.z);
+    water.name = 'lake';
     g.add(water);
-    // Road down from the ring road and a car park at the top of the beach.
+    // Car park at the top of the beach.
     const parkZ = l.z - l.rz - 30;
-    this.road(l.x, this.z1 + RING + RING_W / 2, l.x, parkZ - 8, 9);
-    const lot = new Strips();
-    lot.rect(l.x - 22, parkZ - 8, l.x + 22, parkZ + 8, -0.024);
+    const lot = new Tris();
+    lot.poly([{ x: l.x - 22, z: parkZ - 8 }, { x: l.x + 22, z: parkZ - 8 }, { x: l.x + 22, z: parkZ + 8 }, { x: l.x - 22, z: parkZ + 8 }], 0.02, 4);
     const lm = lot.mesh(new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
     if (lm) g.add(lm);
-    // The pier: a long deck on posts with a rail.
+    // The pier: a long deck on posts with a rail, out over the water.
     const wood = mat(0x8a5a2e, { rough: 0.8 });
-    const pz0 = l.z - l.rz - 8;
+    const pz0 = l.pierZ0;
     const len = l.pierZ1 - pz0;
     const deck = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.16, len), wood);
     deck.position.set(l.pierX, 0.12, pz0 + len / 2);
     deck.receiveShadow = true;
     g.add(deck);
     const posts: THREE.Matrix4[] = [];
-    for (let z = pz0; z <= l.pierZ1; z += 3) for (const sx of [-1, 1]) posts.push(place(l.pierX + sx * 1.7, 0.5, z));
-    const pg = instancedChunks(new THREE.BoxGeometry(0.16, 1.1, 0.16), wood, posts);
+    for (let z = pz0; z <= l.pierZ1; z += 3) {
+      const y0 = Math.min(0, ground(l.pierX, z)) - 0.5;
+      for (const sx of [-1, 1]) posts.push(place(l.pierX + sx * 1.7, (y0 + 1.1) / 2, z, 0, 1, 1.1 - y0, 1));
+    }
+    const pg = instancedChunks(new THREE.BoxGeometry(0.16, 1, 0.16), wood, posts);
     if (pg) g.add(pg);
     for (const sx of [-1, 1]) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, len), wood);
@@ -357,32 +996,33 @@ export class Outskirts {
     const trees = new TreeBatch();
     for (let i = 0; i < 70; i++) {
       const a = rnd() * Math.PI * 2;
-      const k = 1.08 + rnd() * 0.14;
-      const x = l.x + Math.cos(a) * l.rx * k + 6 * Math.cos(a);
-      const z = l.z + Math.sin(a) * l.rz * k + 6 * Math.sin(a);
+      const k = 1.2 + rnd() * 0.16;
+      const x = l.x + Math.cos(a) * l.rx * k;
+      const z = l.z + Math.sin(a) * l.rz * k;
       if (Math.abs(x - l.x) < 26 && z < l.z) continue;
       if (Math.abs(x - l.pierX) < 5 && z < l.z) continue;
+      if (this.terrain!.inRiverWater(x, z) || this.onRoad(x, z, 2)) continue;
       const s = 0.8 + rnd() * 0.5;
-      trees.add('palm', x, z, s, rnd() * 6);
+      trees.add('palm', x, z, s, rnd() * 6, ground(x, z));
       this.wild.circle(x, z, 0.35 * s);
     }
     trees.build(g);
     const poles: THREE.Matrix4[] = [];
-    const tops: THREE.Matrix4[] = [];
     const towels: THREE.Matrix4[] = [];
     const tColors = [0xff6fb5, 0x2fb8c9, 0xffc53d, 0xff8a1f, 0xf4f1ea, 0x39ff88];
     const topsByColor = new Map<number, THREE.Matrix4[]>();
     for (let i = 0; i < 26; i++) {
       const x = l.x - l.rx * 0.8 + rnd() * l.rx * 1.6;
       const u = (x - l.x) / l.rx;
-      const z = l.z - l.rz * Math.sqrt(Math.max(0, 1 - u * u)) - 6 - rnd() * 12;
+      const z = l.z - l.rz * Math.sqrt(Math.max(0, 1 - u * u)) * 1.18 - 4 - rnd() * 10;
       if (Math.abs(x - l.pierX) < 4) continue;
-      poles.push(place(x, 1.1, z));
+      const y = ground(x, z);
+      poles.push(place(x, y + 1.1, z));
       const c = tColors[i % tColors.length];
       const list = topsByColor.get(c) ?? [];
-      list.push(place(x, 2.2, z, rnd() * 3));
+      list.push(place(x, y + 2.2, z, rnd() * 3));
       topsByColor.set(c, list);
-      towels.push(place(x + 1.4, 0.02, z + 0.4, rnd() * 0.6));
+      towels.push(place(x + 1.4, ground(x + 1.4, z + 0.4) + 0.03, z + 0.4, rnd() * 0.6));
       this.wild.circle(x, z, 0.12);
     }
     const pgeo = new THREE.CylinderGeometry(0.04, 0.04, 2.2, 6);
@@ -393,26 +1033,26 @@ export class Outskirts {
       const tg = instancedChunks(cone, mat(c, { rough: 0.8 }), list, true);
       if (tg) g.add(tg);
     }
-    void tops;
     const towel = new THREE.BoxGeometry(0.9, 0.03, 1.9);
     const tw = instancedChunks(towel, mat(0xff4d6d, { rough: 0.9 }), towels);
     if (tw) g.add(tw);
     // Lifeguard tower.
     const lx = l.x - 40;
-    const lz = l.z - l.rz - 10;
+    const lz = l.z - l.rz * 1.16 - 6;
+    const ly = ground(lx, lz);
     const white = mat(0xf4f1ea, { rough: 0.6 });
     for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.4, 0.14), white);
-      leg.position.set(lx + ox * 1, 1.2, lz + oz * 1);
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 3, 0.14), white);
+      leg.position.set(lx + ox * 1, ly + 0.9, lz + oz * 1);
       g.add(leg);
     }
     const hut = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 2.4), mat(0xff4d4d, { rough: 0.6 }));
-    hut.position.set(lx, 3.2, lz);
+    hut.position.set(lx, ly + 3.2, lz);
     hut.castShadow = true;
     g.add(hut);
     const hroof = new THREE.Mesh(new THREE.ConeGeometry(2, 0.8, 4), white);
     hroof.rotation.y = Math.PI / 4;
-    hroof.position.set(lx, 4.4, lz);
+    hroof.position.set(lx, ly + 4.4, lz);
     g.add(hroof);
     this.wild.rect(lx - 1.2, lx + 1.2, lz - 1.2, lz + 1.2);
     // Sailboats out on the water.
@@ -433,272 +1073,321 @@ export class Outskirts {
       this.sailboats.push({ o: b, a: rnd() * Math.PI * 2, r: 0.35 + rnd() * 0.45, w: (0.01 + rnd() * 0.01) * (i % 2 ? 1 : -1) });
     }
     const sign = billboard('LAKE MOJAVE', 'Beach · Pier · Sailing', '#2fe6ff', '#0b2a3a');
-    sign.position.set(l.x + 28, 0, parkZ - 4);
+    sign.position.set(l.x + 28, ground(l.x + 28, parkZ - 4), parkZ - 4);
     sign.rotation.y = Math.PI;
     g.add(sign);
     this.wild.circle(l.x + 28 - 4.5, parkZ - 4, 0.5);
     this.wild.circle(l.x + 28 + 4.5, parkZ - 4, 0.5);
-    sign.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+    this.glow(sign);
+  }
+
+  /** Signs that glow after dark. */
+  private glow(o: THREE.Object3D): void {
+    o.traverse((c) => {
+      const m = (c as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
       if (m?.emissiveMap) this.signMats.push(m);
     });
   }
 
   /**
-   * Pinewood Forest, north-east of town: hundreds of pines and birches on a mossy floor, dirt
-   * trails, a log cabin, a campfire, a fire lookout tower and a pond. A dirt road leads up
-   * from the ring road to the trailhead.
+   * Pinewood Forest, north-east of town, over gently rolling ground: hundreds of pines and
+   * birches, dirt trails, a log cabin, a campfire, a fire lookout tower and a pond. Forest
+   * Road leads up from the ring road to the trailhead.
    */
   private buildForest(): void {
     const f = this.forest!;
+    const t = this.terrain!;
     const rnd = seeded(5150);
     const g = this.group;
+    const ground = (x: number, z: number) => t.sample(x, z);
     const cx = (f.x0 + f.x1) / 2;
     const cz = (f.z0 + f.z1) / 2;
-    const floor = new Strips();
-    floor.rect(f.x0, f.z0, f.x1, f.z1, -0.05);
-    for (let i = 0; i < 10; i++) floor.disc(f.x0 + rnd() * (f.x1 - f.x0), f.z0 + rnd() * (f.z1 - f.z0), 30 + rnd() * 40, 30 + rnd() * 40, -0.049, 24);
-    const fm = floor.mesh(mat(0x3d5a2e, { rough: 1 }));
-    if (fm) g.add(fm);
-    // Dirt road in from the ring road, then trails through the trees.
-    this.road(cx, this.z0 - RING - RING_W / 2, cx, f.z1 + 2, 8, false);
-    const trails = new Strips();
+    // Trails through the trees, draped over the ground.
+    const trails = new Tris();
     const segs: [number, number, number, number][] = [];
     const trail = (ax: number, az: number, bx: number, bz: number) => {
-      trails.line(ax, az, bx, bz, 3, -0.04);
       segs.push([ax, az, bx, bz]);
+      const len = Math.hypot(bx - ax, bz - az);
+      const n = Math.max(1, Math.ceil(len / 4));
+      const dx = (bx - ax) / len;
+      const dz = (bz - az) / len;
+      const st: Station[] = [];
+      for (let i = 0; i <= n; i++) {
+        const x = ax + ((bx - ax) * i) / n;
+        const z = az + ((bz - az) * i) / n;
+        st.push({ x, z, y: ground(x, z) + 0.05, dx, dz });
+      }
+      for (let i = 0; i < st.length - 1; i++) {
+        const a = st[i];
+        const b = st[i + 1];
+        const w = 1.5;
+        trails.tri([a.x + dz * w, a.y, a.z - dx * w], [a.x - dz * w, a.y, a.z + dx * w], [b.x + dz * w, b.y, b.z - dx * w], 3);
+        trails.tri([a.x - dz * w, a.y, a.z + dx * w], [b.x - dz * w, b.y, b.z + dx * w], [b.x + dz * w, b.y, b.z - dx * w], 3);
+      }
     };
     const pts: [number, number][] = [[cx, f.z1], [cx, cz + 40], [cx - 70, cz], [cx - 40, f.z0 + 50], [cx + 60, f.z0 + 40], [cx + 90, cz - 10], [cx, cz + 40]];
     for (let i = 0; i < pts.length - 1; i++) trail(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
     trail(cx - 70, cz, f.x0 + 4, cz + 20);
     trail(cx + 90, cz - 10, f.x1 - 4, cz - 30);
-    const tm = trails.mesh(mat(0x8a6a44, { rough: 1 }));
+    const tm = trails.mesh(new THREE.MeshStandardMaterial({ color: 0x8a6a44, roughness: 1, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: THREE.DoubleSide }));
     if (tm) g.add(tm);
     const nearTrail = (x: number, z: number, pad: number) => segs.some(([ax, az, bx, bz]) => {
       const dx = bx - ax;
       const dz = bz - az;
-      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
-      return Math.hypot(x - (ax + dx * t), z - (az + dz * t)) < pad;
+      const u = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz)));
+      return Math.hypot(x - (ax + dx * u), z - (az + dz * u)) < pad;
     });
     // Clearings: the cabin and campfire, the lookout tower, the pond.
     const cabin = { x: cx - 40, z: cz + 8 };
     const tower = { x: cx + 60, z: f.z0 + 60 };
-    const pond = { x: cx + 20, z: cz - 30, rx: 22, rz: 14 };
-    this.pond = pond;
-    const clear: [number, number, number][] = [[cabin.x, cabin.z, 18], [tower.x, tower.z, 9], [pond.x, pond.z, pond.rx + 6], [cx, f.z1 - 6, 14]];
+    const pond = this.pond!;
+    const clear: [number, number, number][] = [[cabin.x, cabin.z + 4, 20], [tower.x, tower.z, 9], [pond.x, pond.z, pond.rx + 6], [cx, f.z1 - 6, 14]];
     const trees = new TreeBatch();
     let n = 0;
     for (let i = 0; i < 9000 && n < 2600; i++) {
       const x = f.x0 + 3 + rnd() * (f.x1 - f.x0 - 6);
       const z = f.z0 + 3 + rnd() * (f.z1 - f.z0 - 6);
-      if (nearTrail(x, z, 3.2)) continue;
+      if (nearTrail(x, z, 3.2) || this.onRoad(x, z, 3)) continue;
       if (clear.some(([a, b, r]) => Math.hypot(x - a, z - b) < r)) continue;
       // Thinner towards the edges.
       const edge = Math.min(x - f.x0, f.x1 - x, z - f.z0, f.z1 - z);
       if (edge < 25 && rnd() > edge / 25) continue;
       const s = 0.9 + rnd() * 0.9;
-      trees.add(rnd() < 0.78 ? 'pine' : 'birch', x, z, s, rnd() * 6);
+      trees.add(rnd() < 0.78 ? 'pine' : 'birch', x, z, s, rnd() * 6, ground(x, z) - 0.1);
       this.wild.circle(x, z, 0.38 * s);
       n++;
     }
     trees.build(g);
     // Pond
-    const pw = new THREE.Mesh(new THREE.CircleGeometry(1, 40), new THREE.MeshStandardMaterial({ color: 0x2a6f7a, roughness: 0.3, metalness: 0, emissive: 0x04202a }));
+    const py = ground(pond.x, pond.z);
+    const pw = new THREE.Mesh(new THREE.CircleGeometry(1, 40), new THREE.MeshStandardMaterial({ color: 0x2a6f7a, roughness: 0.3, metalness: 0, emissive: 0x04202a, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 }));
     pw.rotation.x = -Math.PI / 2;
     pw.scale.set(pond.rx, pond.rz, 1);
-    pw.position.set(pond.x, -0.03, pond.z);
+    pw.position.set(pond.x, py + 0.03, pond.z);
     g.add(pw);
     // Log cabin with a pitched roof, a porch and a chimney.
+    const cy = ground(cabin.x, cabin.z);
     const logs = mat(0x7a4f2a, { rough: 0.9 });
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(9, 3.2, 7), logs);
-    cab.position.set(cabin.x, 1.6, cabin.z);
+    const cab = new THREE.Mesh(new THREE.BoxGeometry(9, 3.4, 7), logs);
+    cab.position.set(cabin.x, cy + 1.5, cabin.z);
     cab.castShadow = true;
     g.add(cab);
     const roof = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 5.2, 9.8, 3, 1), mat(0x4a3a2a, { rough: 0.85, flat: true }));
     // A three-sided prism laid along x, one edge up.
     roof.rotation.set(-Math.PI / 2, 0, Math.PI / 2);
     roof.scale.set(1, 1, 0.5);
-    roof.position.set(cabin.x, 4.4, cabin.z);
+    roof.position.set(cabin.x, cy + 4.4, cabin.z);
     g.add(roof);
     const chim = new THREE.Mesh(new THREE.BoxGeometry(1, 3, 1), mat(0x8a8178, { rough: 0.9 }));
-    chim.position.set(cabin.x + 3, 5, cabin.z - 1.5);
+    chim.position.set(cabin.x + 3, cy + 5, cabin.z - 1.5);
     g.add(chim);
     const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.1), mat(0x4a2a14, { rough: 0.7 }));
-    door.position.set(cabin.x, 1.1, cabin.z + 3.52);
+    door.position.set(cabin.x, cy + 1.1, cabin.z + 3.52);
     g.add(door);
     const win = mat(0x26303d, { emissive: 0xffc874, emissiveIntensity: 0.6, rough: 0.2 });
     for (const dx of [-2.8, 2.8]) {
       const w = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1, 0.1), win);
-      w.position.set(cabin.x + dx, 1.8, cabin.z + 3.52);
+      w.position.set(cabin.x + dx, cy + 1.8, cabin.z + 3.52);
       g.add(w);
     }
     this.wild.rect(cabin.x - 4.6, cabin.x + 4.6, cabin.z - 3.6, cabin.z + 3.6);
     // Campfire: a ring of stones, logs to sit on and a flickering flame.
     const fx = cabin.x + 2;
     const fz = cabin.z + 10;
+    const fy = ground(fx, fz);
     const stones: THREE.Matrix4[] = [];
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
-      stones.push(place(fx + Math.cos(a) * 1.1, 0.12, fz + Math.sin(a) * 1.1, a, 0.35));
+      stones.push(place(fx + Math.cos(a) * 1.1, fy + 0.12, fz + Math.sin(a) * 1.1, a, 0.35));
     }
     const sg = instancedChunks(new THREE.DodecahedronGeometry(1, 0), mat(0x8a8178, { rough: 0.95, flat: true }), stones);
     if (sg) g.add(sg);
     const flame = new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.4, 8), new THREE.MeshStandardMaterial({ color: 0xffa040, emissive: 0xff6a10, emissiveIntensity: 2.5, transparent: true, opacity: 0.9 }));
-    flame.position.set(fx, 0.7, fz);
+    flame.position.set(fx, fy + 0.7, fz);
     g.add(flame);
     this.campfire = flame;
     this.wild.circle(fx, fz, 1.4);
     for (const a of [0, 2.1, 4.2]) {
       const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 2.2, 8), logs);
       log.rotation.set(0, a, Math.PI / 2);
-      log.position.set(fx + Math.cos(a) * 3, 0.22, fz + Math.sin(a) * 3);
+      log.position.set(fx + Math.cos(a) * 3, ground(fx + Math.cos(a) * 3, fz + Math.sin(a) * 3) + 0.22, fz + Math.sin(a) * 3);
       g.add(log);
     }
     // Fire lookout tower.
+    const ty = ground(tower.x, tower.z);
     const steel = mat(0x6a6f76, { metal: 0.5, rough: 0.5 });
     for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 14, 0.2), steel);
-      leg.position.set(tower.x + ox * 2, 7, tower.z + oz * 2);
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 14.5, 0.2), steel);
+      leg.position.set(tower.x + ox * 2, ty + 6.75, tower.z + oz * 2);
       g.add(leg);
       this.wild.circle(tower.x + ox * 2, tower.z + oz * 2, 0.3);
     }
     const look = new THREE.Mesh(new THREE.BoxGeometry(5, 2.6, 5), mat(0xb5a27a, { rough: 0.8 }));
-    look.position.set(tower.x, 15.3, tower.z);
+    look.position.set(tower.x, ty + 15.3, tower.z);
     look.castShadow = true;
     g.add(look);
     const lroof = new THREE.Mesh(new THREE.ConeGeometry(4.2, 1.6, 4), mat(0x5a2a2a, { rough: 0.8 }));
     lroof.rotation.y = Math.PI / 4;
-    lroof.position.set(tower.x, 17.4, tower.z);
+    lroof.position.set(tower.x, ty + 17.4, tower.z);
     g.add(lroof);
     const sign = billboard('PINEWOOD FOREST', 'Trails · Cabin · Lookout', '#39ff88', '#0c2a1a');
-    sign.position.set(cx + 12, 0, f.z1 + 4);
+    sign.position.set(cx + 12, ground(cx + 12, f.z1 + 4), f.z1 + 4);
     sign.rotation.y = Math.PI;
     g.add(sign);
     this.block(cx + 12 - 4.5, f.z1 + 4, 0.6);
     this.block(cx + 12 + 4.5, f.z1 + 4, 0.6);
-    sign.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-      if (m?.emissiveMap) this.signMats.push(m);
-    });
+    this.glow(sign);
   }
 
-  /** Cacti, rocks, Joshua trees and scrub all over the desert and up the slopes. */
+  /**
+   * Cacti, Joshua trees, rocks and scrub all over the plain, boulders and pines up the
+   * mountain slopes, everything standing on the land.
+   */
   private buildScatter(): void {
+    const t = this.terrain!;
     const rnd = seeded(1234 + this.cols);
-    const cx = (this.x0 + this.x1) / 2;
-    const cz = (this.z0 + this.z1) / 2;
-    const reachX = (this.x1 - this.x0) / 2 + WILDS + 420;
-    const reachZ = (this.z1 - this.z0) / 2 + WILDS + 420;
-    const pick = (minD: number, maxD: number): { x: number; z: number; d: number } | null => {
+    const lo = { x: t.x0 + 340, z: t.z0 + 340 };
+    const span = { x: t.width - 680, z: t.depth - 680 };
+    const pick = (ok: (x: number, z: number, y: number, slope: number, d: number) => boolean): { x: number; z: number; y: number; d: number } | null => {
       for (let tries = 0; tries < 30; tries++) {
-        const x = cx + (rnd() * 2 - 1) * reachX;
-        const z = cz + (rnd() * 2 - 1) * reachZ;
-        const dx = Math.max(this.x0 - x, 0, x - this.x1);
-        const dz = Math.max(this.z0 - z, 0, z - this.z1);
-        const d = Math.hypot(dx, dz);
-        if (d < minD || d > maxD || this.onRoad(x, z) || inBaseArea(x, z, this.cols, 14) || this.inNature(x, z)) continue;
-        return { x, z, d };
+        const x = lo.x + rnd() * span.x;
+        const z = lo.z + rnd() * span.z;
+        const d = t.cityDist(x, z);
+        if (d < 14) continue;
+        const y = t.sample(x, z);
+        if (!ok(x, z, y, t.slopeAt(x, z), d)) continue;
+        if (this.onRoad(x, z) || inBaseArea(x, z, this.cols, 14) || this.inNature(x, z) || t.river.nearest(x, z, RIVER_HALF_TOWN + 5)) continue;
+        return { x, z, y, d };
       }
       return null;
     };
     const m4 = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const e = new THREE.Euler();
-    const scatter = (geo: THREE.BufferGeometry, material: THREE.Material, n: number, minD: number, maxD: number, size: () => number, radius: number, tilt = 0, far = 360, chunk = 300) => {
+    const scatter = (geo: THREE.BufferGeometry, material: THREE.Material, n: number, ok: (x: number, z: number, y: number, slope: number, d: number) => boolean, size: () => number, radius: number, tilt = 0, far = 360, chunk = 400) => {
       const mats: THREE.Matrix4[] = [];
       for (let i = 0; i < n; i++) {
-        const p = pick(minD, maxD);
+        const p = pick(ok);
         if (!p) continue;
         const s = size();
-        const y = this.height(p.x, p.z);
         e.set((rnd() - 0.5) * tilt, rnd() * Math.PI * 2, (rnd() - 0.5) * tilt);
         q.setFromEuler(e);
-        m4.compose(new THREE.Vector3(p.x, y - 0.05, p.z), q, new THREE.Vector3(s, s, s));
+        m4.compose(new THREE.Vector3(p.x, p.y - 0.08, p.z), q, new THREE.Vector3(s, s, s));
         mats.push(m4.clone());
-        if (radius > 0 && p.d < WILDS + 4) this.block(p.x, p.z, radius * s);
+        if (radius > 0) this.block(p.x, p.z, radius * s);
       }
       const g = instancedChunks(geo, material, mats, true, chunk, far);
       if (g) this.group.add(g);
     };
-    scatter(cactusGeometry(), mat(0x3f7f3a, { rough: 0.8 }), 900, 12, WILDS + 260, () => 0.7 + rnd() * 0.8, 0.5);
-    scatter(joshuaGeometry(), mat(0x6f6a3a, { rough: 0.9, flat: true }), 420, 20, WILDS + 200, () => 0.8 + rnd() * 0.7, 0.45);
-    scatter(new THREE.DodecahedronGeometry(1, 0), mat(0x9c6a48, { rough: 0.95, flat: true }), 900, 18, WILDS + 520, () => 0.5 + rnd() ** 2 * 3.5, 0.9, 0.8);
-    // Boulders up the mountain slopes: part of the skyline, so always drawn (in a few big chunks).
-    scatter(new THREE.DodecahedronGeometry(1, 1), mat(0x7f4c34, { rough: 0.95, flat: true }), 260, WILDS - 20, WILDS + 700, () => 3 + rnd() * 9, 0.8, 0.6, Infinity, 1400);
-    scatter(new THREE.IcosahedronGeometry(0.6, 0), mat(0x8a8a4a, { rough: 1, flat: true }), 1700, 6, WILDS + 300, () => 0.4 + rnd() * 0.9, 0, 0, 220);
+    const plain = (_x: number, _z: number, y: number, slope: number) => slope < 0.35 && y < 60;
+    scatter(cactusGeometry(), mat(0x3f7f3a, { rough: 0.8 }), 1700, plain, () => 0.7 + rnd() * 0.8, 0.5);
+    scatter(joshuaGeometry(), mat(0x6f6a3a, { rough: 0.9, flat: true }), 800, (x, z, y, sl) => plain(x, z, y, sl) && z < this.z1 + 500, () => 0.8 + rnd() * 0.7, 0.45);
+    scatter(new THREE.DodecahedronGeometry(1, 0), mat(0x9c6a48, { rough: 0.95, flat: true }), 1700, (_x, _z, _y, sl) => sl < 0.6, () => 0.5 + rnd() ** 2 * 3.5, 0.9, 0.8);
+    // Boulders on the slopes and at the feet of the cliffs: part of the skyline, drawn far out.
+    scatter(new THREE.DodecahedronGeometry(1, 1), mat(0x7f4c34, { rough: 0.95, flat: true }), 700, (_x, _z, y, sl, d) => d > 300 && (sl > 0.3 || y > 30), () => 3 + rnd() * 9, 0.8, 0.6, 1600, 900);
+    scatter(new THREE.IcosahedronGeometry(0.6, 0), mat(0x8a8a4a, { rough: 1, flat: true }), 3000, (_x, _z, _y, sl) => sl < 0.5, () => 0.4 + rnd() * 0.9, 0, 0, 220);
+    // Pines up the mountains, thicker in the valleys.
+    const pines = new TreeBatch();
+    for (let i = 0; i < 2600; i++) {
+      const p = pick((_x, _z, y, sl, d) => d > 600 && y > 45 && y < 330 && sl < 0.9);
+      if (!p) continue;
+      const s = 1 + rnd() * 1.1;
+      pines.add('pine', p.x, p.z, s, rnd() * 6, p.y - 0.2);
+      this.block(p.x, p.z, 0.4 * s);
+    }
+    pines.build(this.group, false, 700, 400);
   }
 
   private buildLandmarks(): void {
+    const t = this.terrain!;
+    const belt = this.belt!;
     const { x0, x1, z0, z1 } = this;
-    const mz = (z0 + z1) / 2;
-    const midX = (x0 + x1) / 2;
-    // Welcome sign on the west road in from the desert.
-    const sign = welcomeSign();
-    sign.position.set(x0 - RING - 26, 0, streetZ(0) - 15);
-    sign.rotation.y = Math.PI / 2;
-    this.group.add(sign);
-    this.block(sign.position.x, sign.position.z - 2.6, 0.5);
-    this.block(sign.position.x, sign.position.z + 2.6, 0.5);
-    sign.traverse((o) => {
-      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-      if (m?.emissiveMap) this.signMats.push(m);
-    });
-
-    // Billboards along the ring road
+    const ground = (x: number, z: number) => this.groundAt(x, z);
+    // Welcome sign on River Road, just before the ring road, facing the traffic coming in from
+    // the canyon (on the road's right: the river runs on its left).
+    const river = this.highways.find((h) => h.name === 'River Road');
+    if (river) {
+      const p = river.road.path.pointAt(150);
+      const off = HIGHWAY_HALF + 10;
+      const x = p.x + p.dz * off;
+      const z = p.z - p.dx * off;
+      const sign = welcomeSign();
+      sign.position.set(x, ground(x, z), z);
+      sign.rotation.y = Math.atan2(p.dx, p.dz);
+      this.group.add(sign);
+      this.block(x, z, 3.2);
+      this.glow(sign);
+      const end = river.road.path.pointAt(river.road.path.length - 30);
+      const ex = end.x + end.dz * off;
+      const ez = end.z - end.dx * off;
+      const trail = billboard('RED ROCK CANYON', 'Trailhead · Waterfalls · Camping', '#ff8a1f', '#2a1206');
+      trail.position.set(ex, ground(ex, ez), ez);
+      trail.rotation.y = Math.atan2(-end.dx, -end.dz);
+      this.group.add(trail);
+      this.block(ex, ez, 5);
+      this.glow(trail);
+    }
+    // Billboards round the ring road, facing the traffic.
     const ads: [string, string, string, string][] = [
       ['JACKPOT TYCOON', 'Build the biggest casino in the city', '#ffd24a', '#3a0d4d'],
       ['VELOCITY MOTORS', 'Supercars · Muscle · Limos', '#2fe6ff', '#0d2236'],
       ['BULLSEYE GUNS', 'Downtown since 1962', '#ff4d4d', '#2a0c0c'],
       ['THE OASIS', 'Cool water · 2 miles north', '#39ff88', '#0c2a1a'],
       ['SUNSET DRIVE', 'Where the night begins', '#ff8a1f', '#2a1206'],
+      ['MESA DRIVE', 'Scenic overlook · 1 mile east', '#ffd24a', '#2a1206'],
     ];
-    const spots: [number, number, number][] = [
-      [x0 - RING - 18, mz - 60, Math.PI / 2],
-      [midX - 140, z1 + RING + 18, Math.PI],
-      [x1 + RING + 18, mz + 70, -Math.PI / 2],
-      [midX + 120, z0 - RING - 18, 0],
-      [x1 + RING + 18, z1 - 40, -Math.PI / 2],
-    ];
-    spots.forEach(([x, z, yaw], i) => {
-      const b = billboard(...ads[i % ads.length]);
-      b.position.set(x, 0, z);
-      b.rotation.y = yaw;
+    const cx = belt.pts.reduce((s, p) => s + p.x, 0) / belt.pts.length;
+    const cz = belt.pts.reduce((s, p) => s + p.z, 0) / belt.pts.length;
+    ads.forEach((ad, i) => {
+      const s = belt.length * ((i + 0.37) / ads.length);
+      const p = belt.pointAt(s);
+      // Outside the loop.
+      const outSide = (p.x - p.dz - cx) ** 2 + (p.z + p.dx - cz) ** 2 > (p.x - cx) ** 2 + (p.z - cz) ** 2 ? 1 : -1;
+      const off = outSide * (BELT_HALF + 16);
+      const x = p.x - p.dz * off;
+      const z = p.z + p.dx * off;
+      if (t.inRiverWater(x, z) || this.onRoad(x, z, 4) || !t.inBounds(x, z)) return;
+      const b = billboard(...ad);
+      b.position.set(x, ground(x, z), z);
+      b.rotation.y = Math.atan2(cx - x, cz - z);
       this.group.add(b);
+      const yaw = b.rotation.y;
       const dx = Math.cos(yaw) * 4.5;
       const dz = -Math.sin(yaw) * 4.5;
       this.block(x + dx, z + dz, 0.6);
       this.block(x - dx, z - dz, 0.6);
-      b.traverse((o) => {
-        const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
-        if (m?.emissiveMap) this.signMats.push(m);
-      });
+      this.glow(b);
     });
 
     // The oasis, north of town
-    const ox = midX - 60;
-    const oz = z0 - RING - 120;
+    const o = this.oasis!;
+    const oy = t.sample(o.x, o.z);
     const water = new THREE.Mesh(new THREE.CircleGeometry(22, 48), new THREE.MeshStandardMaterial({ color: 0x2aa6c4, roughness: 0.08, metalness: 0.2, emissive: 0x06303a, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 }));
     water.rotation.x = -Math.PI / 2;
-    water.position.set(ox, 0.01, oz);
+    water.position.set(o.x, oy + 0.04, o.z);
     this.group.add(water);
     const shore = new THREE.Mesh(new THREE.RingGeometry(21.5, 27, 48), new THREE.MeshStandardMaterial({ color: 0x9a8a4a, roughness: 1, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
     shore.rotation.x = -Math.PI / 2;
-    shore.position.set(ox, -0.02, oz);
+    shore.position.set(o.x, oy + 0.02, o.z);
     this.group.add(shore);
-    this.block(ox, oz, 21.5);
+    this.block(o.x, o.z, 21.5);
     const prnd = seeded(77);
     for (let i = 0; i < 14; i++) {
       const a = (i / 14) * Math.PI * 2 + prnd() * 0.3;
       const r = 24 + prnd() * 5;
-      const px = ox + Math.cos(a) * r;
-      const pz = oz + Math.sin(a) * r;
-      this.group.add(palmTree(px, pz, 6 + prnd() * 5, prnd));
+      const px = o.x + Math.cos(a) * r;
+      const pz = o.z + Math.sin(a) * r;
+      const palm = palmTree(px, pz, 6 + prnd() * 5, prnd);
+      palm.position.y = t.sample(px, pz);
+      this.group.add(palm);
       this.block(px, pz, 0.45);
     }
 
     // Solar farm, south-east
-    const sx = x1 + RING + 60;
-    const sz = z1 + RING + 50;
+    const [, fx1] = cityX(MIN_COLS);
+    const sx = fx1 + RING + 85 - 22.5;
+    const sz = z1 + RING + 68 - 17.5;
+    const sy = t.sample(sx + 22, sz + 17);
     const panel = new THREE.Group();
     const pGeo = new THREE.BoxGeometry(4, 0.08, 2.2);
     const legGeo = new THREE.CylinderGeometry(0.06, 0.06, 1.2, 6);
@@ -709,8 +1398,8 @@ export class Outskirts {
       for (let k = 0; k < 10; k++) {
         const x = sx + k * 5;
         const z = sz + r * 5;
-        pm.push(new THREE.Matrix4().compose(new THREE.Vector3(x, 1.25, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5, 0, 0)), new THREE.Vector3(1, 1, 1)));
-        lm.push(new THREE.Matrix4().makeTranslation(x, 0.6, z));
+        pm.push(new THREE.Matrix4().compose(new THREE.Vector3(x, sy + 1.25, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5, 0, 0)), new THREE.Vector3(1, 1, 1)));
+        lm.push(new THREE.Matrix4().makeTranslation(x, sy + 0.6, z));
       }
     }
     const pi = new THREE.InstancedMesh(pGeo, pMat, pm.length);
@@ -722,16 +1411,21 @@ export class Outskirts {
     this.group.add(panel);
     this.rects.push([sx - 2.5, sx + 47.5, sz - 1.5, sz + 36.5]);
 
-    // Scenic overlook at the end of the east highway: railing, telescopes, a neon sign.
-    const end = x1 + WILDS - 32;
+    // Scenic overlook at the end of Mesa Drive, up on its own mesa: railing, telescopes, a neon sign.
+    const ov = this.overlook!;
     const look = new THREE.Group();
-    look.position.set(end, 0, mz);
+    look.position.set(ov.x, ov.y, ov.z);
+    const pad = new THREE.Mesh(new THREE.CircleGeometry(28, 40), new THREE.MeshStandardMaterial({ map: asphaltTexture(), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.y = 0.03;
+    look.add(pad);
     const rail = mat(0xb8b2a8, { rough: 0.5, metal: 0.5 });
     for (let i = 0; i < 14; i++) {
       const a = -Math.PI / 2 + (i / 13) * Math.PI;
       const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.1, 6), rail);
       post.position.set(Math.cos(a) * 27, 0.55, Math.sin(a) * 27);
       look.add(post);
+      this.block(ov.x + Math.cos(a) * 27, ov.z + Math.sin(a) * 27, 0.3);
     }
     const bar = new THREE.Mesh(new THREE.TorusGeometry(27, 0.05, 6, 48, Math.PI), rail);
     bar.rotation.set(Math.PI / 2, 0, Math.PI / 2);
@@ -747,56 +1441,59 @@ export class Outskirts {
       scope.add(stand, tube);
       scope.position.set(23, 0, dz);
       look.add(scope);
-      this.block(end + 23, mz + dz, 0.4);
+      this.block(ov.x + 23, ov.z + dz, 0.4);
     }
-    const ov = new THREE.Mesh(new THREE.PlaneGeometry(10, 2.5), new THREE.MeshStandardMaterial({ map: neonPanel('SCENIC OVERLOOK', '#2fe6ff', '#0b1020'), emissive: 0xffffff, emissiveMap: neonPanel('SCENIC OVERLOOK', '#2fe6ff', '#0b1020'), emissiveIntensity: 0.6, side: THREE.DoubleSide }));
-    ov.position.set(-22, 4.5, -18);
-    ov.rotation.y = Math.PI / 2;
-    this.signMats.push(ov.material as THREE.MeshStandardMaterial);
+    const ovTex = neonPanel('SCENIC OVERLOOK', '#2fe6ff', '#0b1020');
+    const ovs = new THREE.Mesh(new THREE.PlaneGeometry(10, 2.5), new THREE.MeshStandardMaterial({ map: ovTex, emissive: 0xffffff, emissiveMap: ovTex, emissiveIntensity: 0.6, side: THREE.DoubleSide }));
+    ovs.position.set(-22, 4.5, -18);
+    ovs.rotation.y = Math.PI / 2;
+    this.signMats.push(ovs.material as THREE.MeshStandardMaterial);
     for (const dz of [-4, 4]) {
       const p = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4.5, 8), rail);
       p.position.set(-22, 2.25, -18 + dz);
       look.add(p);
-      this.block(end - 22, mz - 18 + dz, 0.4);
+      this.block(ov.x - 22, ov.z - 18 + dz, 0.4);
     }
-    look.add(ov);
+    look.add(ovs);
     this.group.add(look);
 
-    // Wind turbines along the southern ridge (out of reach, turning in the wind).
+    // Wind turbines along the southern hills (turning in the wind).
     const trnd = seeded(31);
-    for (let i = 0; i < 9; i++) {
-      const x = x0 + ((i + 0.5) / 9) * (x1 - x0) + (trnd() - 0.5) * 40;
-      const z = z1 + WILDS + 90 + trnd() * 60;
-      const y = this.height(x, z);
-      const t = windTurbine();
-      t.position.set(x, y - 1, z);
-      t.rotation.y = Math.PI + (trnd() - 0.5) * 0.4;
-      this.rotors.push(t.userData.rotor as THREE.Object3D);
-      (t.userData.rotor as THREE.Object3D).rotation.z = trnd() * 6;
-      this.group.add(t);
+    for (let i = 0; i < 11; i++) {
+      const x = x0 - 200 + ((i + 0.5) / 11) * (x1 - x0 + 400) + (trnd() - 0.5) * 60;
+      const z = z1 + 950 + trnd() * 160;
+      if (this.onRoad(x, z, 12)) continue;
+      const wt = windTurbine();
+      wt.position.set(x, t.sample(x, z) - 1, z);
+      wt.rotation.y = Math.PI + (trnd() - 0.5) * 0.4;
+      this.rotors.push(wt.userData.rotor as THREE.Object3D);
+      (wt.userData.rotor as THREE.Object3D).rotation.z = trnd() * 6;
+      this.group.add(wt);
+      this.block(x, z, 1.4);
     }
 
     // Radio mast on the north-east hills with a blinking light
-    const rx = x1 + 120;
-    const rz = z0 - WILDS - 70;
+    const rx = x1 + 160;
+    const rz = z0 - WILDS - 90;
     const mast = radioMast();
-    mast.position.set(rx, this.height(rx, rz) - 1, rz);
+    mast.position.set(rx, t.sample(rx, rz) - 1, rz);
     this.beacon = mast.userData.beacon as THREE.Mesh;
     this.group.add(mast);
+    this.block(rx, rz, 2);
 
     // Hot-air balloons drifting over town
     const brnd = seeded(5);
     const cols = [[0xff3fa4, 0xffd24a], [0x2fe6ff, 0xffffff], [0xff8a1f, 0x7a1f5a], [0x39ff88, 0x173a4a], [0xb77bff, 0xffd24a], [0xff4d4d, 0xffffff]];
     for (let i = 0; i < 6; i++) {
       const b = balloon(cols[i][0], cols[i][1]);
-      const cx = x0 + brnd() * (x1 - x0);
-      const cz = z0 + brnd() * (z1 - z0);
-      this.balloons.push({ o: b, cx, cz, r: 80 + brnd() * 220, a: brnd() * Math.PI * 2, w: (0.006 + brnd() * 0.01) * (brnd() < 0.5 ? -1 : 1), y: 70 + brnd() * 60 });
+      const bx = x0 + brnd() * (x1 - x0);
+      const bz = z0 + brnd() * (z1 - z0);
+      this.balloons.push({ o: b, cx: bx, cz: bz, r: 80 + brnd() * 220, a: brnd() * Math.PI * 2, w: (0.006 + brnd() * 0.01) * (brnd() < 0.5 ? -1 : 1), y: 70 + brnd() * 60 });
       this.group.add(b);
     }
   }
 
-  /** Spin the turbines, drift the balloons, blink the mast; signs glow brighter after dark. */
+  /** Spin the turbines, drift the balloons, blink the mast, run the river; signs glow brighter after dark. */
   update(dt: number, night: number): void {
     this.t += dt;
     for (const r of this.rotors) r.rotation.z += dt * 1.1;
@@ -810,10 +1507,11 @@ export class Outskirts {
     if (l) {
       for (const b of this.sailboats) {
         b.a += b.w * dt;
-        b.o.position.set(l.x + Math.cos(b.a) * l.rx * b.r + 30, Math.sin(this.t + b.r * 9) * 0.08, l.z + Math.sin(b.a) * l.rz * b.r + 10);
+        b.o.position.set(l.x + Math.cos(b.a) * l.rx * b.r + 30, LAKE_LEVEL + Math.sin(this.t + b.r * 9) * 0.08, l.z + Math.sin(b.a) * l.rz * b.r + 10);
         b.o.rotation.y = -b.a + (b.w > 0 ? 0 : Math.PI);
       }
     }
+    if (this.waterTex) this.waterTex.offset.y = -this.t * 0.09;
     if (this.campfire) {
       this.campfire.scale.set(1 + Math.sin(this.t * 13) * 0.1, 1 + Math.sin(this.t * 9.3) * 0.18, 1 + Math.cos(this.t * 11) * 0.1);
       (this.campfire.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2 + Math.sin(this.t * 17) * 0.5;
@@ -824,28 +1522,71 @@ export class Outskirts {
 
 // ------------------------------------------------------------------ models and textures
 
-let sandTex: THREE.CanvasTexture | null = null;
-function sandTexture(): THREE.CanvasTexture {
-  if (sandTex) return sandTex;
+const FOREST_FLOOR = new THREE.Color(0x3d5a2e);
+const LAWN = new THREE.Color(0x5c9a45);
+const BEACH = new THREE.Color(0xe8d39c);
+const OASIS = new THREE.Color(0x7a8f4a);
+
+let waterTexCache: THREE.CanvasTexture | null = null;
+/** Ripples on the water (scrolled along the river so it flows). */
+function waterTexture(): THREE.CanvasTexture {
+  if (waterTexCache) return waterTexCache;
   const { canvas, ctx } = makeCanvas(128, 128);
-  const rnd = seeded(21);
-  ctx.fillStyle = '#e6e0d8';
+  const rnd = seeded(404);
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 1600; i++) {
-    const v = 190 + rnd() * 65;
-    ctx.fillStyle = `rgba(${v},${v * 0.95},${v * 0.9},0.6)`;
-    ctx.fillRect(rnd() * 128, rnd() * 128, 1 + rnd() * 2, 1);
-  }
-  ctx.strokeStyle = 'rgba(160,140,120,0.25)';
-  for (let i = 0; i < 6; i++) {
-    ctx.beginPath();
+  for (let i = 0; i < 90; i++) {
+    const x = rnd() * 128;
     const y = rnd() * 128;
-    ctx.moveTo(0, y);
-    for (let x = 0; x <= 128; x += 16) ctx.lineTo(x, y + Math.sin(x / 20 + i) * 4);
+    const w = 8 + rnd() * 26;
+    ctx.strokeStyle = `rgba(150,200,225,${0.25 + rnd() * 0.35})`;
+    ctx.lineWidth = 1 + rnd() * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + w / 2, y + (rnd() - 0.5) * 6, x + w, y);
     ctx.stroke();
   }
-  sandTex = canvasTexture(canvas, true);
-  return sandTex;
+  waterTexCache = canvasTexture(canvas, true);
+  return waterTexCache;
+}
+
+let stoneTex: THREE.CanvasTexture | null = null;
+/** Dressed stone blocks (the river walls and the bridges). */
+function stoneTexture(): THREE.CanvasTexture {
+  if (stoneTex) return stoneTex;
+  const { canvas, ctx } = makeCanvas(128, 128);
+  const rnd = seeded(77);
+  ctx.fillStyle = '#7c7266';
+  ctx.fillRect(0, 0, 128, 128);
+  for (let row = 0; row < 4; row++) {
+    const off = row % 2 ? 16 : 0;
+    for (let col = -1; col < 4; col++) {
+      const v = 150 + rnd() * 50;
+      ctx.fillStyle = `rgb(${v},${v * 0.93},${v * 0.84})`;
+      ctx.fillRect(col * 32 + off + 1.5, row * 32 + 1.5, 29, 29);
+    }
+  }
+  stoneTex = canvasTexture(canvas, true);
+  return stoneTex;
+}
+
+let paveTex: THREE.CanvasTexture | null = null;
+/** Square paving slabs (the riverside walk). */
+function pavingTexture(): THREE.CanvasTexture {
+  if (paveTex) return paveTex;
+  const { canvas, ctx } = makeCanvas(128, 128);
+  const rnd = seeded(91);
+  ctx.fillStyle = '#9d958a';
+  ctx.fillRect(0, 0, 128, 128);
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 4; x++) {
+      const v = 180 + rnd() * 30;
+      ctx.fillStyle = `rgb(${v},${v * 0.96},${v * 0.9})`;
+      ctx.fillRect(x * 32 + 1, y * 32 + 1, 30, 30);
+    }
+  }
+  paveTex = canvasTexture(canvas, true);
+  return paveTex;
 }
 
 let roadTex: THREE.CanvasTexture | null = null;

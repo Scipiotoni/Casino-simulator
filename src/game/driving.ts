@@ -6,6 +6,7 @@ import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
 import { NO_GARAGE_IDS, type ParkedCar, garageTier } from './house';
 import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from '../world/city';
+import { groundAt } from '../world/terrain';
 import { HEAT } from '../world/police';
 import { audio } from '../core/audio';
 import { canvasTexture, makeCanvas } from '../render/textures';
@@ -64,6 +65,10 @@ export interface Vehicle {
   beacons?: THREE.Mesh[];
   /** Parked at the military base (taking it sets off the alarm). */
   base?: boolean;
+  /** Height of the ground under it, and how the ground tips it (nose up, left side up). */
+  y?: number;
+  pitch?: number;
+  roll?: number;
 }
 
 /** What a bullet or blast can hit: a traffic car, a police cruiser or a car on the street. */
@@ -178,7 +183,7 @@ export class Driving {
   /** Tyre squeal (0..1), smoothed for the sound. */
   private skid = 0;
   /** Tank shells in flight (global frame). */
-  private shells: { x: number; z: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh; from?: Vehicle }[] = [];
+  private shells: { x: number; z: number; y0: number; y1: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh; from?: Vehicle }[] = [];
 
   constructor(private g: Game) {}
 
@@ -203,13 +208,18 @@ export class Driving {
   /** A curbside spot on the nearest road (global), lined up with it. */
   private roadSpot(px: number, pz: number, len: number): { x: number; z: number; yaw: number } | null {
     const cands: { x: number; z: number; yaw: number; d: number }[] = [];
+    const plan = this.g.street.plan;
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = plan.streets[r];
+      if (!st || px < st.xa + 8 || px > st.xb - 8) continue;
       for (const side of [-1, 1]) {
         const z = streetZ(r) + side * ROAD_HALF * 0.55;
         cands.push({ x: px, z, yaw: side > 0 ? Math.PI / 2 : -Math.PI / 2, d: Math.abs(z - pz) });
       }
     }
     for (let k = 0; k <= blocksFor(this.cols); k++) {
+      const av = plan.avenues[k];
+      if (!av || pz < av.za + 8 || pz > av.zb - 8) continue;
       const [a, b] = avenueX(k);
       for (const side of [-1, 1]) {
         const x = (a + b) / 2 + side * (AVE_W / 2 - 2.2);
@@ -269,9 +279,36 @@ export class Driving {
     return !!v;
   }
 
+  /**
+   * Sit a vehicle on the ground under it (global frame): its height, and its nose and sides
+   * tipped to the slope. With a frame time it eases there (bumps), without it snaps.
+   */
+  settle(v: Vehicle, dt = 0): void {
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    const L = v.length * 0.42;
+    const W = v.width * 0.45;
+    const yf = groundAt(v.x + fx * L, v.z + fz * L);
+    const yb = groundAt(v.x - fx * L, v.z - fz * L);
+    // The car's left (local +x) in the global frame.
+    const yl = groundAt(v.x + fz * W, v.z - fx * W);
+    const yr = groundAt(v.x - fz * W, v.z + fx * W);
+    const y = Math.max(groundAt(v.x, v.z), (yf + yb + yl + yr) / 4);
+    const pitch = -Math.atan2(yf - yb, 2 * L);
+    const roll = Math.atan2(yl - yr, 2 * W);
+    const k = dt > 0 ? Math.min(1, dt * 16) : 1;
+    v.y = v.y === undefined || Math.abs(y - v.y) > 2 ? y : v.y + (y - v.y) * k;
+    v.pitch = (v.pitch ?? pitch) + (pitch - (v.pitch ?? pitch)) * k;
+    v.roll = (v.roll ?? roll) + (roll - (v.roll ?? roll)) * k;
+    v.root.rotation.order = 'YXZ';
+    v.root.position.set(v.x, v.y, v.z);
+    v.root.rotation.x = v.pitch;
+    v.root.rotation.z = v.roll;
+  }
+
   /** Put a vehicle on the street (global frame); used by the military base too. */
   addVehicle(def: CarDef, m: ReturnType<typeof buildCar>, color: number, x: number, z: number, yaw: number, owned: boolean, stolen: boolean, mods: CarMods | null = null): Vehicle {
-    m.root.position.set(x, 0, z);
+    m.root.position.set(x, groundAt(x, z), z);
     m.root.rotation.y = yaw;
     this.group.add(m.root);
     const v: Vehicle = {
@@ -282,6 +319,7 @@ export class Driving {
     // Your own cars keep their damage until you pay to have them fixed.
     if (owned) v.hp = Math.max(1, Math.round(v.maxHp * conditionOf(this.g.garage, def.id)));
     this.vehicles.push(v);
+    this.settle(v);
     return v;
   }
 
@@ -536,6 +574,14 @@ export class Driving {
     else v.speed = damp(v.speed, 0, 0.8, dt);
     // Too fast for the gear (a manual downshift): engine braking pulls the speed down.
     if (this.gear > 0 && v.speed > gearTopNow) v.speed = Math.max(gearTopNow, v.speed - 7 * dt);
+    // Hills: gravity pulls you back going up and speeds you up going down.
+    {
+      const L = v.length * 0.42;
+      const sfx = Math.sin(v.yaw);
+      const sfz = Math.cos(v.yaw);
+      const rise = (groundAt(v.x + sfx * L, v.z + sfz * L) - groundAt(v.x - sfx * L, v.z - sfz * L)) / (2 * L);
+      v.speed -= 9.8 * clamp(rise, -0.6, 0.6) * (tank ? 0.4 : 0.7) * dt;
+    }
     v.speed = clamp(v.speed, -9, top * boost);
     v.steer = damp(v.steer, steer, 8, dt);
     // Sharper turns at low speed, gentler at high speed. A tank turns on the spot (one track
@@ -640,9 +686,9 @@ export class Driving {
         }
       }
     }
-    // Model
-    v.root.position.set(v.x, 0, v.z);
+    // Model: on the ground, tipped to the slope.
     v.root.rotation.y = v.yaw;
+    this.settle(v, dt);
     for (const w of v.wheels) w.rotation.x += (v.speed * dt) / 0.37;
     for (const f of v.front) f.rotation.y = v.steer * 0.45;
     // You're in the driver's seat.
@@ -658,14 +704,14 @@ export class Driving {
     g.cam.followYaw = yawW + clamp(-this.slipAngle(v), -0.9, 0.9) * 0.6;
     // Body roll in a slide, and a little squat under the handbrake.
     if (!tank) {
-      v.root.rotation.z = clamp(-(v.lat ?? 0) * 0.012, -0.07, 0.07);
-      v.root.rotation.x = handbrake && Math.abs(v.speed) > 3 ? 0.02 : 0;
+      v.root.rotation.z = (v.roll ?? 0) + clamp(-(v.lat ?? 0) * 0.012, -0.07, 0.07);
+      v.root.rotation.x = (v.pitch ?? 0) + (handbrake && Math.abs(v.speed) > 3 ? 0.02 : 0);
     }
     if (v.turret) {
       // The barrel recoils after a shot; the hull rocks back.
       v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - (TANK_RELOAD - 0.4)) * 0.8;
       v.recoil = damp(v.recoil ?? 0, 0, 5, dt);
-      v.root.rotation.x = -(v.recoil ?? 0) * 0.07 + clamp(-throttle * Math.abs(v.speed) * 0.002, -0.025, 0.025);
+      v.root.rotation.x = (v.pitch ?? 0) - (v.recoil ?? 0) * 0.07 + clamp(-throttle * Math.abs(v.speed) * 0.002, -0.025, 0.025);
     }
     if (tank) this.tankUpdate(v, dt);
     // Engine: a running engine voice that follows the revs and how hard you're on the gas.
@@ -928,7 +974,9 @@ export class Driving {
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), g.renderer.camera);
     const hit = new THREE.Vector3();
-    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.6), hit)) return null;
+    // The ground round the tank (it may be up on a hill).
+    const y = (this.driving?.y ?? 0) + g.streetDrop;
+    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -(y + 0.6)), hit)) return null;
     return g.street.worldToGlobal(hit.x, hit.z);
   }
 
@@ -1014,7 +1062,7 @@ export class Driving {
       const ex = v.x - Math.sin(v.yaw) * v.length * 0.5;
       const ez = v.z - Math.cos(v.yaw) * v.length * 0.5;
       const w = g.street.globalToWorld(ex, ez);
-      g.effects.soot(w.x, 1.4, w.z, 0);
+      g.effects.soot(w.x, (v.y ?? 0) + 1.4, w.z, 0);
     }
   }
 
@@ -1065,15 +1113,17 @@ export class Driving {
     (this.reticle.userData.mat as THREE.MeshBasicMaterial).color.setHex(col);
     const k = ready ? 1 : 0.6 + 0.4 * (1 - (v.cannonT ?? 0) / TANK_RELOAD);
     this.reticle.scale.setScalar(k);
-    this.reticle.position.set(m.x + Math.sin(a) * reach, 0.08, m.z + Math.cos(a) * reach);
+    const rx = m.x + Math.sin(a) * reach;
+    const rz = m.z + Math.cos(a) * reach;
+    this.reticle.position.set(rx, groundAt(rx, rz) + 0.08, rz);
     this.reticle.rotation.y += 0.02;
     this.reticle.visible = true;
     if (this.aimLine) {
       (this.aimLine.material as THREE.MeshBasicMaterial).color.setHex(col);
-      this.aimLine.position.set(m.x, 1.8, m.z);
+      this.aimLine.position.set(m.x, (v.y ?? 0) + 1.8, m.z);
       this.aimLine.scale.set(1, 1, reach);
       this.aimLine.rotation.set(0, a, 0);
-      this.aimLine.rotateX(Math.atan2(1.7, reach));
+      this.aimLine.rotateX(Math.atan2((v.y ?? 0) + 1.7 - groundAt(rx, rz), reach));
       this.aimLine.visible = !g.input.isTouch;
     }
   }
@@ -1135,12 +1185,12 @@ export class Driving {
     o.burnT = 0;
     o.speed = 0;
     o.root.scale.set(1.08, 0.3, 1.02);
-    o.root.position.y = 0;
+    o.root.position.y = o.y ?? 0;
     this.noteCondition(o);
     const w = g.street.globalToWorld(o.x, o.z);
     audio.playAt('crash', w.x, w.z, 1);
     audio.playAt('glass', w.x, w.z, 0.7);
-    g.effects.sparkle(w.x, 0.6, w.z, 14, 0xfff2c8, 0.5);
+    g.effects.sparkle(w.x, (o.y ?? 0) + 0.6, w.z, 14, 0xfff2c8, 0.5);
     g.effects.dust(w.x, w.z, 1);
     g.cam.shake(0.12);
     g.street.police.crime(HEAT.wreck);
@@ -1295,11 +1345,11 @@ export class Driving {
       if (m.isMesh) m.material = burnt;
     });
     for (const f of v.flames) f.visible = false;
-    v.root.rotation.z = (Math.random() - 0.5) * 0.12;
-    v.root.position.y = -0.08;
+    v.root.rotation.z = (v.roll ?? 0) + (Math.random() - 0.5) * 0.12;
+    v.root.position.y = (v.y ?? 0) - 0.08;
     const w = g.street.globalToWorld(v.x, v.z);
     const big = v.def?.kind === 'tank' || v.def?.kind === 'apc' ? 1.6 : 1;
-    g.effects.explosion(w.x, 0.8, w.z, big);
+    g.effects.explosion(w.x, (v.y ?? 0) + 0.8, w.z, big);
     audio.playAt('explosion', w.x, w.z, 1.4);
     const pg = this.playerGlobal();
     const dist = Math.hypot(pg.x - v.x, pg.z - v.z);
@@ -1404,8 +1454,8 @@ export class Driving {
         v.burnT = Math.max(0, v.burnT - dt);
         if (near) {
           const w = st.globalToWorld(v.x, v.z);
-          if (v.burnT > 0 && Math.random() < dt * 30) g.effects.fire(w.x, 0.9, w.z, 1.2);
-          if (Math.random() < dt * (v.burnT > 0 ? 8 : 2)) g.effects.soot(w.x, 1.2, w.z, 1);
+          if (v.burnT > 0 && Math.random() < dt * 30) g.effects.fire(w.x, (v.y ?? 0) + 0.9, w.z, 1.2);
+          if (Math.random() < dt * (v.burnT > 0 ? 8 : 2)) g.effects.soot(w.x, (v.y ?? 0) + 1.2, w.z, 1);
         }
         // Towed away after a while.
         if (v.wreck > 45) this.remove(v);
@@ -1416,8 +1466,8 @@ export class Driving {
         const fx = v.x + Math.sin(v.yaw) * v.length * 0.35;
         const fz = v.z + Math.cos(v.yaw) * v.length * 0.35;
         const w = st.globalToWorld(fx, fz);
-        g.effects.soot(w.x, 1.0, w.z, f < 0.25 ? 1 : 0);
-        if (f < 0.15) g.effects.fire(w.x, 0.9, w.z, 0.6);
+        g.effects.soot(w.x, (v.y ?? 0) + 1.0, w.z, f < 0.25 ? 1 : 0);
+        if (f < 0.15) g.effects.fire(w.x, (v.y ?? 0) + 0.9, w.z, 0.6);
       }
       // On fire: it goes up when the fire reaches the tank.
       if (v.burnT > 0) {
@@ -1472,8 +1522,9 @@ export class Driving {
     const tz = this.impact.z;
     const t = Math.hypot(tx - m.x, tz - m.z);
     const wm = st.globalToWorld(m.x, m.z);
-    g.effects.explosion(wm.x, 1.8, wm.z, 0.35);
-    g.effects.smoke(wm.x, 1.8, wm.z, 4);
+    const my = (v.y ?? 0) + 1.8;
+    g.effects.explosion(wm.x, my, wm.z, 0.35);
+    g.effects.smoke(wm.x, my, wm.z, 4);
     // The blast kicks up dust all round the tank.
     for (let i = 0; i < 4; i++) {
       const w = st.globalToWorld(v.x + (Math.random() - 0.5) * 6, v.z + (Math.random() - 0.5) * 6);
@@ -1482,9 +1533,9 @@ export class Driving {
     audio.play('cannon');
     g.cam.shake(0.3);
     const shell = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd28a, toneMapped: false }));
-    shell.position.set(wm.x, 1.8, wm.z);
+    shell.position.set(wm.x, my, wm.z);
     g.effects.group.add(shell);
-    this.shells.push({ x: m.x, z: m.z, tx, tz, t: 0, dur: Math.max(0.05, t / 160), mesh: shell, from: v });
+    this.shells.push({ x: m.x, z: m.z, y0: my, y1: groundAt(tx, tz) + 0.6, tx, tz, t: 0, dur: Math.max(0.05, t / 160), mesh: shell, from: v });
     v.speed -= Math.cos(v.turretYaw ?? 0) * 1.5;
     void fx;
     void fz;
@@ -1497,13 +1548,13 @@ export class Driving {
       s.t += dt;
       const u = Math.min(1, s.t / s.dur);
       const w = st.globalToWorld(s.x + (s.tx - s.x) * u, s.z + (s.tz - s.z) * u);
-      s.mesh.position.set(w.x, 1.8 + Math.sin(u * Math.PI) * Math.min(4, s.dur * 6) - u * 1.2, w.z);
+      s.mesh.position.set(w.x, s.y0 + (s.y1 - s.y0) * u + Math.sin(u * Math.PI) * Math.min(4, s.dur * 6), w.z);
       if (u >= 1) {
         s.mesh.removeFromParent();
         s.mesh.geometry.dispose();
         this.shells.splice(i, 1);
         const e = st.globalToWorld(s.tx, s.tz);
-        this.g.effects.explosion(e.x, 0.8, e.z, 1.2);
+        this.g.effects.explosion(e.x, s.y1 + 0.2, e.z, 1.2);
         audio.playAt('explosion', e.x, e.z, 1.4);
         this.g.cam.shake(0.12);
         this.blast(s.tx, s.tz, 8, 260, true, s.from);

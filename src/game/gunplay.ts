@@ -10,6 +10,7 @@ import { HEAT, type Officer } from '../world/police';
 import { shotDamage } from './driving';
 import { mat } from '../render/materials';
 import { type Attack } from './melee';
+import { groundAt } from '../world/terrain';
 /** Chance a passer-by you punch (and don't knock out) fights back. */
 const BRAWL_CHANCE = 0.4;
 
@@ -436,7 +437,7 @@ export class GunPlay {
     const { w, h } = g.renderer.size;
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), g.renderer.camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.1);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(g.player.y + 1.1));
     const hit = new THREE.Vector3();
     if (!ray.ray.intersectPlane(plane, hit)) return null;
     const dx = hit.x - g.player.x;
@@ -674,7 +675,7 @@ export class GunPlay {
     if (fp && this.vm) {
       this.vm.holder.updateMatrixWorld(true);
       muzzle = this.vm.gun.localToWorld(this.vm.muzzle.clone());
-    } else muzzle = this.held ? this.held.group.localToWorld(this.held.muzzle.clone()) : new THREE.Vector3(p.x + Math.sin(yaw) * 0.6, 1.3, p.z + Math.cos(yaw) * 0.6);
+    } else muzzle = this.held ? this.held.group.localToWorld(this.held.muzzle.clone()) : new THREE.Vector3(p.x + Math.sin(yaw) * 0.6, p.y + 1.3, p.z + Math.cos(yaw) * 0.6);
     // Muzzle flash
     if (d.kind !== 'paint' && d.kind !== 'flamer') {
       this.flash.position.copy(muzzle);
@@ -773,23 +774,34 @@ export class GunPlay {
     const city = st.city;
     let best: Hit = { kind: 'air', t: d.range };
     const indoor = g.indoorFight;
-    // Walls and the ground: march until the bullet leaves the street or hits the pavement.
+    // Walls and the ground: march until the bullet leaves the street or hits the pavement (or
+    // a hillside). Aiming flat (top-down, over the shoulder) the shot follows the ground.
     for (let t = 0.3; t < d.range; t += 0.25) {
       const x = o.x + dir.x * t;
       const y = o.y + dir.y * t;
       const z = o.z + dir.z * t;
-      if (y <= 0.02) {
-        best = { kind: 'ground', t: dir.y < -1e-4 ? Math.max(0, (o.y - 0.02) / -dir.y) : t };
+      const floor = indoor ? 0 : flat ? -Infinity : st.groundY(x, z) + g.streetDrop;
+      if (y <= (flat ? 0.02 : floor + 0.02)) {
+        best = { kind: 'ground', t: indoor && dir.y < -1e-4 ? Math.max(0, (o.y - 0.02) / -dir.y) : t };
         break;
       }
-      if (indoor ? this.indoorBlocked(x, y, z) : y < 60 && !st.isOutdoors(x, z)) {
+      // Buildings stand up to 60 m; out on the land, a slope too steep to climb stops a shot that skims it.
+      if (indoor ? this.indoorBlocked(x, y, z) : y < 60 + Math.max(0, floor) && !st.isOutdoors(x, z) && (floor < 0.5 || y < floor + 3)) {
         best = { kind: 'wall', t };
         break;
       }
     }
     const hlen = Math.hypot(dir.x, dir.z);
-    const yAt = (t: number) => o.y + dir.y * t;
     const og = st.worldToGlobal(o.x, o.z);
+    const flipped = st.placeOf(st.activeId).side === 1;
+    // Height of the bullet above the ground it's over (people stand on hills too).
+    const yAt = (t: number) => {
+      const y = o.y + dir.y * t;
+      if (indoor || hlen < 0.02) return y;
+      const sx = (flipped ? -dir.x : dir.x) * t;
+      const sz = (flipped ? -dir.z : dir.z) * t;
+      return y - groundAt(og.x + sx, og.z + sz) - g.streetDrop;
+    };
     const flip = st.placeOf(st.activeId).side === 1;
     const gdx = flip ? -dir.x : dir.x;
     const gdz = flip ? -dir.z : dir.z;
@@ -822,7 +834,7 @@ export class GunPlay {
       for (const c of g.base.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
         if (done?.has(c.soldier)) continue;
         const t = c.s / hlen;
-        const y = yAt(t) - c.soldier.y;
+        const y = o.y + dir.y * t - g.streetDrop - c.soldier.y;
         const h = c.soldier.model.height;
         if (t < best.t && (flat || (y > 0 && y < h + 0.08))) {
           best = { kind: 'soldier', t, soldier: c.soldier, head: !flat && y > h - 0.42 };
@@ -832,7 +844,7 @@ export class GunPlay {
       // The base's machine-gun nests, its tank, the helicopter and the fuel tanks.
       for (const c of g.base.raycastMachines(og.x, og.z, hx, hz, best.t * hlen)) {
         const t = c.s / hlen;
-        const y = yAt(t);
+        const y = o.y + dir.y * t - g.streetDrop;
         if (t < best.t && (flat || (y > c.y0 && y < c.y1))) {
           best = { kind: 'machine', t, machine: c.machine };
           break;
@@ -872,7 +884,7 @@ export class GunPlay {
         const t = s / hlen;
         if (t >= best.t) continue;
         if (Math.hypot(px - wx * s, pz - wz * s) > 0.36) continue;
-        const y = yAt(t) - r.y;
+        const y = o.y + dir.y * t - r.y;
         if (!flat && (y < 0 || y > r.height + 0.08)) continue;
         best = { kind: 'player', t, pid: r.pid, name: r.name, head: !flat && y > r.height - 0.42 };
       }
@@ -1159,7 +1171,10 @@ export class GunPlay {
         const prev = p.pos.clone();
         p.vel.y -= (pr.gravity * dt) / steps;
         p.pos.addScaledVector(p.vel, dt / steps);
-        if (this.projectileHits(prev, p.pos)) boom = p.pos.y <= 0.1 ? p.pos.clone().setY(0.15) : prev;
+        if (this.projectileHits(prev, p.pos)) {
+          const floor = g.indoorFight ? 0 : g.street.groundY(p.pos.x, p.pos.z) + g.streetDrop;
+          boom = p.pos.y <= floor + 0.1 ? p.pos.clone().setY(floor + 0.15) : prev;
+        }
       }
       if (!boom && p.life > 5) boom = p.pos.clone();
       p.mesh.position.copy(p.pos);
@@ -1181,9 +1196,10 @@ export class GunPlay {
   private projectileHits(a: THREE.Vector3, b: THREE.Vector3): boolean {
     const g = this.g;
     const st = g.street;
-    if (b.y <= 0.1) return true;
-    if (g.indoorFight ? this.indoorBlocked(b.x, b.y, b.z) : b.y < 60 && !st.isOutdoors(b.x, b.z)) return true;
-    if (b.y > 2.4) return false;
+    const floor = g.indoorFight ? 0 : st.groundY(b.x, b.z) + g.streetDrop;
+    if (b.y <= floor + 0.1) return true;
+    if (g.indoorFight ? this.indoorBlocked(b.x, b.y, b.z) : b.y < 60 + Math.max(0, floor) && !st.isOutdoors(b.x, b.z) && (floor < 0.5 || b.y < floor + 3)) return true;
+    if (b.y > floor + 2.4) return false;
     if (g.heist && b.y < 2 && g.heist.around(b.x, b.z, 0.55).length) return true;
     const ga = st.worldToGlobal(a.x, a.z);
     const gb = st.worldToGlobal(b.x, b.z);

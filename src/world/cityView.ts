@@ -7,10 +7,9 @@ import { Obstacles, Strips, cullByDistance, instancedChunks, place } from './nat
 import { CENTER_X, FACADE_Z, LOT_STRIDE, ROAD_MID } from './grid';
 import {
   AVE_WALK, BLOCK_COLS, MAX_DEPTH, PARK_BLOCKS, PARK_STREET, RESIDENTIAL_ROWS, ROAD_HALF, ROW_GAP, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blockX0,
-  blocksFor, cityX, cityZ, colX, hash01, inParkSlot, slotToGlobal, streetZ,
+  blocksFor, colX, hash01, inParkSlot, slotToGlobal, streetZ,
 } from './city';
-
-
+import { type CityPlan, crosses } from './plan';
 
 /** Global x of the gun shop's door (column 1, north side of the Casino Strip). */
 function colGallery(): number {
@@ -36,6 +35,8 @@ interface Turn {
   t: number;
   len: number;
   next: { axis: Axis; line: number; dir: 1 | -1; pos: number };
+  /** The road it turned off (it crosses the new one right here). */
+  from: number;
 }
 
 /** One car driving around the city (global frame). */
@@ -278,7 +279,8 @@ export class CityView {
   private heads: { x: number; z: number; yaw: number; axis: Axis }[] = [];
   private lightT = 0;
   private lastPhase = -1;
-  private cols = 0;
+  /** Which streets and avenues exist, and how far they run. */
+  plan: CityPlan | null = null;
   /** Where the player stands (global), so cars stop for them. */
   player = { x: -9999, z: -9999 };
   readonly targets: Target[] = [];
@@ -294,7 +296,7 @@ export class CityView {
   }
 
   /** Tin cans and bottles on crates along the sidewalks, and a shooting gallery outside the gun shop. */
-  private buildTargets(cols: number, crates: THREE.Matrix4[]): void {
+  private buildTargets(plan: CityPlan, crates: THREE.Matrix4[]): void {
     for (const t of this.targets) t.mesh.removeFromParent();
     this.targets.length = 0;
     const can = new THREE.CylinderGeometry(0.07, 0.07, 0.2, 12);
@@ -324,8 +326,11 @@ export class CityView {
     // A crate of cans every block, on both sidewalks of every street.
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      for (let k = 0; k < blocksFor(cols); k++) {
+      const st = plan.streets[r];
+      if (!st) continue;
+      for (let k = 0; k < blocksFor(plan.cols); k++) {
         const [, a1] = avenueX(k);
+        if (a1 + 28 > st.xb || a1 < st.xa) continue;
         crate(a1 + 9, zc - BOX - 2.3, r * 97 + k * 7);
         crate(a1 + 28, zc + BOX + 2.3, r * 97 + k * 7 + 3);
       }
@@ -393,15 +398,14 @@ export class CityView {
     }
   }
 
-  build(cols: number): void {
-    this.cols = cols;
+  build(plan: CityPlan): void {
+    const cols = plan.cols;
+    this.plan = plan;
     this.statics.removeFromParent();
     disposeTree(this.statics);
     this.statics = new THREE.Group();
     this.group.add(this.statics);
     const s = this.statics;
-    const [x0, x1] = cityX(cols);
-    const [z0, z1] = cityZ();
     const nb = blocksFor(cols);
     const asphalt = new Quads(2);
     const walk = new Quads(1);
@@ -419,8 +423,15 @@ export class CityView {
     };
     const roadZ = (r: number): [number, number] => [streetZ(r) - BOX, streetZ(r) + BOX];
     const aves = Array.from({ length: nb + 1 }, (_, k) => avenueX(k));
-    // Streets: road and both sidewalks across the whole city.
+    /** The avenues that cross street `r` (only those make intersections). */
+    const crossing = (r: number) => aves.filter((_, k) => crosses(plan, r, k));
+    // Streets: road and both sidewalks, from the first block to the last on each street.
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = plan.streets[r];
+      if (!st) continue;
+      const x0 = st.xa;
+      const x1 = st.xb;
+      const cr = crossing(r);
       const [ra, rb] = roadZ(r);
       asphalt.add(x0, ra, x1, rb, -0.01);
       const nA = FACADE_Z + (streetZ(r) - ROAD_MID);
@@ -428,7 +439,7 @@ export class CityView {
       walk.add(x0, rb, x1, 2 * streetZ(r) - nA, 0.002);
       // Curbs, broken where the avenues cross.
       let cx = x0;
-      for (const [a, b] of aves) {
+      for (const [a, b] of cr) {
         const ra0 = a + AVE_WALK;
         const rb0 = b - AVE_WALK;
         if (ra0 > cx) {
@@ -443,20 +454,27 @@ export class CityView {
       }
       // Centre dashes and edge lines, skipping intersections.
       for (let x = x0 + 1; x < x1 - 1; x += 3) {
-        if (aves.some(([a, b]) => x > a + AVE_WALK - 1 && x < b - AVE_WALK + 1)) continue;
+        if (cr.some(([a, b]) => x > a + AVE_WALK - 1 && x < b - AVE_WALK + 1)) continue;
         yellow.add(x, streetZ(r) - 0.08, x + 1.6, streetZ(r) + 0.08, 0.004);
       }
     }
-    // Avenues: road and sidewalks in the gaps between the streets.
-    const gaps: [number, number][] = [];
-    let za = z0;
-    for (let r = 0; r < STREET_ROWS; r++) {
-      const [ra, rb] = roadZ(r);
-      gaps.push([za, ra]);
-      za = rb;
-    }
-    gaps.push([za, z1]);
-    for (const [a, b] of aves) {
+    // Avenues: road and sidewalks between the streets they cross, from end to end.
+    const aveGaps = (k: number): [number, number][] => {
+      const av = plan.avenues[k];
+      if (!av) return [];
+      const out: [number, number][] = [];
+      let za = av.za;
+      for (let r = 0; r < STREET_ROWS; r++) {
+        if (!crosses(plan, r, k)) continue;
+        const [ra, rb] = roadZ(r);
+        if (ra > za) out.push([za, ra]);
+        za = rb;
+      }
+      if (av.zb > za) out.push([za, av.zb]);
+      return out;
+    };
+    for (const [k, [a, b]] of aves.entries()) {
+      const gaps = aveGaps(k);
       const ra0 = a + AVE_WALK;
       const rb0 = b - AVE_WALK;
       for (const [ga, gb] of gaps) {
@@ -471,7 +489,7 @@ export class CityView {
     // Crosswalks and stop lines at every intersection.
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      for (const [a, b] of aves) {
+      for (const [a, b] of crossing(r)) {
         const xc = (a + b) / 2;
         const rw = (b - a) / 2 - AVE_WALK;
         for (const sx of [-1, 1]) {
@@ -513,18 +531,14 @@ export class CityView {
       m.setPosition(x, 0, z);
       list.push(m);
     };
-    const inAve = (x: number, pad = 0) => aves.some(([a, b]) => x > a - pad && x < b + pad);
-    const inStreet = (z: number, pad = 0) => {
-      for (let r = 0; r < STREET_ROWS; r++) {
-        const zc = streetZ(r);
-        if (z > zc - BOX - 4.5 - pad && z < zc + BOX + 4.5 + pad) return true;
-      }
-      return false;
-    };
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = plan.streets[r];
+      if (!st) continue;
+      const cr = crossing(r);
+      const inAve = (x: number, pad = 0) => cr.some(([a, b]) => x > a - pad && x < b + pad);
       const zc = streetZ(r);
       let i = 0;
-      for (let x = x0 + 6; x < x1 - 6; x += 7, i++) {
+      for (let x = st.xa + 6; x < st.xb - 6; x += 7, i++) {
         if (inAve(x, 2)) continue;
         for (const side of [-1, 1]) {
           const z = zc + side * (BOX + 0.85);
@@ -538,9 +552,19 @@ export class CityView {
         }
       }
     }
-    for (const [a, b] of aves) {
+    for (const [k, [a, b]] of aves.entries()) {
+      const av = plan.avenues[k];
+      if (!av) continue;
+      const inStreet = (z: number, pad = 0) => {
+        for (let r = 0; r < STREET_ROWS; r++) {
+          if (!crosses(plan, r, k)) continue;
+          const zc = streetZ(r);
+          if (z > zc - BOX - 4.5 - pad && z < zc + BOX + 4.5 + pad) return true;
+        }
+        return false;
+      };
       let i = 0;
-      for (let z = z0 + 6; z < z1 - 6; z += 7, i++) {
+      for (let z = av.za + 6; z < av.zb - 6; z += 7, i++) {
         if (inStreet(z, 2)) continue;
         for (const side of [-1, 1]) {
           const x = side < 0 ? a + AVE_WALK - 0.85 : b - AVE_WALK + 0.85;
@@ -608,7 +632,7 @@ export class CityView {
     const sigPole: THREE.Matrix4[] = [];
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      for (const [a, b] of aves) {
+      for (const [a, b] of crossing(r)) {
         const xc = (a + b) / 2;
         const hw = (b - a) / 2 - AVE_WALK + 0.6;
         // Corner poles; each faces traffic coming towards it on one axis.
@@ -668,6 +692,7 @@ export class CityView {
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
       aves.forEach(([, b], k) => {
+        if (!crosses(plan, r, k)) return;
         const x = b - AVE_WALK + 2.2;
         const z = zc - BOX - 2.2;
         signPoles.push(new THREE.Matrix4().makeTranslation(x, 1.65, z));
@@ -682,9 +707,9 @@ export class CityView {
       for (const g of signGeos) g.dispose();
       s.add(new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ map: atlas, side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: atlas })));
     }
-    this.buildBackyards(cols);
+    this.buildBackyards(plan);
     const crates: THREE.Matrix4[] = [];
-    this.buildTargets(cols, crates);
+    this.buildTargets(plan, crates);
     const crateGeo = new THREE.BoxGeometry(1.1, 0.6, 0.6);
     const cr = instanced(crateGeo, mat(0x9a6a3c, { rough: 0.85 }), crates);
     if (cr) s.add(cr);
@@ -695,7 +720,8 @@ export class CityView {
    * Behind the buildings: lawns and hedges in the residential rows, and dumpsters along the
    * alleys between the backs of the lots (they're solid: see `props`).
    */
-  private buildBackyards(cols: number): void {
+  private buildBackyards(plan: CityPlan): void {
+    const cols = plan.cols;
     const s = this.statics;
     this.props.clear();
     const grass = new Strips();
@@ -708,12 +734,12 @@ export class CityView {
       for (let col = 0; col < cols; col++) {
         for (const side of [0, 1] as const) {
           const slot = { row, col, side };
-          if (inParkSlot(slot)) continue;
+          if (inParkSlot(slot) || !plan.has(slot)) continue;
           const a = slotToGlobal(slot, CENTER_X - LOT_STRIDE / 2 + 0.4, back);
           const b = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2 - 0.4, FACADE_Z - 0.6);
           grass.rect(Math.min(a.x, b.x), Math.min(a.z, b.z), Math.max(a.x, b.x), Math.max(a.z, b.z), -0.018);
           // A hedge along the east side of every yard (the west one belongs to the neighbour).
-          if ((col + 1) % BLOCK_COLS === 0) continue;
+          if ((col + 1) % BLOCK_COLS === 0 || !plan.has({ row, col: col + 1, side })) continue;
           const h0 = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2, back + 2);
           const h1 = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2, FACADE_Z - 6);
           const len = Math.abs(h1.z - h0.z);
@@ -727,6 +753,10 @@ export class CityView {
       const az = streetZ(r) + ROW_GAP / 2;
       for (let k = 0; k < blocksFor(cols); k++) {
         if (r === PARK_STREET && k >= PARK_BLOCKS[0] && k <= PARK_BLOCKS[1]) continue;
+        // Only behind lots that are there.
+        let any = false;
+        for (let c = k * BLOCK_COLS; c < (k + 1) * BLOCK_COLS && !any; c++) any = plan.has({ row: r, col: c, side: 1 }) || plan.has({ row: r + 1, col: c, side: 0 });
+        if (!any) continue;
         for (let i = 0; i < 3; i++) {
           const x = blockX0(k) + 22 + i * 50 + hash01(r * 131 + k * 7 + i) * 8;
           const z = az + (i % 2 ? 2.4 : -2.4);
@@ -773,48 +803,57 @@ export class CityView {
     }
   }
 
+  /** All the roads cars can drive: every planned street (x) and avenue (z) with its ends. */
+  private lines(): { axis: Axis; line: number; lo: number; hi: number }[] {
+    const plan = this.plan;
+    const out: { axis: Axis; line: number; lo: number; hi: number }[] = [];
+    if (!plan) return out;
+    plan.streets.forEach((st, r) => st && out.push({ axis: 'x', line: r, lo: st.xa, hi: st.xb }));
+    plan.avenues.forEach((av, k) => av && out.push({ axis: 'z', line: k, lo: av.za, hi: av.zb }));
+    return out;
+  }
+
+  /** Where a road starts and ends. */
+  private span(axis: Axis, line: number): [number, number] {
+    const plan = this.plan;
+    if (axis === 'x') {
+      const st = plan?.streets[line];
+      return st ? [st.xa, st.xb] : [0, 0];
+    }
+    const av = plan?.avenues[line];
+    return av ? [av.za, av.zb] : [0, 0];
+  }
+
   /** Put a car on a random lane (at its starting end, or anywhere along it at first). */
   private respawn(c: Car, anywhere: boolean): void {
-    const nb = blocksFor(this.cols);
-    const [x0, x1] = cityX(this.cols);
-    const [z0, z1] = cityZ();
+    const lines = this.lines();
     c.turn = null;
     c.decided = -999;
     c.speed = c.max * 0.6;
     c.dir = Math.random() < 0.5 ? 1 : -1;
-    if (Math.random() < 0.6) {
-      c.axis = 'x';
-      c.line = Math.floor(Math.random() * STREET_ROWS);
-      c.pos = anywhere ? x0 + 6 + Math.random() * (x1 - x0 - 12) : c.dir > 0 ? x0 + 2 : x1 - 2;
-    } else {
-      c.axis = 'z';
-      c.line = Math.floor(Math.random() * (nb + 1));
-      c.pos = anywhere ? z0 + 6 + Math.random() * (z1 - z0 - 12) : c.dir > 0 ? z0 + 2 : z1 - 2;
-    }
+    const ln = lines[Math.floor(Math.random() * lines.length)];
+    if (!ln) return;
+    c.axis = ln.axis;
+    c.line = ln.line;
+    c.pos = anywhere ? ln.lo + 6 + Math.random() * Math.max(1, ln.hi - ln.lo - 12) : c.dir > 0 ? ln.lo + 2 : ln.hi - 2;
     // Don't spawn inside an intersection.
-    const stops = this.stopsFor(c.axis);
-    for (const s of stops) if (Math.abs(c.pos - s) < BOX + 2) c.pos = s - c.dir * (BOX + 6);
+    for (const st of this.stopsFor(c.axis, c.line)) if (Math.abs(c.pos - st.at) < BOX + 2) c.pos = st.at - c.dir * (BOX + 6);
     this.place(c);
   }
 
   /** Put a car on a road near (fx, fz), but out of sight. */
   private respawnNear(c: Car, fx: number, fz: number): boolean {
-    const nb = blocksFor(this.cols);
-    const [x0, x1] = cityX(this.cols);
-    const [z0, z1] = cityZ();
-    for (let tries = 0; tries < 6; tries++) {
-      const alongX = Math.random() < 0.6;
-      const lines: number[] = [];
-      if (alongX) for (let r = 0; r < STREET_ROWS; r++) { if (Math.abs(streetZ(r) - fz) < BUBBLE * 0.8) lines.push(r); }
-      else for (let k = 0; k <= nb; k++) { if (Math.abs(avenueMid(k) - fx) < BUBBLE * 0.8) lines.push(k); }
-      if (!lines.length) continue;
-      const line = lines[Math.floor(Math.random() * lines.length)];
+    const near = this.lines().filter((ln) => (ln.axis === 'x'
+      ? Math.abs(streetZ(ln.line) - fz) < BUBBLE * 0.8 && fx > ln.lo - BUBBLE && fx < ln.hi + BUBBLE
+      : Math.abs(avenueMid(ln.line) - fx) < BUBBLE * 0.8 && fz > ln.lo - BUBBLE && fz < ln.hi + BUBBLE));
+    for (let tries = 0; tries < 6 && near.length; tries++) {
+      const ln = near[Math.floor(Math.random() * near.length)];
+      const alongX = ln.axis === 'x';
       const off = (170 + Math.random() * (BUBBLE - 190)) * (Math.random() < 0.5 ? -1 : 1);
-      const lo = (alongX ? x0 : z0) + 4;
-      const hi = (alongX ? x1 : z1) - 4;
-      let pos = Math.max(lo, Math.min(hi, (alongX ? fx : fz) + off));
-      const axis: Axis = alongX ? 'x' : 'z';
-      for (const st of this.stopsFor(axis)) if (Math.abs(pos - st) < BOX + 3) pos = st + (pos < st ? -1 : 1) * (BOX + 6);
+      let pos = Math.max(ln.lo + 4, Math.min(ln.hi - 4, (alongX ? fx : fz) + off));
+      const axis = ln.axis;
+      const line = ln.line;
+      for (const st of this.stopsFor(axis, line)) if (Math.abs(pos - st.at) < BOX + 3) pos = st.at + (pos < st.at ? -1 : 1) * (BOX + 6);
       const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
       const p = this.laneXY(axis, line, dir, pos);
       if (Math.hypot(p.x - fx, p.y - fz) < 160) continue;
@@ -832,10 +871,17 @@ export class CityView {
     return false;
   }
 
-  /** Intersection centres along a street (x) or an avenue (z). */
-  private stopsFor(axis: Axis): number[] {
-    if (axis === 'x') return Array.from({ length: blocksFor(this.cols) + 1 }, (_, k) => avenueMid(k));
-    return Array.from({ length: STREET_ROWS }, (_, r) => streetZ(r));
+  /** The intersections along a street (x) or an avenue (z): where, and which road crosses there. */
+  private stopsFor(axis: Axis, line: number): { at: number; cross: number }[] {
+    const plan = this.plan;
+    if (!plan) return [];
+    const out: { at: number; cross: number }[] = [];
+    if (axis === 'x') {
+      for (let k = 0; k < plan.avenues.length; k++) if (crosses(plan, line, k)) out.push({ at: avenueMid(k), cross: k });
+    } else {
+      for (let r = 0; r < plan.streets.length; r++) if (crosses(plan, r, line)) out.push({ at: streetZ(r), cross: r });
+    }
+    return out;
   }
 
   private laneXY(axis: Axis, line: number, dir: 1 | -1, pos: number): THREE.Vector2 {
@@ -912,7 +958,8 @@ export class CityView {
         c.dir = tr.next.dir;
         c.pos = tr.next.pos;
         c.turn = null;
-        c.decided = this.stopsFor(c.axis).findIndex((s) => Math.abs(s - c.pos) < BOX + 3);
+        // The road it came off is the one crossing here: don't decide about it again.
+        c.decided = tr.from;
         this.place(c);
         return;
       }
@@ -926,22 +973,22 @@ export class CityView {
       return;
     }
     let target = c.shaken > 0 ? 0 : c.max;
-    const stops = this.stopsFor(c.axis);
+    const stops = this.stopsFor(c.axis, c.line);
     // Next intersection ahead
     let idx = -1;
     let best = Infinity;
     stops.forEach((s, i) => {
-      const ahead = (s - c.pos) * c.dir;
+      const ahead = (s.at - c.pos) * c.dir;
       if (ahead > -BOX && ahead < best) {
         best = ahead;
         idx = i;
       }
     });
-    if (idx >= 0 && idx !== c.decided) {
+    if (idx >= 0 && stops[idx].cross !== c.decided) {
       const toStop = best - STOP_AT;
       const red = ph.green !== c.axis || (ph.amber && toStop > 3);
       if (red && toStop > -0.5 && toStop < 30) target = Math.min(target, Math.max(0, toStop * 0.9));
-      if (best <= BOX + 0.3 && !(red && toStop > -1.5)) this.decide(c, idx, stops[idx]);
+      if (best <= BOX + 0.3 && !(red && toStop > -1.5)) this.decide(c, stops[idx]);
       else if (best <= BOX + 0.3 && red) target = 0;
     }
     // Keep a gap to the car ahead in the same lane
@@ -971,7 +1018,7 @@ export class CityView {
     c.speed += (target - c.speed) * Math.min(1, dt * (target < c.speed ? 4 : 1.5));
     if (c.speed < 0.05 && target === 0) c.speed = 0;
     c.pos += c.dir * c.speed * dt;
-    const [lo, hi] = c.axis === 'x' ? cityX(this.cols) : cityZ();
+    const [lo, hi] = this.span(c.axis, c.line);
     if (c.pos < lo - 1 || c.pos > hi + 1) {
       this.respawn(c, false);
       return;
@@ -979,40 +1026,34 @@ export class CityView {
     this.place(c);
   }
 
-  /** At an intersection: carry straight on or turn into the crossing road. */
-  private decide(c: Car, idx: number, centre: number): void {
-    c.decided = idx;
+  /**
+   * At an intersection: carry straight on or turn into the crossing road (always turn if the
+   * road ends just ahead, and never onto a road that ends right away).
+   */
+  private decide(c: Car, stop: { at: number; cross: number }): void {
+    c.decided = stop.cross;
+    const centre = stop.at;
+    const [lo, hi] = this.span(c.axis, c.line);
+    const straightOk = (c.dir > 0 ? hi - centre : centre - lo) > 45;
     const roll = Math.random();
-    if (roll < 0.55) return;
-    const nb = blocksFor(this.cols);
-    const right = roll < 0.78;
-    // New axis and direction (right turn: rotate heading -90° in screen space).
-    let next: { axis: Axis; line: number; dir: 1 | -1 };
-    if (c.axis === 'x') {
-      const k = idx;
-      // Heading east (+x): right turn heads south (+z); heading west: right heads north.
-      const dir = (right ? c.dir : -c.dir) as 1 | -1;
-      next = { axis: 'z', line: k, dir };
-      const zc = streetZ(c.line);
-      const [z0, z1] = cityZ();
-      if ((dir > 0 && zc + 20 > z1) || (dir < 0 && zc - 20 < z0)) return;
-    } else {
-      const r = idx;
-      // Heading south (+z): right turn heads west (-x); north: right heads east.
-      const dir = (right ? -c.dir : c.dir) as 1 | -1;
-      next = { axis: 'x', line: r, dir };
-      const xa = avenueMid(c.line);
-      if ((dir < 0 && c.line === 0) || (dir > 0 && c.line === nb)) return;
-      void xa;
-    }
+    if (roll < 0.55 && straightOk) return;
+    // Which ways the crossing road goes from here (+1 / -1 along it).
+    const [clo, chi] = this.span(c.axis === 'x' ? 'z' : 'x', stop.cross);
+    const here = c.axis === 'x' ? streetZ(c.line) : avenueMid(c.line);
+    const can = (d: 1 | -1) => (d > 0 ? chi - here : here - clo) > 30;
+    // Right turn: heading east (+x) a right turn heads south (+z); south (+z) → west (-x).
+    const rightDir = (c.axis === 'x' ? c.dir : -c.dir) as 1 | -1;
+    let dir: 1 | -1 = roll < 0.78 ? rightDir : (-rightDir as 1 | -1);
+    if (!can(dir)) dir = -dir as 1 | -1;
+    if (!can(dir)) return;
+    const next = { axis: (c.axis === 'x' ? 'z' : 'x') as Axis, line: stop.cross, dir };
     const entry = this.laneXY(c.axis, c.line, c.dir, centre - c.dir * BOX);
-    const exitCentre = next.axis === 'x' ? avenueMid(c.line) : streetZ(c.line);
-    const exitPos = exitCentre + next.dir * BOX;
+    const exitPos = here + next.dir * BOX;
     const exit = this.laneXY(next.axis, next.line, next.dir, exitPos);
     // Corner: where the two lane lines cross.
     const corner = c.axis === 'x' ? new THREE.Vector2(exit.x, entry.y) : new THREE.Vector2(entry.x, exit.y);
     const len = entry.distanceTo(corner) + corner.distanceTo(exit);
-    c.turn = { p0: entry, p1: corner, p2: exit, t: 0, len: len * 0.8, next: { ...next, pos: exitPos } };
+    c.turn = { p0: entry, p1: corner, p2: exit, t: 0, len: len * 0.8, next: { ...next, pos: exitPos }, from: c.line };
   }
 
   /** First car a bullet hits along a ray (global frame), within `range`. */

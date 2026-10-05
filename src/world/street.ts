@@ -3,10 +3,12 @@ import { Exterior, type LotLook } from './exterior';
 import { CENTER_X, DOOR_TILES, FACADE_Z } from './grid';
 import {
   MIN_COLS, BLOCK_COLS, STREET_ROWS, type SlotRef, cityX, cityZ, fillerFor, globalToSlot, inCityOpen, inWilds, onRoadNetwork,
-  setCityObstacles, slotAt, slotKey, slotToGlobal,
+  setCityObstacles, setRoadPlan, slotAt, slotKey, slotOfKey, slotToGlobal,
 } from './city';
+import { groundAt } from './terrain';
 import { type SolidRect, lotHeight, lotSolids } from './footprint';
 import { CentralPark } from './park';
+import { type CityPlan, fullPlan, makePlan, onPlannedRoad, slotOpen } from './plan';
 import { cullChunks } from './nature';
 import { VIEW } from './viewDistance';
 import { CityView } from './cityView';
@@ -106,7 +108,10 @@ export class Street {
   private slots = new Map<string, SlotRef>();
   private bySlot = new Map<number, StreetLot>();
   private byId = new Map<string, StreetLot>();
-  private builtCols = -1;
+  private builtKey = '';
+  /** Which streets and avenues exist and how far they run (from the lots there are). */
+  plan: CityPlan = fullPlan(MIN_COLS);
+  private planKey = '';
 
   constructor() {
     this.group.add(this.city.group);
@@ -233,7 +238,8 @@ export class Street {
       for (let col = 0; col < this.cols; col++) {
         for (const side of [0, 1] as const) {
           const s = { row, col, side };
-          if (taken(s)) continue;
+          // Only where the city reaches (its outline, not the river).
+          if (taken(s) || !slotOpen(s, this.cols)) continue;
           const f = fillerFor(s);
           const lot: StreetLot = {
             id: `filler:${row}:${col}:${side}`, kind: 'filler', owner: '', order: 0, online: false,
@@ -246,6 +252,21 @@ export class Street {
     }
     this.lots = out;
     this.byId = new Map(out.map((l) => [l.id, l]));
+    // Which streets and avenues there are follows from which lots there are.
+    const plan = makePlan(this.cols, (s) => this.bySlot.has(slotKey(s)));
+    this.plan = plan;
+    // Lots outside the city's outline (a casino past the end of the Strip) shape the land too.
+    const strays = [...this.bySlot.keys()].filter((k) => !slotOpen(slotOfKey(k), this.cols)).sort((a, b) => a - b);
+    this.planKey = JSON.stringify([this.cols, plan.streets, plan.avenues, strays]);
+    const cols = this.cols;
+    setRoadPlan({
+      cols,
+      on: (gx, gz) => onPlannedRoad(plan, gx, gz),
+      lot: (gx, gz) => {
+        const at = slotAt(gx, gz, cols);
+        return !!at && this.bySlot.has(slotKey(at));
+      },
+    });
     this.solids.clear();
     this.prints.clear();
     this.nearAt.r = -1;
@@ -262,6 +283,8 @@ export class Street {
     }).filter((d) => d.weight > 0);
     this.crowd.cols = this.cols;
     this.police.cols = this.cols;
+    this.crowd.plan = plan;
+    this.police.plan = plan;
   }
 
   get(id: string): StreetLot | undefined {
@@ -306,6 +329,12 @@ export class Street {
 
   globalToWorld(x: number, z: number): Vec2 {
     return this.fromGlobal(this.activeId, x, z);
+  }
+
+  /** Height of the ground at a world point (0 all over town; the land, roads and bridges outside). */
+  groundY(x: number, z: number): number {
+    const g = this.worldToGlobal(x, z);
+    return groundAt(g.x, g.z);
   }
 
   /** Global bounds of the city. */
@@ -432,14 +461,15 @@ export class Street {
     const f = this.worldToGlobal(focusX, focusZ);
     const keep = new Set<string>();
     // The roads are (re)built lazily, when the city first gets drawn or grows wider.
-    if (this.builtCols !== this.cols) {
-      this.builtCols = this.cols;
-      this.city.build(this.cols);
-      this.outskirts.build(this.cols);
+    if (this.builtKey !== this.planKey) {
+      this.builtKey = this.planKey;
+      this.city.build(this.plan);
+      this.outskirts.build(this.plan, this.planKey);
       this.park.build();
     }
     this.park.update(dt);
     cullChunks(f.x, f.z);
+    this.outskirts.lod(f.x, f.z);
     if (this.skyRebuild) {
       this.skyRebuild = false;
       this.buildSkyline();

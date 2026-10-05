@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NPC_HOUSE_ID, NPC_OWNER, Street, type StreetLot } from '../src/world/street';
+import { slotOpen } from '../src/world/plan';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0 } from '../src/world/grid';
 import {
   AVE_W, BLOCK_COLS, MAX_DEPTH, MIN_COLS, ROW_GAP, STREET_ROWS, avenueMid, colX, fillerFor, globalToSlot, onRoadNetwork, slotAt, slotToGlobal, streetZ,
@@ -34,7 +35,8 @@ describe('city plan', () => {
   });
 
   it('only the roads and sidewalks are walkable', () => {
-    for (let r = 0; r < STREET_ROWS; r++) expect(onRoadNetwork(colX(2) + CENTER_X, streetZ(r), MIN_COLS)).toBe(true);
+    // Column 20 is in the middle of town: every street runs past it.
+    for (let r = 0; r < STREET_ROWS; r++) expect(onRoadNetwork(colX(20) + CENTER_X, streetZ(r), MIN_COLS)).toBe(true);
     // Down an avenue, halfway between two streets
     expect(onRoadNetwork(avenueMid(1), (streetZ(0) + streetZ(1)) / 2, MIN_COLS)).toBe(true);
     // Inside a lot, behind its facade
@@ -65,7 +67,11 @@ describe('the city street', () => {
   it('fills every unused slot with a filler and keeps slots unique', () => {
     const keys = new Set(st.lots.map((l) => JSON.stringify(st.placeOf(l.id))));
     expect(keys.size).toBe(st.lots.length);
-    expect(st.lots.length).toBe(STREET_ROWS * st.cols * 2);
+    // A lot in every slot inside the city's outline (none in the river, none out in the bays).
+    let open = 0;
+    for (let row = 0; row < STREET_ROWS; row++) for (let col = 0; col < st.cols; col++) for (const side of [0, 1] as const) if (slotOpen({ row, col, side }, st.cols)) open++;
+    expect(open).toBeLessThan(STREET_ROWS * st.cols * 2);
+    expect(st.lots.length).toBe(open);
     // 6 player buildings, the gun shop, the car dealer and Uncle Sal's house.
     expect(st.lots.filter((l) => l.kind === 'filler').length).toBe(st.lots.length - 9);
     expect(st.get('shop:cars')?.info.style).toBe('dealer');

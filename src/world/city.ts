@@ -170,7 +170,18 @@ export function cityX(cols: number): [number, number] {
 }
 
 /** Can you walk here (global tile centre)? Sidewalks and roads of every street and avenue. */
+let roadPlan: { cols: number; on: (gx: number, gz: number) => boolean; lot?: (gx: number, gz: number) => boolean } | null = null;
+/**
+ * The street's plan: which streets and avenues exist (`on`) and which lots (`lot`), set when
+ * it knows its lots.
+ */
+export function setRoadPlan(p: { cols: number; on: (gx: number, gz: number) => boolean; lot?: (gx: number, gz: number) => boolean } | null): void {
+  roadPlan = p;
+}
+
+/** Can you walk here (global)? The sidewalks and roads of the city's streets and avenues. */
 export function onRoadNetwork(gx: number, gz: number, cols: number): boolean {
+  if (roadPlan && roadPlan.cols === cols) return roadPlan.on(gx, gz);
   const [x0, x1] = cityX(cols);
   if (gx < x0 || gx > x1) return false;
   for (let r = 0; r < STREET_ROWS; r++) {
@@ -186,7 +197,7 @@ export function onRoadNetwork(gx: number, gz: number, cols: number): boolean {
   return false;
 }
 
-/** How far the open desert reaches past the city edge before the mountains (metres). */
+/** How far the open desert reached past the city edge in the old valley (metres; landmarks still use it). */
 export const WILDS = 560;
 
 let cityBlock: ((gx: number, gz: number) => boolean) | null = null;
@@ -199,19 +210,27 @@ export function setCityObstacles(fn: ((gx: number, gz: number) => boolean) | nul
 }
 
 /**
- * Inside the city but off the roads: backyards, the gaps between buildings, alleys and parks.
- * Open unless a building (or a lake) stands there.
+ * On one of the city's lots but off the roads: backyards, the gaps between buildings, alleys
+ * and parks. Open unless a building (or a lake) stands there.
  */
 export function inCityOpen(gx: number, gz: number, cols: number, solid = cityBlock): boolean {
   if (!solid) return false;
   const [x0, x1] = cityX(cols);
   const [z0, z1] = cityZ();
   if (gx < x0 || gx > x1 || gz < z0 || gz > z1) return false;
+  if (roadPlan?.lot && roadPlan.cols === cols && !roadPlan.lot(gx, gz)) return false;
   return !solid(gx, gz);
 }
 
-/** Out past the city edge, in the open desert (not yet in the mountains). */
+let wilds: ((gx: number, gz: number) => boolean) | null = null;
+/** Who knows the land round the city (the outskirts, once it's laid out): can you be at this point? */
+export function setWilds(fn: ((gx: number, gz: number) => boolean) | null): void {
+  wilds = fn;
+}
+
+/** Out of town (off the lots and streets), on land you can walk or drive. */
 export function inWilds(gx: number, gz: number, cols: number): boolean {
+  if (wilds) return wilds(gx, gz);
   const [x0, x1] = cityX(cols);
   const [z0, z1] = cityZ();
   if (gx >= x0 && gx <= x1 && gz >= z0 && gz <= z1) return false;

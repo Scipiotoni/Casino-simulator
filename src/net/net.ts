@@ -1333,7 +1333,7 @@ export class Net {
       const inst = dt > 0 ? Math.hypot(r.x - px, r.z - pz) / dt : 0;
       r.vel += (Math.min(12, inst) - r.vel) * Math.min(1, dt * 8);
       const m = r.model;
-      m.root.position.set(r.x, outside ? g.streetDrop : 0, r.z);
+      m.root.position.set(r.x, outside ? g.streetDrop + g.street.groundY(r.x, r.z) : 0, r.z);
       r.fx.update(dt, true);
       m.root.rotation.y = dampAngle(m.root.rotation.y, yawNow + (known ? g.street.rotOf(lotId) : 0), 14, dt);
       if (r.car) {

@@ -7,7 +7,7 @@ import { buildGun } from '../items/models/guns';
 import { gunDef } from '../game/guns';
 import { Dyn, bake } from '../items/models/common';
 import { buildCar, carDef } from './vehicles';
-import { cityX, cityZ } from './city';
+import { MIN_COLS, cityX, cityZ } from './city';
 import { RING } from './outskirts';
 import { instancedChunks, place } from './nature';
 import { audio } from '../core/audio';
@@ -34,15 +34,16 @@ export function armoryRefillLeft(at: number | undefined, now = Date.now()): numb
 }
 
 /**
- * Where the base sits (global frame): out in the western desert, past the ring road, with a
- * road from the ring to its gate. Kept clear of rocks and cacti by the outskirts.
+ * Where the base sits (global frame): out on the western plain, well past the ring road, with
+ * a stretch of road in front of its gate (Fort Mojave Road carries on from there to the ring
+ * road). Kept clear of rocks and cacti by the outskirts.
  */
 export function baseSite(cols: number): { cx: number; cz: number; roadX0: number; roadX1: number } {
-  const [x0] = cityX(cols);
+  const [x0] = cityX(Math.min(cols, MIN_COLS));
   const [z0, z1] = cityZ();
-  const cx = x0 - RING - 70 - BASE_HW;
+  const cx = x0 - RING - 230 - BASE_HW;
   const cz = (z0 + z1) / 2;
-  return { cx, cz, roadX0: cx + BASE_HW, roadX1: x0 - RING - 5 };
+  return { cx, cz, roadX0: cx + BASE_HW, roadX1: cx + BASE_HW + 50 };
 }
 
 /** Is this point inside the base, or on its access road (keep the scenery off it)? */

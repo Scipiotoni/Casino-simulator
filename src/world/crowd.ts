@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CharacterModel } from '../entities/characterModel';
 import { randomCustomerAppearance, touristAppearance, vipAppearance } from '../entities/appearance';
 import { AVE_WALK, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from './city';
+import { groundAt } from './terrain';
 
 /** A door on the street people walk in and out of (global frame). */
 export interface DoorSpot {
@@ -88,10 +89,14 @@ export class Crowd {
     return best;
   }
 
+  /** Which streets and avenues exist (people cross where avenues cross their street). */
+  plan: import('./plan').CityPlan | null = null;
+
   /** Crosswalk x positions (both sides of every avenue). */
   private crossings(): number[] {
     const out: number[] = [];
     for (let k = 0; k <= blocksFor(this.cols); k++) {
+      if (this.plan && !this.plan.avenues[k]) continue;
       const [a, b] = avenueX(k);
       out.push(a + AVE_WALK - 1.3 + 0.3, b - AVE_WALK + 1.3 - 0.3);
     }
@@ -327,7 +332,7 @@ export class Crowd {
       }
       if (p.fight) {
         this.updateBrawler(p, p.fight, dt);
-        p.model.root.position.set(p.x, 0, p.z);
+        p.model.root.position.set(p.x, groundAt(p.x, p.z), p.z);
         if (visible) p.model.update(dt);
         continue;
       }
