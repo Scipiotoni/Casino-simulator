@@ -55,6 +55,8 @@ export interface GunDef {
   kick?: number;
   /** Not sold anywhere: everyone has it (your fists). */
   builtin?: boolean;
+  /** Not sold anywhere: stolen from the secret lab under Fort Mojave. */
+  secret?: boolean;
   blurb: string;
 }
 
@@ -80,6 +82,20 @@ export const GUNS: GunDef[] = [
   { id: 'railgun', name: 'Railgun', kind: 'railgun', price: 400000, unlock: 15, rate: 0.8, auto: false, mag: 5, reload: 2.6, pellets: 1, spread: 0, range: 180, color: 0x1b2748, tracer: 0x9b7bff, twoHand: true, dmg: 120, charge: 1.1, pierce: 3, headMul: 2, kick: 0.08, adsFov: 30, blurb: 'Hold to charge, release to fire a beam that goes through up to three people. Full charge is deadly.' },
   { id: 'minigun', name: 'Minigun', kind: 'minigun', price: 250000, unlock: 13, rate: 20, auto: true, mag: 200, reload: 3.2, pellets: 1, spread: 0.07, range: 60, color: 0x3a3c44, tracer: 0xffb45a, twoHand: true, dmg: 10, adsFov: 55, blurb: 'Six spinning barrels and two hundred rounds.' },
 ];
+
+/**
+ * The black-site prototypes in the lab under Fort Mojave. Nobody sells these: you have to
+ * steal them, one glass case at a time.
+ */
+GUNS.push(
+  { id: 'gauss', secret: true, name: 'Gauss Cannon', kind: 'railgun', price: 0, unlock: 1, rate: 1.1, auto: false, mag: 6, reload: 2.2, pellets: 1, spread: 0, range: 230, color: 0x1b2748, tracer: 0x2fe6ff, twoHand: true, dmg: 260, pierce: 8, headMul: 2, kick: 0.1, adsFov: 26, blurb: 'A magnetic slug through eight people in a row. No charging, no mercy.' },
+  { id: 'plasma', secret: true, name: 'Plasma Repeater', kind: 'laser', price: 0, unlock: 1, rate: 12, auto: true, mag: 90, reload: 1.3, pellets: 1, spread: 0.008, range: 120, color: 0x17151f, tracer: 0x39ff88, twoHand: true, dmg: 36, pierce: 2, kick: 0.004, adsFov: 42, blurb: 'Green plasma bolts, twelve a second, through two targets at once.' },
+  { id: 'thunder', secret: true, name: 'Thunderbolt Minigun', kind: 'minigun', price: 0, unlock: 1, rate: 32, auto: true, mag: 600, reload: 2.8, pellets: 1, spread: 0.04, range: 95, color: 0x2a2c30, tracer: 0xff3fa4, twoHand: true, dmg: 24, kick: 0.004, adsFov: 52, blurb: 'Six hundred rounds at thirty-two a second. The air turns pink.' },
+  { id: 'dragon', secret: true, name: 'Dragon Auto-Shotgun', kind: 'shotgun', price: 0, unlock: 1, rate: 5, auto: true, mag: 32, reload: 2, pellets: 12, spread: 0.15, range: 34, color: 0x7a0717, tracer: 0xff8a1f, twoHand: true, dmg: 34, kick: 0.035, adsFov: 56, blurb: 'Full-auto, twelve heavy pellets a shot, a drum of thirty-two.' },
+  { id: 'swarm', secret: true, name: 'Swarm Launcher', kind: 'launcher', price: 0, unlock: 1, rate: 4, auto: true, mag: 16, reload: 2.6, pellets: 1, spread: 0.02, range: 110, color: 0x3a4a5a, tracer: 0xffc53d, twoHand: true, dmg: 0, projectile: { speed: 44, gravity: 2 }, explosive: { radius: 6, power: 170 }, kick: 0.03, adsFov: 50, blurb: 'Hold the trigger: sixteen mini-rockets, four a second.' },
+  { id: 'nuke', secret: true, name: 'Micro-Nuke Launcher', kind: 'rocket', price: 0, unlock: 1, rate: 0.35, auto: false, mag: 1, reload: 4.5, pellets: 1, spread: 0.002, range: 200, color: 0xffd23f, tracer: 0xffe46b, twoHand: true, dmg: 0, projectile: { speed: 32, gravity: 3 }, explosive: { radius: 20, power: 900 }, kick: 0.16, adsFov: 45, blurb: 'One tiny warhead, a twenty-metre fireball. Do not fire it at your feet.' },
+  { id: 'goldgun', secret: true, name: 'The Golden Gun', kind: 'cannon', price: 0, unlock: 1, rate: 0.9, auto: false, mag: 1, reload: 1.4, pellets: 1, spread: 0, range: 140, color: 0xf2b632, tracer: 0xffd23f, twoHand: false, dmg: 999, headMul: 1, kick: 0.09, adsFov: 40, blurb: 'One golden bullet. One knockout. Every time.' },
+);
 
 /** Melee weapons (also sold at Bullseye Guns). Swing rate, reach in metres. */
 GUNS.push(

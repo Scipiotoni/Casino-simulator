@@ -50,6 +50,7 @@ export class Hud {
   private knobEl!: HTMLElement;
   private fpsEl!: HTMLElement;
   private eventChip!: HTMLElement;
+  private missionChip!: HTMLElement;
   private toolbar!: HTMLElement;
   private shownMoney = 0;
   private refreshT = 0;
@@ -114,6 +115,7 @@ export class Hud {
     const menuBtn = h('button', { class: 'pill icon-btn', html: icon('menu'), 'aria-label': 'Menu', onClick: () => this.modals.openMenu() });
     const top = h('header', { class: 'topbar' }, brand, bank, h('div', { class: 'top-right' }, clock, menuBtn));
     this.eventChip = h('div', { class: 'event-chip', hidden: true });
+    this.missionChip = h('div', { class: 'mission-chip', hidden: true, role: 'status' });
 
     // Goals
     this.goalsList = h('div', { class: 'goals-list' });
@@ -181,7 +183,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(this.combatHud.el, this.chat.el, top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(this.combatHud.el, this.chat.el, top, this.eventChip, this.missionChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -871,6 +873,13 @@ export class Hud {
     this.heistUi.update();
     this.minimap.update(dt);
     this.gunBar.update();
+    const ms = g.state === 'playing' ? g.missionStatus : null;
+    this.missionChip.hidden = !ms;
+    if (ms) {
+      if (this.missionChip.textContent !== ms.text) this.missionChip.textContent = ms.text;
+      const cls = `mission-chip ${ms.kind}`;
+      if (this.missionChip.className !== cls) this.missionChip.className = cls;
+    }
     this.combatHud.update(dt);
     this.root.classList.toggle('fp', g.cam.mode === 'first' && g.state === 'playing');
     const up = g.inside && g.player.floor > 0;

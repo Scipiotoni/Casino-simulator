@@ -140,7 +140,7 @@ export class Renderer {
    * Light the world from the sky (sun or moon, sky fill, fog). `indoor` (0..1) blends towards
    * the casino's own warm lighting, which doesn't care what time it is outside.
    */
-  applySky(L: { dir: THREE.Vector3; sunColor: THREE.Color; sunIntensity: number; hemiSky: THREE.Color; hemiGround: THREE.Color; hemiIntensity: number; fog: THREE.Color; fogNear: number; fogFar: number; exposure: number; night: number }, indoor: number): void {
+  applySky(L: { dir: THREE.Vector3; sunColor: THREE.Color; sunIntensity: number; hemiSky: THREE.Color; hemiGround: THREE.Color; hemiIntensity: number; fog: THREE.Color; fogNear: number; fogFar: number; exposure: number; night: number }, indoor: number, under = 0): void {
     const night = L.night;
     const c = this.tmpC;
     this.hemi.color.copy(L.hemiSky).lerp(c.setHex(0xfff1dd), indoor);
@@ -155,7 +155,20 @@ export class Renderer {
     // The view distance setting pushes the haze back (or pulls it in).
     fog.near = L.fogNear * VIEW.scale;
     fog.far = L.fogFar * VIEW.scale;
-    const want = indoor > 0.5 ? c.setRGB(-14, 26, 10) : c.setRGB(L.dir.x, L.dir.y, L.dir.z);
+    if (under > 0.001) {
+      // Underground (the lab under Fort Mojave): cold strip lighting, black rock all round.
+      this.hemi.color.lerp(c.setHex(0x9fb4c8), under);
+      this.hemi.groundColor.lerp(c.setHex(0x14110e), under);
+      this.hemi.intensity = THREE.MathUtils.lerp(this.hemi.intensity, 0.55, under);
+      this.sun.color.lerp(c.setHex(0xdfe9ff), under);
+      this.sun.intensity = THREE.MathUtils.lerp(this.sun.intensity, 0.35, under);
+      this.renderer.toneMappingExposure = THREE.MathUtils.lerp(this.renderer.toneMappingExposure, 1.15, under);
+      if (this.bloom) this.bloom.strength = THREE.MathUtils.lerp(this.bloom.strength, 0.28, under);
+      fog.color.lerp(c.setHex(0x07060a), under);
+      fog.near = THREE.MathUtils.lerp(fog.near, 22, under);
+      fog.far = THREE.MathUtils.lerp(fog.far, 75, under);
+    }
+    const want = indoor > 0.5 || under > 0.5 ? c.setRGB(-14, 26, 10) : c.setRGB(L.dir.x, L.dir.y, L.dir.z);
     const d = new THREE.Vector3(want.r, want.g, want.b).normalize();
     if (d.distanceToSquared(this.sunDir) > 0.0004) {
       this.sunDir.copy(d);

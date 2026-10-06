@@ -454,6 +454,14 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
     const m = o as THREE.Mesh;
     if (m.isMesh) m.castShadow = false;
   });
+  // The lab's prototypes: glowing power lines down both sides.
+  if (def.secret && !beam) {
+    const bb = new THREE.Box3().setFromObject(g);
+    const len = (bb.max.z - bb.min.z) * 0.62;
+    const y = bb.min.y + (bb.max.y - bb.min.y) * 0.58;
+    const zc = (bb.max.z + bb.min.z) / 2;
+    for (const sx of [-1, 1]) box(g, 0.006, 0.012, len, glow(def.tracer, 2.4), sx * (bb.max.x + 0.002), y, zc);
+  }
   return { group: g, muzzle, spin, ...optics, blockers: optics.sight ? sightBlockers(g, optics.sight) : [] };
 }
 

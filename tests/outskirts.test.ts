@@ -231,7 +231,8 @@ describe('more cars, smaller hitboxes', () => {
     for (const c of CARS) {
       const m = buildCar(c);
       expect(m.wheels.length).toBeGreaterThanOrEqual(4);
-      expect(m.length).toBeGreaterThan(3);
+      // The City Duo two-seater is a real 2.7 m microcar; anything shorter would be a bug.
+      expect(m.length).toBeGreaterThan(2.5);
     }
   });
 

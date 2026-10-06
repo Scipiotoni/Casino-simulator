@@ -21,6 +21,8 @@ export class CameraRig {
   distTarget = 17;
   readonly minDist = 8;
   readonly maxDist = 36;
+  /** A ceiling on how far out the camera can pull (underground it has to stay in the cave). */
+  distCap = Infinity;
   readonly focus = new THREE.Vector3();
   private shakeAmt = 0;
   private shakeT = 0;
@@ -66,7 +68,7 @@ export class CameraRig {
   snap(x: number, z: number): void {
     this.focus.set(x, 0, z);
     this.yaw = this.yawTarget;
-    this.dist = this.distTarget;
+    this.dist = Math.min(this.distTarget, this.distCap);
   }
 
   rotate(dir: number): void {
@@ -208,7 +210,7 @@ export class CameraRig {
       this.focus.z = damp(this.focus.z, tz, 7, dt);
     }
     this.yaw = dampAngle(this.yaw, this.yawTarget, 9, dt);
-    this.dist = damp(this.dist, this.distTarget, 8, dt);
+    this.dist = damp(this.dist, Math.min(this.distTarget, this.distCap), 8, dt);
     const zt = (this.dist - this.minDist) / (this.maxDist - this.minDist);
     const pitch = lerp(0.82, 1.08, zt);
     const horiz = Math.cos(pitch) * this.dist;

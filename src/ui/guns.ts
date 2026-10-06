@@ -16,7 +16,8 @@ export function openGunShop(game: Game, modals: Modals): void {
     clear(body);
     body.appendChild(h('p', { class: 'muted small', text: 'Guns and melee weapons only work out on the streets and sidewalks; inside any building they stay put away. Put what you own on keys 1–5 with the number buttons under each one. Paid from the cash you have on you.' }));
     const grid = h('div', { class: 'gun-grid' });
-    const guns = GUNS.filter((d) => !d.melee);
+    // The lab's prototypes aren't for sale: they only show up here once you've stolen them.
+    const guns = GUNS.filter((d) => !d.melee && (!d.secret || g.guns.owned.includes(d.id)));
     const melee = GUNS.filter((d) => d.melee && !d.builtin);
     for (const d of [...guns, ...melee]) {
       if (d === melee[0]) grid.appendChild(h('div', { class: 'gun-sep', text: '🏏 Melee' }));
@@ -26,7 +27,7 @@ export function openGunShop(game: Game, modals: Modals): void {
       const mods = owned ? gunModsOf(g.guns, d.id) : null;
       const t = tunedGun(d, mods);
         const kind = d.flame ? 'Flame cone' : d.explosive ? `Explosive (${d.explosive.power} blast, ${d.explosive.radius} m)` : d.charge ? 'Charge shot · pierces 3' : d.burst ? `${d.burst}-round burst` : d.auto ? 'Full auto' : 'Semi-auto';
-      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${kind} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''}${d.dmg ? ` · ${d.dmg} damage` : ''}${d.headMul && d.headMul !== 2 ? ` · ×${d.headMul} headshots` : ''} · range ${Math.round(t.range)} m`;
+      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${kind} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''}${d.dmg ? ` · ${d.dmg} damage` : ''}${d.pierce && !d.charge ? ` · pierces ${d.pierce}` : ''}${d.headMul && d.headMul !== 2 ? ` · ×${d.headMul} headshots` : ''} · range ${Math.round(t.range)} m`;
       const fitted = mods ? gunModsSummary(mods) : '';
       const slotRow = h('div', { class: 'slot-row' });
       if (owned) {
@@ -43,6 +44,7 @@ export function openGunShop(game: Game, modals: Modals): void {
       grid.appendChild(h('div', { class: `gun-card${on ? ' on' : ''}${locked ? ' locked' : ''}` },
         h('img', { class: 'gun-thumb', src: gunThumb(d, mods), alt: '' }),
         h('div', { class: 'gun-name', text: d.name }),
+        d.secret ? h('div', { class: 'gun-stats pos', text: '🧪 Prototype stolen from Site 51-B · not for sale' }) : null,
         h('div', { class: 'muted small', text: d.blurb }),
         h('div', { class: 'gun-stats', text: stats }),
         fitted ? h('div', { class: 'gun-stats pos', text: `🎨 ${fitted}` }) : null,

@@ -55,6 +55,7 @@ import {
   garageTier,
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
+import { BUNKER_Y } from '../world/bunker';
 import { GunPlay } from './gunplay';
 import { FISTS, SLOTS, autoSlot, hasWeapon } from './guns';
 import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
@@ -380,6 +381,8 @@ export class Game implements World, ItemHost {
   private hoverT = 0;
   private hoverUid = -1;
   private indoorT = 1;
+  /** Blends the lighting to the bunker's (0 up top, 1 underground). */
+  private underT = 0;
   /** The sky (and the light it casts), driven by the clock. */
   readonly sky = new Sky();
   /** Is the player inside the loaded casino (not out on the street)? */
@@ -431,7 +434,8 @@ export class Game implements World, ItemHost {
     this.street.city.group.add(this.base.group);
     this.street.outskirts.extraBlock = (x, z) => this.base.blocked(x, z);
     // Out on the land you stand on the ground (and so does the camera, the dust and the smoke).
-    const ground = (x: number, z: number) => this.street.groundY(x, z);
+    // Down in the bunker under Fort Mojave the floor is far below the desert.
+    const ground = (x: number, z: number) => (this.underground ? BUNKER_Y : this.street.groundY(x, z));
     this.player.groundFn = ground;
     this.cam.groundFn = (x, z) => ground(x, z) + this.streetDrop;
     this.effects.ground = ground;
@@ -461,6 +465,8 @@ export class Game implements World, ItemHost {
           x: pg.x, z: pg.z, exposed: this.combat.exposed && this.combat.ko <= 0, height: this.player.model.height,
           car: car ? { x: car.x, z: car.z, uid: car.uid, armor: car.armor } : null,
           speed: car ? Math.abs(car.speed) : this.player.speed,
+          under: this.underground,
+          ko: this.combat.ko > 0,
         };
       },
       lineOfSight: (ax, az, bx, bz) => st().police.lineOfSight(ax, az, bx, bz),
@@ -498,6 +504,7 @@ export class Game implements World, ItemHost {
       vehicleParked: (uid) => this.drive.vehicles.some((v) => v.uid === uid && v.base && v.wreck < 0),
       alarm: (first) => st().police.crime(first ? POLICE_HEAT.base : 0.04),
       notify: (text, kind) => this.notify(text, kind),
+      ownsGun: (id) => hasWeapon(this.guns.owned, id),
     });
   }
 
@@ -3359,6 +3366,7 @@ export class Game implements World, ItemHost {
     this.standUp();
     if (this.build.active) this.build.cancel();
     this.select(null);
+    this.underground = false;
     const wasUp = this.player.floor;
     this.player.floor = 0;
     this.player.x = w.x;
@@ -3541,6 +3549,10 @@ export class Game implements World, ItemHost {
 
   /** Walkability for the manager: the floor they're on, plus the whole sidewalk outside. */
   private playerWalk = (tx: number, tz: number): boolean => {
+    if (this.underground) {
+      const gl = this.street.worldToGlobal(tx + 0.5, tz + 0.5);
+      return this.base.bunker.walkable(gl.x, gl.z);
+    }
     const g = this.gridAt(this.player.floor);
     // A burglar can't walk through a locked door they haven't cracked.
     if (this.heist && !this.heist.doorOpenFor(this.player.floor, tx, tz)) return false;
@@ -3852,6 +3864,29 @@ export class Game implements World, ItemHost {
         act: () => this.goToFloor(to),
       };
     }
+    // The secret lab under Fort Mojave: the hatch, the ladder and the glass cases.
+    if (!target && !this.inside && !this.drive.driving) {
+      const b = this.base.bunker;
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      const anchor = () => new THREE.Vector3(this.player.x, this.player.y + 2.4, this.player.z);
+      if (this.underground) {
+        if (b.atLadder(pg.x, pg.z)) {
+          target = { kind: 'ladder', label: '🪜 Climb back up the ladder', hold: false, anchor, act: () => this.setUnderground(false) };
+        } else {
+          const c = b.caseAt(pg.x, pg.z);
+          const d = c ? gunDef(c.id) : null;
+          if (c && d) {
+            const mine = hasWeapon(this.guns.owned, c.id);
+            target = {
+              kind: `case${c.id}`, label: mine ? `✅ ${d.name}: already yours` : c.taken ? `${d.name}: the case is empty` : `🧪 Smash the case: take the ${d.name}`,
+              hold: !mine && !c.taken, anchor, act: () => this.takeBunkerGun(c.id),
+            };
+          }
+        }
+      } else if (b.atHatch(pg.x, pg.z)) {
+        target = { kind: 'hatch', label: '🕳 Lift the rusty hatch and climb down', hold: false, anchor, act: () => this.setUnderground(true) };
+      }
+    }
     // Fort Mojave's armory: crack it for the army payroll (and the whole base comes after you).
     if (!target && !this.inside && !this.drive.driving) {
       const pg = this.street.worldToGlobal(p.x, p.z);
@@ -3863,6 +3898,32 @@ export class Game implements World, ItemHost {
           kind: 'armory', label: left > 0 ? `🔒 Armory cleaned out · restocked in ${waitText(left)}` : `💰 Raid the armory (${formatMoney(armoryPayroll(this.homeLevel))})`, hold: left <= 0,
           anchor: () => new THREE.Vector3(aw.x, 3.2, aw.z),
           act: () => this.raidArmory(),
+        };
+      }
+    }
+    // Fort Mojave's prototype vault: swipe the commander's keycard and survive the time lock.
+    if (!target && !this.inside && !this.drive.driving) {
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      if (this.base.atVault(pg.x, pg.z)) {
+        const b = this.base;
+        const v = b.vault;
+        const door = b.vaultDoor;
+        const aw = this.street.globalToWorld(door.x, door.z);
+        const ready = v.state === 'locked' && b.keycard === 'player';
+        target = {
+          kind: 'vault',
+          label: v.state === 'open' ? '🔓 The vault is open: get the Prototype X-1 out'
+            : v.state === 'unlocking' ? `⏳ Time lock running: ${Math.ceil(v.left)} s`
+            : ready ? '🪪 Swipe the keycard (starts a 30 s time lock)' : '🔒 Prototype vault · needs the base commander’s Level 5 keycard',
+          hold: ready,
+          anchor: () => new THREE.Vector3(aw.x, 2.4, aw.z),
+          act: () => {
+            if (b.swipeKeycard()) return;
+            if (v.state === 'locked') {
+              audio.play('error');
+              this.notify('🔒 The vault needs a Level 5 keycard. The base commander carries one: he walks the front of HQ with two bodyguards.', 'bad');
+            }
+          },
         };
       }
     }
@@ -4123,6 +4184,63 @@ export class Game implements World, ItemHost {
     if (this.pushNoteT > 0) return;
     this.pushNoteT = 8;
     this.notify('A building grew where you were standing: you were pushed outside.', 'info');
+  }
+
+  /** The bunker's line for the HUD. */
+  get bunkerStatus(): { text: string; kind: 'alert' | 'info' } | null {
+    return this.base.bunker.status(this.underground);
+  }
+
+  /** Climb down the hatch into the secret lab (or back up the ladder). */
+  private setUnderground(down: boolean): void {
+    const b = this.base.bunker;
+    const at = down ? b.ladder : { x: b.hatch.x + 1.4, z: b.hatch.z };
+    const w = this.street.globalToWorld(at.x, at.z);
+    this.underground = down;
+    this.standUp();
+    this.player.floor = 0;
+    this.player.x = w.x;
+    this.player.z = w.z;
+    this.player.halt();
+    this.player.y = down ? BUNKER_Y : this.street.groundY(w.x, w.z);
+    this.cam.distCap = down ? 22 : Infinity;
+    this.cam.snap(w.x, w.z);
+    this.doorCooldown = 1;
+    this.transitionT = 0.4;
+    audio.play('whoosh');
+    if (down) {
+      this.gunplay.drop();
+      this.stats.bunkerVisits = (this.stats.bunkerVisits ?? 0) + 1;
+      if (this.stats.bunkerVisits === 1) this.notify('🕳 A shaft under the minefield… a secret weapons lab. Mind the lasers.', 'good');
+    } else this.notify('You climb back out of the hatch.', 'info');
+  }
+
+  /** Smash a case in the lab and take the prototype inside: the lab locks down. */
+  private takeBunkerGun(id: string): void {
+    const d = gunDef(id);
+    if (!d || hasWeapon(this.guns.owned, id) || !this.base.bunker.take(id)) return;
+    const next = { owned: [...this.guns.owned, id], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } };
+    autoSlot(next, id);
+    this.guns = next;
+    this.stats.bunkerGuns = (this.stats.bunkerGuns ?? 0) + 1;
+    const key = next.slots.indexOf(id);
+    this.notify(`🧪 You stole the ${d.name}${key >= 0 ? ` (key ${key + 1})` : ''}! It only fires out on the street. Now get out alive.`, 'good');
+    this.events.emit('guns', undefined);
+    this.saveNow();
+  }
+
+  /** A live objective line for the HUD (the vault's time lock, the keycard, the bunker), or null. */
+  get missionStatus(): { text: string; kind: 'alert' | 'info' } | null {
+    const v = this.base.vault;
+    if (v.state === 'unlocking') {
+      return v.paused
+        ? { text: `⏸ VAULT TIME LOCK PAUSED · ${Math.ceil(v.left)}s · get back to the door!`, kind: 'alert' }
+        : { text: `⏳ VAULT TIME LOCK ${Math.ceil(v.left)}s · hold the door`, kind: 'alert' };
+    }
+    const bunker = this.bunkerStatus;
+    if (bunker) return bunker;
+    if (this.base.keycard === 'player' && v.state === 'locked') return { text: '🪪 Level 5 keycard · swipe it at the Hangar 3 vault', kind: 'info' };
+    return null;
   }
 
   /** Crack the Fort Mojave armory: the army payroll is yours, and the whole base comes after you. */
@@ -4859,6 +4977,13 @@ export class Game implements World, ItemHost {
     // Driving (before the player, who sits in the car)
     if (playing && sim > 0) {
       this.drive.update(sim);
+      // Never left "underground" anywhere but in the lab (taken home, driving, teleported).
+      if (this.underground) {
+        const pg = this.street.worldToGlobal(this.player.x, this.player.z);
+        const h = this.base.bunker.hatch;
+        if (this.inside || this.drive.driving || Math.hypot(pg.x - h.x - 24, pg.z - h.z) > 60) this.underground = false;
+      }
+      this.cam.distCap = this.underground ? 22 : Infinity;
       this.base.update(sim, this.street.cols, !this.inside);
     } else audio.engine(null);
     // Waypoint: the beacon out in the world, cleared once you get there.
@@ -5073,7 +5198,8 @@ export class Game implements World, ItemHost {
     this.street.outskirts.update(dt, this.sky.light.night);
     const indoor = this.inside && this.cam.mode !== 'top' ? 1 : this.inside ? 0.7 : 0;
     this.indoorT = damp(this.indoorT, indoor, 3, dt);
-    this.renderer.applySky(this.sky.light, this.indoorT);
+    this.underT = this.underground ? Math.min(1, this.underT + dt * 3) : Math.max(0, this.underT - dt * 3);
+    this.renderer.applySky(this.sky.light, this.indoorT, this.underT);
     if (!render) return;
     const { w, h } = this.renderer.size;
     this.floaters.update(dt, this.renderer.camera, w, h);
@@ -5084,6 +5210,8 @@ export class Game implements World, ItemHost {
   private itemsInside = true;
   /** How far the street is drawn below you (you're upstairs). */
   streetDrop = 0;
+  /** Down in the secret lab under Fort Mojave (its own floor height; nothing up top can see you). */
+  underground = false;
 
   /** Only the floor you're on is drawn, and the inside of the building only while you're in it. */
   private updateVisibility(): void {

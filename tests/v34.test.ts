@@ -144,6 +144,7 @@ function fakeHost(over: Partial<BaseHost> = {}): FakeHost {
       h.alarms++;
     },
     notify: () => undefined,
+    ownsGun: () => false,
     ...over,
   };
   return h;

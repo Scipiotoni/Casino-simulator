@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mat, glow } from '../render/materials';
+import { mat, glow, chrome } from '../render/materials';
 import { asphaltTexture, canvasTexture, makeCanvas } from '../render/textures';
 import { CharacterModel } from '../entities/characterModel';
 import { defaultAppearance, SKIN_TONES, type Appearance } from '../entities/appearance';
@@ -13,11 +13,20 @@ import { instancedChunks, place } from './nature';
 import { audio } from '../core/audio';
 import { VIEW } from './viewDistance';
 import { occupantMesh } from '../entities/occupant';
+import { Bunker } from './bunker';
 
 /** Half size of the base (metres) and the gate's half width. */
 export const BASE_HW = 150;
 export const BASE_HD = 105;
 const GATE = 8;
+
+/** How long the vault's time lock runs once the keycard is swiped (you have to stay by the door). */
+export const VAULT_UNLOCK_S = 30;
+/** Stay this close to the vault door (metres) or the time lock pauses. */
+export const VAULT_STAY = 9;
+
+/** Who has the keycard to the prototype vault. */
+export type KeycardState = 'commander' | 'dropped' | 'player';
 
 /** The armory's payroll comes back this long after you raid it. */
 export const ARMORY_COOLDOWN_MS = 30 * 60 * 1000;
@@ -54,7 +63,7 @@ export function inBaseArea(gx: number, gz: number, cols: number, pad = 6): boole
   return gx > s.roadX0 - pad && gx < s.roadX1 + pad && Math.abs(gz - s.cz) < 6 + pad;
 }
 
-export type SoldierKind = 'rifle' | 'sniper' | 'elite';
+export type SoldierKind = 'rifle' | 'sniper' | 'elite' | 'commander';
 
 /** A soldier guarding the base (global frame; tower snipers stand up high). */
 export interface Soldier {
@@ -149,7 +158,7 @@ interface Slot {
 /** What the base needs from the game (kept small so the base stays testable). */
 export interface BaseHost {
   /** You (global frame), whether you're out where soldiers can shoot, and your car if driving. */
-  player(): { x: number; z: number; exposed: boolean; height: number; car: { x: number; z: number; uid: number; armor: number } | null; speed?: number };
+  player(): { x: number; z: number; exposed: boolean; height: number; car: { x: number; z: number; uid: number; armor: number } | null; speed?: number; under?: boolean; ko?: boolean };
   /** Can soldiers see from a to b (buildings block the view)? */
   lineOfSight(ax: number, az: number, bx: number, bz: number): boolean;
   /** Can a soldier stand here? */
@@ -167,10 +176,31 @@ export interface BaseHost {
   /** The alarm went off: the police are told (wanted level). */
   alarm(first: boolean): void;
   notify(text: string, kind: 'good' | 'bad' | 'info'): void;
+  /** Do you already own this gun (the bunker's cases)? */
+  ownsGun(id: string): boolean;
 }
 
-function soldierLook(elite: boolean): Appearance {
+function soldierLook(elite: boolean, commander = false): Appearance {
   const a = defaultAppearance();
+  if (commander) {
+    // Dress uniform, a maroon beret and gold on the shoulders.
+    a.skin = SKIN_TONES[Math.floor(Math.random() * SKIN_TONES.length)];
+    a.top = 'jacket';
+    a.topColor = 0x2f3a24;
+    a.accentColor = 0xd9b25a;
+    a.bottom = 'pants';
+    a.bottomColor = 0x2f3a24;
+    a.shoeColor = 0x0c0c10;
+    a.hat = 'beret';
+    a.hatColor = 0x7a1020;
+    a.neck = 'none';
+    a.eyewear = 'aviators';
+    a.facialHair = 'mustache';
+    a.hair = 'buzz';
+    a.prop = 'none';
+    a.blush = false;
+    return a;
+  }
   a.skin = SKIN_TONES[Math.floor(Math.random() * SKIN_TONES.length)];
   a.top = 'jacket';
   a.topColor = elite ? 0x23262a : 0x4b5320;
@@ -189,7 +219,7 @@ function soldierLook(elite: boolean): Appearance {
   return a;
 }
 
-const SOLDIER_HP: Record<SoldierKind, number> = { rifle: 150, sniper: 110, elite: 260 };
+const SOLDIER_HP: Record<SoldierKind, number> = { rifle: 150, sniper: 110, elite: 260, commander: 340 };
 /** Tower snipers stand on this. */
 const TOWER_Y = 6.15;
 
@@ -236,8 +266,30 @@ export class MilitaryBase {
   private moving: Machine | null = null;
   /** Where the armory door is (global). */
   armoryDoor = { x: 0, z: 0 };
+  /** The keycard to the prototype vault: on the commander, on the ground, or yours. */
+  keycard: KeycardState = 'commander';
+  private card: THREE.Group | null = null;
+  private cardAt = { x: 0, z: 0 };
+  /** Hangar 3's vault: locked, running its time lock (seconds left), or open. */
+  vault: { state: 'locked' | 'unlocking' | 'open'; left: number; paused: boolean } = { state: 'locked', left: 0, paused: false };
+  /** Where you stand to swipe the keycard (global). */
+  vaultDoor = { x: 0, z: 0 };
+  /** The vault door's collision (global rect) while it's shut. */
+  private vaultBlock: [number, number, number, number] = [0, 0, 0, 0];
+  private vaultParts: { pivot: THREE.Object3D; wheel: THREE.Object3D; bolts: THREE.Object3D[]; led: THREE.Mesh; beacon: THREE.Mesh; open: number } | null = null;
 
-  constructor(private host: BaseHost) {}
+  /** The secret weapons lab under the minefield. */
+  readonly bunker: Bunker;
+
+  constructor(private host: BaseHost) {
+    this.bunker = new Bunker({
+      shot: (hit, dmg, fx, fz, fy) => host.shot(hit, dmg, fx, fz, fy),
+      tracer: (...a) => host.tracer(...a),
+      notify: (t, k) => host.notify(t, k),
+      toWorld: (x, z) => host.toWorld(x, z),
+      owned: (id) => host.ownsGun(id),
+    });
+  }
 
   get alarm(): boolean {
     return this.alarmT > 0;
@@ -256,6 +308,10 @@ export class MilitaryBase {
   blocked(gx: number, gz: number): boolean {
     if (Math.abs(gx - this.cx) > BASE_HW + 4 || Math.abs(gz - this.cz) > BASE_HD + 4) return false;
     for (const [a, b, c, d] of this.rects) if (gx > a && gx < b && gz > c && gz < d) return true;
+    if (this.vault.state !== 'open' || (this.vaultParts?.open ?? 1) < 0.85) {
+      const [a, b, c, d] = this.vaultBlock;
+      if (gx > a && gx < b && gz > c && gz < d) return true;
+    }
     for (const c of this.circles) if ((gx - c.x) ** 2 + (gz - c.z) ** 2 < c.r * c.r) return true;
     for (const m of this.machines) {
       if (m === this.moving || m.kind === 'heli' || (m.kind === 'fuel' && m.dead >= 0)) continue;
@@ -285,6 +341,8 @@ export class MilitaryBase {
     this.beams = [];
     this.lasers = [];
     this.mines = [];
+    this.keycard = 'commander';
+    this.vault = { state: 'locked', left: 0, paused: false };
     const statics = new THREE.Group();
     this.group.add(statics);
     this.buildGround(statics, s.roadX0, s.roadX1);
@@ -294,6 +352,9 @@ export class MilitaryBase {
     bake(statics, new Dyn());
     this.buildMachines();
     this.buildSoldiers();
+    this.buildKeycard();
+    this.bunker.build(this.cx, this.cz);
+    this.group.add(this.bunker.group, this.bunker.hatchGroup);
     this.slots = [
       { id: 'tank', lx: -115, lz: -20, yaw: Math.PI / 2, uid: null, respawn: 0 },
       { id: 'apc', lx: -95, lz: -20, yaw: Math.PI / 2, uid: null, respawn: 0 },
@@ -301,7 +362,7 @@ export class MilitaryBase {
       { id: 'jeep', lx: -60, lz: -22, yaw: Math.PI / 2, uid: null, respawn: 0 },
       { id: 'jeep', lx: -50, lz: -22, yaw: Math.PI / 2, uid: null, respawn: 0 },
       { id: 'jeep', lx: -40, lz: -22, yaw: Math.PI / 2, uid: null, respawn: 0 },
-      { id: 'stealth', lx: -45, lz: -50, yaw: 0, uid: null, respawn: 0 },
+      { id: 'stealth', lx: -45, lz: -52, yaw: 0, uid: null, respawn: 0 },
     ];
     const f = new THREE.Sprite(new THREE.SpriteMaterial({ color: 0xffd28a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
     f.scale.setScalar(0.7);
@@ -510,6 +571,7 @@ export class MilitaryBase {
       plate.position.set(cx + hx, 8.6, cz + lz + D / 2 + 0.05);
       this.group.add(plate);
     }
+    this.buildVault(s);
     // The cargo plane parked on the runway.
     const plane = new THREE.Group();
     const grey = mat(0x7a8070, { rough: 0.6, metal: 0.3 });
@@ -666,6 +728,249 @@ export class MilitaryBase {
       s.add(d);
     }
     this.rect(-100.5, -98, 73.5, 76.3);
+  }
+
+  /**
+   * Hangar 3 is sealed: a steel front wall with a round bank-vault door, a keycard reader and
+   * a warning beacon. The Prototype X-1 sits inside under a spotlight.
+   */
+  private buildVault(s: THREE.Group): void {
+    const { cx, cz } = this;
+    const hx = -45;
+    const front = -40;
+    const W = 28;
+    const R = 3.3;
+    const steel = mat(0x5d6250, { metal: 0.45, rough: 0.55, side: THREE.DoubleSide });
+    // The front wall: the arch of the hangar, down to the ground, with a round hole for the door.
+    const sh = new THREE.Shape();
+    sh.moveTo(-W / 2, 0);
+    sh.lineTo(W / 2, 0);
+    sh.lineTo(W / 2, 3);
+    for (let i = 0; i <= 24; i++) {
+      const a = (i / 24) * Math.PI;
+      sh.lineTo(Math.cos(a) * W / 2, 3 + Math.sin(a) * (W / 2) * 0.75);
+    }
+    sh.lineTo(-W / 2, 0);
+    const hole = new THREE.Path();
+    hole.absarc(0, R, R + 0.05, 0, Math.PI * 2, false);
+    sh.holes.push(hole);
+    const wall = new THREE.Mesh(new THREE.ShapeGeometry(sh, 24), steel);
+    wall.position.set(cx + hx, 0, cz + front);
+    wall.castShadow = true;
+    s.add(wall);
+    // Rivets and ribs across the wall.
+    for (let i = -3; i <= 3; i++) if (i !== 0) this.box(s, mat(0x4a4e40, { metal: 0.5, rough: 0.5 }), 0.25, 9, 0.2, hx + i * 3.8, 4.5, front + 0.1, false);
+    this.rect(hx - W / 2, hx - R - 0.2, front - 0.35, front + 0.35);
+    this.rect(hx + R + 0.2, hx + W / 2, front - 0.35, front + 0.35);
+    this.vaultBlock = [cx + hx - R - 0.3, cx + hx + R + 0.3, cz + front - 0.5, cz + front + 0.6];
+    // The door frame: a thick chrome ring.
+    const ringMat = chrome();
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(R + 0.12, 0.22, 10, 40), ringMat);
+    ring.position.set(cx + hx, R, cz + front + 0.12);
+    s.add(ring);
+    // The door: hinged on its left, so it swings out towards the apron.
+    const pivot = new THREE.Group();
+    pivot.position.set(cx + hx - R, R, cz + front + 0.25);
+    this.group.add(pivot);
+    const doorMat = mat(0x9aa0a8, { metal: 0.8, rough: 0.28 });
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 0.7, 40), doorMat);
+    disc.rotation.x = Math.PI / 2;
+    disc.position.set(R, 0, 0);
+    disc.castShadow = true;
+    pivot.add(disc);
+    for (const [rr, dz] of [[R * 0.78, 0.37], [R * 0.5, 0.39]] as const) {
+      const band = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.07, 8, 36), ringMat);
+      band.position.set(R, 0, dz);
+      pivot.add(band);
+    }
+    // The locking bolts round the edge (they slide in as the time lock runs).
+    const bolts: THREE.Object3D[] = [];
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const b = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.7, 10), ringMat);
+      b.rotation.z = a + Math.PI / 2;
+      b.position.set(R + Math.cos(a) * (R + 0.25), Math.sin(a) * (R + 0.25), 0);
+      b.userData.a = a;
+      pivot.add(b);
+      bolts.push(b);
+    }
+    // The spoked wheel in the middle.
+    const wheel = new THREE.Group();
+    wheel.position.set(R, 0, 0.5);
+    pivot.add(wheel);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.25, 16), ringMat);
+    hub.rotation.x = Math.PI / 2;
+    wheel.add(hub);
+    for (let i = 0; i < 4; i++) {
+      const spoke = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.0, 8), ringMat);
+      spoke.rotation.z = (i / 4) * Math.PI;
+      wheel.add(spoke);
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), ringMat);
+      knob.position.set(Math.cos((i / 4) * Math.PI * 2) * 1.0, Math.sin((i / 4) * Math.PI * 2) * 1.0, 0);
+      wheel.add(knob);
+    }
+    // Keycard reader beside the door, with its LED.
+    this.box(s, mat(0x17151f, { rough: 0.5 }), 0.42, 0.6, 0.16, hx - R - 1.1, 1.35, front + 0.18, false);
+    this.box(s, mat(0x2a2c30, { rough: 0.4 }), 0.3, 0.06, 0.18, hx - R - 1.1, 1.2, front + 0.2, false);
+    const led = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.04), new THREE.MeshBasicMaterial({ color: 0xff2a2a, toneMapped: false }));
+    led.position.set(cx + hx - R - 1.1, 1.55, cz + front + 0.27);
+    this.group.add(led);
+    // A rotating warning beacon over the door and hazard stripes on the ground.
+    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), glow(0xff8a1f, 2.6));
+    beacon.position.set(cx + hx, R * 2 + 0.7, cz + front + 0.3);
+    beacon.visible = false;
+    this.group.add(beacon);
+    const hz = makeCanvas(256, 64);
+    for (let i = -2; i < 12; i++) {
+      hz.ctx.fillStyle = i % 2 ? '#14121a' : '#ffd23f';
+      hz.ctx.beginPath();
+      hz.ctx.moveTo(i * 24, 64);
+      hz.ctx.lineTo(i * 24 + 24, 64);
+      hz.ctx.lineTo(i * 24 + 48, 0);
+      hz.ctx.lineTo(i * 24 + 24, 0);
+      hz.ctx.fill();
+    }
+    const stripes = new THREE.Mesh(new THREE.PlaneGeometry(10, 1.2), new THREE.MeshStandardMaterial({ map: canvasTexture(hz.canvas), roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -6 }));
+    stripes.rotation.x = -Math.PI / 2;
+    stripes.position.set(cx + hx, 0.0, cz + front + 1.4);
+    this.group.add(stripes);
+    const sign = makeCanvas(512, 128);
+    sign.ctx.fillStyle = '#14121a';
+    sign.ctx.fillRect(0, 0, 512, 128);
+    sign.ctx.strokeStyle = '#ffd23f';
+    sign.ctx.lineWidth = 8;
+    sign.ctx.strokeRect(6, 6, 500, 116);
+    sign.ctx.fillStyle = '#ffd23f';
+    sign.ctx.font = '900 46px Arial, sans-serif';
+    sign.ctx.textAlign = 'center';
+    sign.ctx.fillText('PROTOTYPE VAULT', 256, 62);
+    sign.ctx.fillStyle = '#ff5a3a';
+    sign.ctx.font = '800 24px Arial, sans-serif';
+    sign.ctx.fillText('LEVEL 5 KEYCARD · TIME LOCK 30 s', 256, 104);
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(5.2, 1.3), new THREE.MeshStandardMaterial({ map: canvasTexture(sign.canvas) }));
+    board.position.set(cx + hx, R * 2 + 1.6, cz + front + 0.12);
+    this.group.add(board);
+    // Inside: a spotlight pool on the prototype and light strips along the walls.
+    for (const sx of [-1, 1]) this.box(s, glow(0xbfe9ff, 1.4), 0.15, 0.15, 16, hx + sx * 13.6, 2.6, -50, false);
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(4, 32), new THREE.MeshBasicMaterial({ color: 0xbfe9ff, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false }));
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(cx + hx, 0.02, cz - 52);
+    this.group.add(pool);
+    this.vaultDoor = { x: cx + hx - R - 0.6, z: cz + front + 1.6 };
+    this.vaultParts = { pivot, wheel, bolts, led, beacon, open: 0 };
+  }
+
+  /** The commander's keycard: a glowing card that lies where he fell. */
+  private buildKeycard(): void {
+    const g = new THREE.Group();
+    const c = makeCanvas(128, 80);
+    c.ctx.fillStyle = '#e8e2d2';
+    c.ctx.fillRect(0, 0, 128, 80);
+    c.ctx.fillStyle = '#c8102e';
+    c.ctx.fillRect(0, 0, 128, 18);
+    c.ctx.fillStyle = '#ffd23f';
+    c.ctx.fillRect(10, 30, 26, 20);
+    c.ctx.fillStyle = '#14121a';
+    c.ctx.font = '900 16px Arial, sans-serif';
+    c.ctx.fillText('LEVEL 5', 46, 46);
+    c.ctx.fillStyle = '#fff';
+    c.ctx.font = '900 12px Arial, sans-serif';
+    c.ctx.fillText('FORT MOJAVE', 22, 14);
+    const card = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.34), new THREE.MeshBasicMaterial({ map: canvasTexture(c.canvas), side: THREE.DoubleSide, toneMapped: false }));
+    g.add(card);
+    const halo = new THREE.Mesh(new THREE.CircleGeometry(0.9, 24), new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false }));
+    halo.rotation.x = -Math.PI / 2;
+    halo.position.y = -0.55;
+    g.add(halo);
+    g.visible = false;
+    this.group.add(g);
+    this.card = g;
+  }
+
+  /** Close enough to the vault's keycard reader? (global) */
+  atVault(gx: number, gz: number): boolean {
+    return Math.hypot(gx - this.vaultDoor.x, gz - this.vaultDoor.z) < 2.4;
+  }
+
+  /** Swipe the commander's keycard: the vault's time lock starts and the base goes mad. */
+  swipeKeycard(): boolean {
+    if (this.keycard !== 'player' || this.vault.state !== 'locked') return false;
+    this.keycard = 'commander';
+    this.vault = { state: 'unlocking', left: VAULT_UNLOCK_S, paused: false };
+    const v = this.vaultParts;
+    if (v) (v.led.material as THREE.MeshBasicMaterial).color.set(0xffc53d);
+    audio.play('vaultClunk');
+    this.raise(`🚨 VAULT BREACH! The time lock takes ${VAULT_UNLOCK_S} seconds: stay by the door and hold them off.`);
+    return true;
+  }
+
+  private dropCard(x: number, z: number): void {
+    this.keycard = 'dropped';
+    this.cardAt = { x, z };
+    if (this.card) {
+      this.card.position.set(x, 0.7, z);
+      this.card.visible = true;
+    }
+    this.host.notify('🪪 The base commander dropped his keycard! Grab it: it opens the prototype vault in Hangar 3.', 'good');
+  }
+
+  /** The keycard on the ground, the vault's time lock and its door. */
+  private updateVault(dt: number, p: ReturnType<BaseHost['player']>): void {
+    if (this.keycard === 'dropped' && this.card) {
+      this.card.rotation.y += dt * 2;
+      this.card.position.y = 0.7 + Math.sin(this.t * 3) * 0.08;
+      if (!p.car && Math.hypot(p.x - this.cardAt.x, p.z - this.cardAt.z) < 1.4) {
+        this.keycard = 'player';
+        this.card.visible = false;
+        audio.play('coin');
+        this.host.notify('🪪 You have the commander’s Level 5 keycard. Swipe it at the vault in Hangar 3 (the time lock takes 30 s).', 'good');
+      }
+    }
+    const v = this.vaultParts;
+    if (!v) return;
+    if (this.vault.state === 'unlocking') {
+      const near = Math.hypot(p.x - this.vaultDoor.x, p.z - this.vaultDoor.z) < VAULT_STAY;
+      this.vault.paused = !near;
+      if (near) this.vault.left = Math.max(0, this.vault.left - dt);
+      // The alarm can't die down while the vault is being cracked.
+      this.alarmT = Math.max(this.alarmT, 60);
+      const k = 1 - this.vault.left / VAULT_UNLOCK_S;
+      if (near) v.wheel.rotation.z -= dt * (0.6 + k * 2);
+      for (const b of v.bolts) {
+        const a = b.userData.a as number;
+        const r = 3.3 + 0.25 - k * 0.55;
+        b.position.set(3.3 + Math.cos(a) * r, Math.sin(a) * r, 0);
+      }
+      v.beacon.visible = Math.floor(this.t * 6) % 2 === 0;
+      if (this.vault.left <= 0) {
+        this.vault.state = 'open';
+        (v.led.material as THREE.MeshBasicMaterial).color.set(0x39ff88);
+        audio.play('vaultClunk');
+        this.host.notify('🔓 The vault is open! The Prototype X-1 is yours if you can get it out alive.', 'good');
+      }
+    }
+    const target = this.vault.state === 'open' ? 1 : 0;
+    if (Math.abs(v.open - target) > 0.001) {
+      v.open += Math.sign(target - v.open) * Math.min(Math.abs(target - v.open), dt * 0.35);
+      v.pivot.rotation.y = -v.open * 1.75;
+    }
+    if (this.vault.state !== 'unlocking') v.beacon.visible = this.vault.state === 'open' && this.alarmT > 0 && Math.floor(this.t * 6) % 2 === 0;
+  }
+
+  /** The time lock re-engages and the door swings shut (the base is quiet, you're gone). */
+  private relockVault(): void {
+    this.vault = { state: 'locked', left: 0, paused: false };
+    const v = this.vaultParts;
+    if (!v) return;
+    v.open = 0;
+    v.pivot.rotation.y = 0;
+    v.wheel.rotation.z = 0;
+    for (const b of v.bolts) {
+      const a = b.userData.a as number;
+      b.position.set(3.3 + Math.cos(a) * 3.55, Math.sin(a) * 3.55, 0);
+    }
+    (v.led.material as THREE.MeshBasicMaterial).color.set(0xff2a2a);
+    v.beacon.visible = false;
   }
 
   /** Where the eight watchtowers stand (local). */
@@ -938,8 +1243,8 @@ export class MilitaryBase {
   }
 
   private addSoldier(kind: SoldierKind, lx: number, lz: number, tower: boolean, ax = lx, az = lz, bx = lx, bz = lz): void {
-    const model = new CharacterModel(soldierLook(kind === 'elite'), { castShadow: false });
-    const gun = buildGun(gunDef(kind === 'sniper' ? 'sniper' : 'rifle') ?? gunDef('rifle')!);
+    const model = new CharacterModel(soldierLook(kind === 'elite', kind === 'commander'), { castShadow: false });
+    const gun = buildGun(gunDef(kind === 'sniper' ? 'sniper' : kind === 'commander' ? 'deagle' : 'rifle') ?? gunDef('rifle')!);
     model.hand.add(gun.group);
     model.aim = 2;
     const x = this.cx + lx;
@@ -965,7 +1270,14 @@ export class MilitaryBase {
     ];
     for (const [ax, az, bx, bz] of patrols) this.addSoldier('rifle', ax, az, false, ax, az, bx, bz);
     // HQ and hangar guards.
-    for (const [lx, lz] of [[15, -33], [35, -33], [-80, -38], [-45, -38]] as const) this.addSoldier('rifle', lx, lz, false);
+    for (const [lx, lz] of [[15, -33], [35, -33], [-80, -38], [-45, -37], [-52, -36]] as const) this.addSoldier('rifle', lx, lz, false);
+    // The base commander walks the front of HQ with two bodyguards. He has the vault keycard.
+    this.addSoldier('commander', 10, -31, false, 8, -31, 42, -31);
+    this.addSoldier('elite', 10, -29, false, 8, -29, 42, -29);
+    this.addSoldier('elite', 10, -33, false, 8, -33.5, 42, -33.5);
+    // Two elites locked in the vault with the prototype.
+    this.addSoldier('elite', -52, -50, false);
+    this.addSoldier('elite', -38, -50, false);
     // Elite guards round the armory.
     for (const [lx, lz] of [[-46, 57], [-46, 67], [-70, 52], [-70, 72]] as const) this.addSoldier('elite', lx, lz, false);
     // A sniper on every tower.
@@ -1048,6 +1360,7 @@ export class MilitaryBase {
   }
 
   private knock(so: Soldier): void {
+    if (so.kind === 'commander' && this.keycard === 'commander') this.dropCard(so.x, so.z);
     so.ko = 30;
     so.aimT = 0;
     so.model.aim = 0;
@@ -1155,7 +1468,11 @@ export class MilitaryBase {
         if (s.respawn <= 0 && dist > 220) s.uid = h.spawnVehicle(s.id, this.cx + s.lx, this.cz + s.lz, s.yaw);
       }
     }
-    this.updateMines(dt, p);
+    this.bunker.update(dt, { x: p.x, z: p.z, under: !!p.under, ko: !!p.ko, height: p.height, speed: p.speed ?? 0 });
+    if (!p.under) {
+      this.updateMines(dt, p);
+      this.updateVault(dt, p);
+    }
     if (!near && dist > 330) {
       // Out of range: the base settles down, knocked-out soldiers and wrecks are replaced.
       this.alarmT = Math.max(0, this.alarmT - dt * 3);
@@ -1166,7 +1483,7 @@ export class MilitaryBase {
       return;
     }
     // Trespassing: a warning, then the alarm.
-    const inside = this.inside(p.x, p.z);
+    const inside = this.inside(p.x, p.z) && !p.under;
     if (inside && this.alarmT <= 0) {
       this.trespass += dt;
       if (!this.warned) {
@@ -1195,6 +1512,12 @@ export class MilitaryBase {
 
   /** Everything knocked out or blown up comes back (the base is quiet and you're far away). */
   private restock(): void {
+    // The commander gets a new card (unless you're still holding his) and the vault locks again.
+    if (this.keycard === 'dropped') {
+      this.keycard = 'commander';
+      if (this.card) this.card.visible = false;
+    }
+    if (this.vault.state !== 'locked') this.relockVault();
     for (const so of this.soldiers) {
       if (so.ko > 0) {
         so.ko = 0;
@@ -1279,8 +1602,8 @@ export class MilitaryBase {
         const range = so.kind === 'sniper' ? 130 : 75;
         const sees = dist < range && (so.tower || h.lineOfSight(so.x, so.z, p.x, p.z));
         // Riflemen close in (but not far outside the fence), then hold and fire.
-        if (!so.tower && (!sees || dist > (so.kind === 'elite' ? 16 : 26)) && dist > 0.1) {
-          const sp = so.kind === 'elite' ? 4.8 : 4.2;
+        if (!so.tower && (!sees || dist > (so.kind === 'elite' || so.kind === 'commander' ? 16 : 26)) && dist > 0.1) {
+          const sp = so.kind === 'elite' || so.kind === 'commander' ? 4.8 : 4.2;
           const nx = so.x + (dx / dist) * sp * dt;
           const nz = so.z + (dz / dist) * sp * dt;
           const leash = Math.abs(nx - this.cx) < BASE_HW + 60 && Math.abs(nz - this.cz) < BASE_HD + 60;
@@ -1301,7 +1624,7 @@ export class MilitaryBase {
         } else {
           so.cool -= dt;
           if (sees && so.cool <= 0) {
-            const elite = so.kind === 'elite';
+            const elite = so.kind === 'elite' || so.kind === 'commander';
             this.fire(so, p, dist, Math.max(0.12, Math.min(0.5, (elite ? 0.6 : 0.52) - dist * 0.008)), elite ? 7 : 4, 'smg');
             so.cool = (elite ? 0.5 : 0.65) + Math.random() * 0.7;
           }

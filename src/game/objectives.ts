@@ -87,6 +87,9 @@ export interface LifetimeStats {
   /** Cars wrecked (blown up) and vehicles driven out of the military base. */
   carsWrecked?: number;
   baseRaids?: number;
+  /** Times you found your way into the secret lab under Fort Mojave; prototypes stolen from it. */
+  bunkerVisits?: number;
+  bunkerGuns?: number;
   /** House heists pulled off, cash they brought in, and times your own house was robbed. */
   heists?: number;
   heistLoot?: number;

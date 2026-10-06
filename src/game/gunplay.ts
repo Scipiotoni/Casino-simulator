@@ -191,7 +191,7 @@ export class GunPlay {
     // Seated you can't shoot, except riding along in someone's car: a drive-by.
     if (g.state !== 'playing' || (p.seat && !g.riding) || g.photoMode || g.combat.ko > 0) return false;
     if (g.indoorFight) return true;
-    return !g.inside && p.floor === 0 && g.street.isOutdoors(p.x, p.z);
+    return !g.inside && !g.underground && p.floor === 0 && g.street.isOutdoors(p.x, p.z);
   }
 
   /** Indoors (a heist fight): walls, shut doors, the ceiling and the outside stop a bullet. */

@@ -159,7 +159,7 @@ export class Combat {
     const g = this.g;
     if (g.state !== 'playing') return false;
     if (g.indoorFight) return true;
-    return !g.inside && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
+    return !g.inside && !g.underground && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
   }
 
   update(dt: number): void {

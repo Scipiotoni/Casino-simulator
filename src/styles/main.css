@@ -368,6 +368,38 @@ input:focus-visible {
   color: var(--gold-ink);
 }
 
+.mission-chip {
+  position: absolute;
+  top: calc(var(--safe-top) + 156px);
+  left: 50%;
+  z-index: 5;
+  transform: translateX(-50%);
+  padding: 6px 14px 5px;
+  border-radius: 99px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  color: #fff;
+  background: rgba(23, 21, 31, 0.86);
+  border: 1px solid rgba(255, 210, 74, 0.6);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.mission-chip.alert {
+  background: linear-gradient(90deg, #c8102e, #7a0717);
+  border-color: #ffb0b0;
+  box-shadow: 0 0 22px rgba(255, 42, 42, 0.55);
+  animation: mission-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mission-pulse {
+  50% {
+    box-shadow: 0 0 8px rgba(255, 42, 42, 0.3);
+  }
+}
+
 .event-chip {
   position: absolute;
   top: calc(var(--safe-top) + 96px);
