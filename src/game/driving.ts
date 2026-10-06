@@ -434,6 +434,8 @@ export class Driving {
     throttle = clamp(throttle, -1, 1);
     steer = clamp(steer, -1, 1);
     const spec = v.def ? tunedSpecs(v.def, v.mods) : { ...STOLEN_SPECS, brake: 1, nitro: 0 };
+    // Self-repairing armour (the prototype) patches itself up as you drive.
+    if (v.def?.regen && v.wreck < 0 && v.hp > 0) v.hp = Math.min(v.maxHp, v.hp + v.def.regen * dt);
     // A badly damaged engine loses power.
     const health = v.hp / v.maxHp;
     const weak = health < 0.5 ? 0.55 + health * 0.9 : 1;
@@ -443,7 +445,8 @@ export class Driving {
     // Shift: nitro if fitted (a tank that refills), otherwise a little extra push.
     const shift = input.down('ShiftLeft') || input.down('ShiftRight');
     const nitroOn = shift && spec.nitro > 0 && this.nitro > 0 && throttle > 0;
-    if (nitroOn) this.nitro = Math.max(0, this.nitro - dt / (2 + spec.nitro));
+    if (v.def?.infiniteNitro) this.nitro = 1;
+    else if (nitroOn) this.nitro = Math.max(0, this.nitro - dt / (2 + spec.nitro));
     else this.nitro = Math.min(1, this.nitro + dt * 0.12);
     const boost = nitroOn ? 1.3 + spec.nitro * 0.12 : shift ? 1.1 : 1;
     for (const f of v.flames) {

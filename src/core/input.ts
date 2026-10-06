@@ -43,6 +43,12 @@ export class Input {
   wantLock = false;
   /** The page isn't allowed to capture the mouse (some embeds): aim with the cursor instead. */
   lockFailed = false;
+  /** You freed the mouse yourself (Esc): it stays free until you click back in. */
+  userFreed = false;
+  private lockFails = 0;
+  private unlockAt = 0;
+  private lockTryAt = 0;
+  private selfExit = false;
   panDX = 0;
   panDY = 0;
   private lastMid: { x: number; y: number } | null = null;
@@ -80,7 +86,20 @@ export class Input {
       this.pointer.over = true;
     });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-    document.addEventListener('pointerlockerror', () => (this.lockFailed = true));
+    document.addEventListener('pointerlockerror', () => this.onLockError());
+    document.addEventListener('pointerlockchange', () => {
+      if (this.locked) {
+        this.lockFails = 0;
+        this.lockFailed = false;
+        this.userFreed = false;
+        return;
+      }
+      this.unlockAt = performance.now();
+      // Esc (or the browser) let go of the mouse, not the game: stay free until a click.
+      if (!this.selfExit) this.userFreed = true;
+      this.selfExit = false;
+      this.keys.clear();
+    });
     canvas.addEventListener(
       'wheel',
       (e) => {
@@ -149,26 +168,55 @@ export class Input {
     return typeof document !== 'undefined' && document.pointerLockElement === this.canvas;
   }
 
+  /**
+   * A capture was refused. Browsers refuse one asked for right after Esc (a short cool-down)
+   * or without a click, so only give up for good after several refusals in a row.
+   */
+  private onLockError(): void {
+    if (performance.now() - this.unlockAt < 1600) return;
+    this.lockFails++;
+    if (this.lockFails >= 3) this.lockFailed = true;
+  }
+
   /** Capture the mouse (first person on desktop). */
   requestLock(): void {
     if (this.locked || this.isTouch) return;
+    this.userFreed = false;
+    this.lockTryAt = performance.now();
+    const plain = () => {
+      try {
+        const r2 = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+        if (r2 && typeof r2.catch === 'function') r2.catch(() => this.onLockError());
+      } catch {
+        this.onLockError();
+      }
+    };
     try {
       const r = (this.canvas as HTMLElement & { requestPointerLock(o?: unknown): Promise<void> | void }).requestPointerLock({ unadjustedMovement: true });
-      if (r && typeof (r as Promise<void>).catch === 'function') (r as Promise<void>).catch(() => {
-        try {
-          const r2 = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
-          if (r2 && typeof r2.catch === 'function') r2.catch(() => (this.lockFailed = true));
-        } catch {
-          this.lockFailed = true;
-        }
-      });
+      if (r && typeof (r as Promise<void>).catch === 'function') (r as Promise<void>).catch(plain);
     } catch {
-      this.lockFailed = true;
+      plain();
     }
   }
 
+  /**
+   * First person wants the mouse: grab it again by itself after the game let go of it (a menu
+   * closed, a mini-game ended), as long as you just clicked or pressed a key. Not after you
+   * freed it with Esc: then it waits for a click on the game.
+   */
+  autoLock(): void {
+    if (!this.wantLock || this.locked || this.lockFailed || this.userFreed || this.isTouch) return;
+    const now = performance.now();
+    if (now - this.lockTryAt < 1500 || now - this.unlockAt < 1300) return;
+    const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    if (ua && !ua.isActive) return;
+    this.requestLock();
+  }
+
   exitLock(): void {
-    if (this.locked) document.exitPointerLock();
+    if (!this.locked) return;
+    this.selfExit = true;
+    document.exitPointerLock();
   }
 
   private onDown(e: PointerEvent): void {

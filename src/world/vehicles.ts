@@ -33,6 +33,10 @@ export interface CarDef {
   cannon?: boolean;
   /** What it's worth when it can't be bought (military vehicles), for repairs. */
   value?: number;
+  /** Built-in nitro that never runs dry (strength like a nitro mod level). */
+  infiniteNitro?: number;
+  /** Repairs itself while driving, hit points a second (not once it's wrecked). */
+  regen?: number;
 }
 
 export const CARS: CarDef[] = [
@@ -65,7 +69,7 @@ export const CARS: CarDef[] = [
   { id: 'jeep', value: 120000, name: 'Army Patrol Jeep', kind: 'jeep', price: 0, unlock: 1, top: 33, accel: 13, grip: 1.25, hp: 320, armor: 0.6, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Armoured patrol 4x4 with a roll bar. Shrugs off small arms.' },
   { id: 'apc', value: 350000, name: 'Armoured APC', kind: 'apc', price: 0, unlock: 1, top: 27, accel: 9, grip: 0.95, hp: 900, armor: 0.3, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Eight tonnes of steel on six wheels. Traffic gets out of its way.' },
   { id: 'tank', value: 900000, name: 'Rhino Tank', kind: 'tank', price: 0, unlock: 1, top: 15, accel: 6, grip: 1.5, hp: 2500, armor: 0.12, cannon: true, military: true, colors: [0x4b5320, 0xb59a6a, 0x2c2f26], blurb: 'Tracks, armour and a 120 mm cannon (click or F to fire). Slow, unstoppable.' },
-  { id: 'stealth', value: 1500000, name: 'Prototype X-1', kind: 'stealth', price: 0, unlock: 1, top: 56, accel: 23, grip: 1.45, hp: 180, armor: 0.8, military: true, colors: [0x17151f, 0x2c2f26, 0x8c9099], blurb: 'A classified stealth racer. The fastest thing on wheels, anywhere.' },
+  { id: 'stealth', value: 1500000, name: 'Prototype X-1', kind: 'stealth', price: 0, unlock: 1, top: 56, accel: 23, grip: 1.45, hp: 650, armor: 0.4, infiniteNitro: 3, regen: 6, military: true, colors: [0x17151f, 0x2c2f26, 0x8c9099], blurb: 'A classified stealth racer: armoured, self-repairing and with nitro that never runs out. The fastest thing on wheels, anywhere.' },
 ];
 
 /** The cars on sale at Velocity Motors (military vehicles aren't). */
@@ -269,13 +273,14 @@ export function sanitizeMods(def: CarDef, raw: unknown): CarMods {
 
 /** How a car drives with its tuning. */
 export function tunedSpecs(def: CarDef, m: CarMods | null): { top: number; accel: number; grip: number; brake: number; nitro: number } {
-  if (!m) return { top: def.top, accel: def.accel, grip: def.grip, brake: 1, nitro: 0 };
+  const builtIn = def.infiniteNitro ?? 0;
+  if (!m) return { top: def.top, accel: def.accel, grip: def.grip, brake: 1, nitro: builtIn };
   return {
     top: def.top * (1 + 0.09 * m.engine),
     accel: def.accel * (1 + 0.08 * m.engine + 0.16 * m.turbo),
     grip: def.grip * (1 + 0.1 * m.tires),
     brake: 1 + 0.3 * m.brakes,
-    nitro: m.nitro,
+    nitro: Math.max(m.nitro, builtIn),
   };
 }
 

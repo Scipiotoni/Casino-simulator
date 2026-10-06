@@ -585,6 +585,16 @@ export class Net {
       g.effects.explosion(w.x, 0.6, w.z, Math.max(0.5, Math.min(1.6, num(o.r) / 5)));
       audio.playAt('explosion', w.x, w.z, 1.3);
     }
+    // Fort Mojave soldiers they knocked out: down on your screen too (raiding as a crew).
+    const downs = Array.isArray(pr.sd) ? pr.sd.slice(-12) : [];
+    for (const d of downs) {
+      if (!d || typeof d !== 'object') continue;
+      const o = d as Record<string, unknown>;
+      const id = `s${Math.round(num(o.i))}@${Math.round(num(o.t))}`;
+      if (r.feedSeen.has(id)) continue;
+      r.feedSeen.add(id);
+      if (Date.now() - (num(o.t) - (r.clockOff ?? 0)) < 60_000) g.base.knockRemote(Math.round(num(o.i)));
+    }
     if (r.feedSeen.size > 60) r.feedSeen = new Set(['#', ...[...r.feedSeen].slice(-30)]);
   }
 
@@ -937,6 +947,7 @@ export class Net {
       ks: g.combat.streak,
       kos: g.combat.kos.map((k) => ({ i: k.i, v: k.v, w: k.w })),
       bx: g.gunplay.booms.map((b) => ({ i: b.i, x: b.x, z: b.z, r: b.r })),
+      sd: g.base.downs.filter((d) => Date.now() - d.t < 60_000).map((d) => ({ i: d.i, t: d.t })),
       hp: Math.round(g.combat.hp),
       ko: g.combat.ko > 0 ? 1 : 0,
       pr: g.combat.protect > 0 ? 1 : 0,

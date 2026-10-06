@@ -175,7 +175,7 @@ describe('Fort Mojave', () => {
     h.pos = { x: s.cx, z: s.cz };
     for (let i = 0; i < 30; i++) base.update(0.1, MIN_COLS, true);
     expect(base.alarm).toBe(false);
-    for (let i = 0; i < 80; i++) base.update(0.1, MIN_COLS, true);
+    for (let i = 0; i < 160; i++) base.update(0.1, MIN_COLS, true);
     expect(base.alarm).toBe(true);
     expect(h.alarms).toBeGreaterThan(0);
   });

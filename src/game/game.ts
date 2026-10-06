@@ -421,7 +421,7 @@ export class Game implements World, ItemHost {
         const car = this.drive.driving;
         if (!hit) audio.play('whiz', { volume: 0.6 });
         else if (car) {
-          this.drive.damage(car, shotDamage(22, car.armor), false);
+          this.drive.damage(car, shotDamage(14, car.armor), false);
           audio.play('metalHit', { volume: 0.5 });
         } else this.combat.damage(dmg, 'world', 'the Fort Mojave soldiers', w.x, w.z);
       },
@@ -440,6 +440,7 @@ export class Game implements World, ItemHost {
       vehicleParked: (uid) => this.drive.vehicles.some((v) => v.uid === uid && v.base && v.wreck < 0),
       alarm: (first) => st().police.crime(first ? POLICE_HEAT.base : 0.04),
       notify: (text, kind) => this.notify(text, kind),
+      allies: () => this.mapPlayers.filter((m) => !m.inside && !m.ko),
     });
   }
 
@@ -1512,6 +1513,12 @@ export class Game implements World, ItemHost {
   /** Walk through another casino's door (or back through your own). */
   enterLot(lot: StreetLot): boolean {
     if (this.state !== 'playing' || lot.id === this.street.activeId) return false;
+    // Somebody else's home is never open to you, whatever the route in.
+    if (lot.kind === 'house' && (lot.houseOf !== 'me' || lot.id !== 'house')) {
+      audio.play('error');
+      this.notify(`${lot.owner}'s bodyguards won’t let you in: it’s a private home.`, 'bad');
+      return false;
+    }
     if (lot.hotelOf === 'me' && this.hotel) {
       this.enterHotel(lot.id.slice('hotel:'.length));
       return true;
@@ -2636,6 +2643,8 @@ export class Game implements World, ItemHost {
     if (this.drive?.driving && remember) return;
     this.cam.setMode(mode);
     if (remember) this.settings.camera = mode;
+    // Going first person on purpose grabs the mouse again (even after Esc freed it).
+    if (mode === 'first' && remember) this.input.userFreed = false;
     this.events.emit('camera', mode);
   }
 
@@ -3874,6 +3883,7 @@ export class Game implements World, ItemHost {
       let dy = 0;
       this.cam.aimNdc = null;
       input.wantLock = !input.isTouch && !this.build.active && !this.modalOpen && this.combat.ko <= 0;
+      input.autoLock();
       if (input.locked) {
         dx = input.lookDX;
         dy = input.lookDY;
@@ -3881,10 +3891,11 @@ export class Game implements World, ItemHost {
         // Drag anywhere off the joystick to look around.
         dx = input.dragDX * 1.6;
         dy = input.dragDY * 1.6;
-      } else if (!input.isTouch && input.pointer.over && !this.build.active && !this.modalOpen && this.combat.ko <= 0) {
-        // Mouse not captured: the crosshair stays in the middle and moving the mouse turns
-        // the view, just like when it's captured. The (hidden) cursor can still bump into
-        // the edge of the screen, so holding it there keeps turning you that way.
+      } else if (!input.isTouch && input.lockFailed && input.pointer.over && !this.build.active && !this.modalOpen && this.combat.ko <= 0) {
+        // The page can't capture the mouse (some embeds): the crosshair stays in the middle
+        // and moving the mouse turns the view. The cursor can still bump into the edge of the
+        // screen, so holding it there keeps turning you that way. (Freed with Esc, the mouse
+        // is just a pointer until you click back in.)
         dx = input.freeDX;
         dy = input.freeDY;
         const { w, h } = this.renderer.size;

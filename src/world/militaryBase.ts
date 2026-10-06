@@ -81,6 +81,39 @@ export interface BaseHost {
   /** The alarm went off: the police are told (wanted level). */
   alarm(first: boolean): void;
   notify(text: string, kind: 'good' | 'bad' | 'info'): void;
+  /** Your crew: other players out on the street (global frame). Soldiers shoot at them too. */
+  allies?(): { x: number; z: number }[];
+}
+
+/** Soldier toughness, knockout time and how long the trespass warning lasts. */
+export const SOLDIER_HP = 70;
+export const SOLDIER_KO = 75;
+export const TRESPASS_GRACE = 14;
+/** How far soldiers can see you, and their best odds of hitting (point blank). */
+export const SOLDIER_SIGHT = 55;
+export const SOLDIER_MAX_HIT = 0.32;
+
+/** Odds that a soldier's shot hits from `dist` metres. */
+export function soldierHitChance(dist: number): number {
+  return Math.max(0.06, Math.min(SOLDIER_MAX_HIT, 0.38 - dist * 0.011));
+}
+
+/**
+ * Who a soldier aims at: the nearest target it can see (you or one of your crew), or -1.
+ * Index 0 is you. A crew spreads the soldiers' fire between its members.
+ */
+export function pickTarget(sx: number, sz: number, targets: readonly { x: number; z: number; ok: boolean }[], sees: (x: number, z: number) => boolean): number {
+  let best = -1;
+  let bd = SOLDIER_SIGHT;
+  targets.forEach((t, i) => {
+    if (!t.ok) return;
+    const d = Math.hypot(t.x - sx, t.z - sz);
+    if (d < bd && sees(t.x, t.z)) {
+      bd = d;
+      best = i;
+    }
+  });
+  return best;
 }
 
 function soldierLook(): Appearance {
@@ -479,7 +512,7 @@ export class MilitaryBase {
     model.root.position.set(x, y, z);
     this.group.add(model.root);
     this.soldiers.push({
-      model, x, z, y, hp: 120, ko: 0, cool: 1 + Math.random(), tower, toB: true, side: 1, sideT: 0,
+      model, x, z, y, hp: SOLDIER_HP, ko: 0, cool: 1 + Math.random(), tower, toB: true, side: 1, sideT: 0,
       a: { x: this.cx + ax, z: this.cz + az }, b: { x: this.cx + bx, z: this.cz + bz },
     });
   }
@@ -540,7 +573,8 @@ export class MilitaryBase {
     so.model.flinch = 1;
     this.raise();
     if (so.hp > 0) return false;
-    so.ko = 25;
+    so.ko = SOLDIER_KO;
+    this.noteDown(so);
     so.model.aim = 0;
     so.model.setPose('ko');
     if (so.tower) {
@@ -560,7 +594,8 @@ export class MilitaryBase {
         hitAny = true;
         so.hp -= power * 2 * (1 - d / radius);
         if (so.hp <= 0) {
-          so.ko = 25;
+          so.ko = SOLDIER_KO;
+          if (byPlayer) this.noteDown(so);
           so.model.aim = 0;
           so.model.setPose('ko');
           so.y = 0;
@@ -568,6 +603,30 @@ export class MilitaryBase {
       }
     }
     if (byPlayer && (hitAny || this.inside(x, z))) this.raise();
+  }
+
+  /**
+   * Soldiers you knocked out lately (index + time), shared with the other players so the
+   * same guard is down on everybody's screen.
+   */
+  downs: { i: number; t: number }[] = [];
+
+  private noteDown(so: Soldier): void {
+    const i = this.soldiers.indexOf(so);
+    if (i < 0) return;
+    this.downs.push({ i, t: Date.now() });
+    if (this.downs.length > 12) this.downs.shift();
+  }
+
+  /** Another player knocked out soldier `i` (on their screen): down here too. */
+  knockRemote(i: number): void {
+    const so = this.soldiers[i];
+    if (!so || so.ko > 0) return;
+    so.hp = 0;
+    so.ko = SOLDIER_KO;
+    so.model.aim = 0;
+    so.model.setPose('ko');
+    so.y = 0;
   }
 
   /** Soldiers for the minimap. */
@@ -592,7 +651,7 @@ export class MilitaryBase {
     for (const s of this.slots) {
       if (s.uid !== null && !h.vehicleParked(s.uid)) {
         s.uid = null;
-        s.respawn = 240;
+        s.respawn = 150;
       }
       if (s.uid === null) {
         s.respawn -= dt;
@@ -608,7 +667,7 @@ export class MilitaryBase {
         for (const so of this.soldiers) {
           if (so.ko > 0) {
             so.ko = 0;
-            so.hp = 120;
+            so.hp = SOLDIER_HP;
             so.model.setPose('idle');
             so.model.aim = 2;
             so.y = so.tower ? 6.15 : 0;
@@ -626,7 +685,7 @@ export class MilitaryBase {
         audio.play('alarm');
         h.notify('⚠ Fort Mojave is a restricted military area. Leave now or you will be shot!', 'bad');
       }
-      if (this.trespass > 8) this.raise();
+      if (this.trespass > TRESPASS_GRACE) this.raise();
     } else if (!inside && this.alarmT <= 0) {
       this.trespass = Math.max(0, this.trespass - dt);
       if (this.trespass <= 0) this.warned = false;
@@ -646,6 +705,9 @@ export class MilitaryBase {
 
   private updateSoldiers(dt: number, p: ReturnType<BaseHost['player']>): void {
     const h = this.host;
+    // You first, then your crew nearby: each soldier aims at the closest one it can see.
+    const targets = [{ x: p.x, z: p.z, ok: p.exposed }];
+    for (const a of h.allies?.() ?? []) if (Math.hypot(a.x - this.cx, a.z - this.cz) < BASE_HW + 80) targets.push({ x: a.x, z: a.z, ok: true });
     for (const so of this.soldiers) {
       const m = so.model;
       if (so.ko > 0) {
@@ -654,9 +716,9 @@ export class MilitaryBase {
         m.root.position.set(so.x, 0, so.z);
         m.update(dt);
         if (so.ko <= 0) {
-          // Back up (reinforcements) while the alarm rings.
+          // Back up again (slowly, so a crew can push through).
           so.ko = 0;
-          so.hp = 120;
+          so.hp = SOLDIER_HP;
           so.y = so.tower ? 6.15 : 0;
           m.setPose('idle');
           m.aim = 2;
@@ -667,18 +729,23 @@ export class MilitaryBase {
       const dz = p.z - so.z;
       const dist = Math.hypot(dx, dz);
       let moving = false;
-      if (this.alarmT > 0 && p.exposed) {
-        const sees = dist < 70 && (so.tower || h.lineOfSight(so.x, so.z, p.x, p.z));
+      if (this.alarmT > 0 && (p.exposed || targets.length > 1)) {
+        const ti = pickTarget(so.x, so.z, targets, (x, z) => so.tower || h.lineOfSight(so.x, so.z, x, z));
+        const t = ti >= 0 ? targets[ti] : p;
+        const tdx = t.x - so.x;
+        const tdz = t.z - so.z;
+        const td = Math.hypot(tdx, tdz);
         // Close in (but not far outside the fence), then hold and fire.
-        if (!so.tower && (!sees || dist > 24) && dist > 0.1) {
-          const nx = so.x + (dx / dist) * 4 * dt;
-          const nz = so.z + (dz / dist) * 4 * dt;
+        if (!so.tower && (ti < 0 || td > 24) && td > 0.1) {
+          const nx = so.x + (tdx / td) * 3.4 * dt;
+          const nz = so.z + (tdz / td) * 3.4 * dt;
           const leash = Math.abs(nx - this.cx) < BASE_HW + 40 && Math.abs(nz - this.cz) < BASE_HD + 40;
-          if (leash) moving = this.step(so, dx / dist, dz / dist, 4 * dt);
+          if (leash) moving = this.step(so, tdx / td, tdz / td, 3.4 * dt);
         }
-        m.root.rotation.y = Math.atan2(dx, dz);
+        if (td > 0.1) m.root.rotation.y = Math.atan2(tdx, tdz);
         so.cool -= dt;
-        if (sees && so.cool <= 0) this.fire(so, p, dist);
+        if (ti === 0 && so.cool <= 0) this.fire(so, p, td);
+        else if (ti > 0 && so.cool <= 0) this.fireAt(so, t.x, t.z);
       } else if (!so.tower) {
         // Patrol.
         const tgt = so.toB ? so.b : so.a;
@@ -720,9 +787,9 @@ export class MilitaryBase {
   }
 
   private fire(so: Soldier, p: ReturnType<BaseHost['player']>, dist: number): void {
-    so.cool = 0.7 + Math.random() * 0.7;
+    so.cool = 1.1 + Math.random() * 1.0;
     so.model.recoil = 0.5;
-    const chance = Math.max(0.1, Math.min(0.5, 0.55 - dist * 0.012));
+    const chance = soldierHitChance(dist);
     const hit = Math.random() < chance;
     const ay = so.y + 1.3;
     const fx = so.x + Math.sin(so.model.root.rotation.y) * 0.7;
@@ -738,7 +805,23 @@ export class MilitaryBase {
     this.host.tracer(fx, ay, fz, tx, hit ? p.height * 0.7 : 0.4 + Math.random() * 1.4, tz);
     const w = this.host.toWorld(so.x, so.z);
     audio.playAt('smg', w.x, w.z, 0.8);
-    this.host.shot(hit, hit ? 5 : 0, so.x, so.z, ay);
+    this.host.shot(hit, hit ? 4 : 0, so.x, so.z, ay);
+  }
+
+  /** A shot at one of your crew (just the look: their own game works out if it hit them). */
+  private fireAt(so: Soldier, x: number, z: number): void {
+    so.cool = 1.1 + Math.random() * 1.0;
+    so.model.recoil = 0.5;
+    const ay = so.y + 1.3;
+    const fx = so.x + Math.sin(so.model.root.rotation.y) * 0.7;
+    const fz = so.z + Math.cos(so.model.root.rotation.y) * 0.7;
+    if (this.flash) {
+      this.flash.position.set(fx, ay, fz);
+      this.flashT = 0.05;
+    }
+    this.host.tracer(fx, ay, fz, x + (Math.random() - 0.5) * 1.6, 0.6 + Math.random(), z + (Math.random() - 0.5) * 1.6);
+    const w = this.host.toWorld(so.x, so.z);
+    audio.playAt('smg', w.x, w.z, 0.6);
   }
 
   /** Free the soldiers' models. */
