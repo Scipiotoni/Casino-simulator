@@ -141,14 +141,14 @@ const FUN: Row[] = [
 
 /** Gadgets that raise your house's security rating. */
 const SECURITY: Row[] = [
-  ['cctv', 'Security Camera', 1500, 1, [1, 1], 0, [0xf4f1ea], 'A camera that sweeps the room. Security +6.', { security: 6, upkeep: 10 }],
-  ['alarm', 'Alarm Panel', 2500, 1, [1, 1], 0, [0xf4f1ea], 'Keypad, sirens and a flashing beacon. Security +8.', { security: 8, upkeep: 10 }],
-  ['spotlight', 'Security Spotlight', 1200, 1, [1, 1], 0, [0x2b2b35], 'A sweeping searchlight. Security +4.', { security: 4, upkeep: 5 }],
-  ['panicbutton', 'Panic Button', 900, 1, [1, 1], 0, [0xff2a2a], 'One press brings the bodyguards running. Security +3.', { security: 3 }],
-  ['safe', 'Floor Safe', 3000, 2, [1, 1], 0, [0x3a3c44], 'A heavy safe for small valuables. Security +5.', { security: 5 }],
-  ['doghouse', 'Guard Dog', 4000, 2, [2, 2], 0.5, [0x8a5a2e, 0xe9e1d3, 0x1f4fbf], 'A good boy with a very loud bark. Security +10.', { security: 10, upkeep: 20 }],
-  ['metaldetector', 'Metal Detector', 6000, 3, [1, 2], 0, [0xd8d2c6], 'Walk-through scanner at the door. Security +9.', { security: 9, upkeep: 15 }],
-  ['laser', 'Laser Grid', 8000, 4, [2, 1], 0, [0x17151f], 'Red laser beams like in the movies. Security +12.', { security: 12, upkeep: 25 }],
+  ['cctv', 'Security Camera', 1500, 1, [1, 1], 0, [0xf4f1ea], 'A camera that sweeps the room. A burglar it spots sets off the alarm. Security +6.', { security: 6, upkeep: 10 }],
+  ['alarm', 'Alarm Panel', 2500, 1, [1, 1], 0, [0xf4f1ea], 'When a burglar trips anything the siren wails: every guard comes running, you get a warning and the police wait outside. Security +8.', { security: 8, upkeep: 10 }],
+  ['spotlight', 'Security Spotlight', 1200, 1, [1, 1], 0, [0x2b2b35], 'A sweeping searchlight: a burglar caught in the beam sets off the alarm. Security +4.', { security: 4, upkeep: 5 }],
+  ['panicbutton', 'Panic Button', 900, 1, [1, 1], 0, [0xff2a2a], 'When the alarm goes off it calls an armed response guard to the house. Security +3.', { security: 3 }],
+  ['safe', 'Floor Safe', 3000, 2, [1, 1], 0, [0x3a3c44], 'Keeps valuables out of a burglar’s reach: each safe (up to 3) cuts what a heist takes by 12%. Security +5.', { security: 5 }],
+  ['doghouse', 'Guard Dog', 4000, 2, [2, 2], 0.5, [0x8a5a2e, 0xe9e1d3, 0x1f4fbf], 'A good boy who sniffs out burglars, barks for the guards and bites. Security +10.', { security: 10, upkeep: 20 }],
+  ['metaldetector', 'Metal Detector', 6000, 3, [1, 2], 0, [0xd8d2c6], 'Walk-through scanner: a burglar carrying a weapon through it sets off the alarm. Security +9.', { security: 9, upkeep: 15, layer: 'floor', passable: true }],
+  ['laser', 'Laser Grid', 8000, 4, [2, 1], 0, [0x17151f], 'Red laser beams that burn burglars walking through (and trip the alarm). They blink off now and then. Security +12.', { security: 12, upkeep: 25, layer: 'floor', passable: true }],
 ];
 
 export function homeItems(base: Base): ItemDef[] {

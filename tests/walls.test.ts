@@ -127,3 +127,66 @@ describe('car tuning', async () => {
     expect(m.spoiler).toBe('gt');
   });
 });
+
+describe('double doors', () => {
+  it('pair up two doors of the same kind side by side, both walkable', () => {
+    const g = new Grid(0, { width: 1, depth: 2 });
+    const r = layoutRect({ width: 1, depth: 2 });
+    const z = r.z0 + 4;
+    for (let x = r.x0 + 1; x <= r.x0 + 8; x++) g.setWall(x, z, 0);
+    const a = r.x0 + 3;
+    g.setDoor(a, z, 1);
+    expect(g.doorPartner(a, z)).toBeNull();
+    g.setDoor(a + 1, z, 1);
+    expect(g.doorPartner(a, z)).toEqual([a + 1, z]);
+    expect(g.doorPartner(a + 1, z)).toEqual([a, z]);
+    expect(g.isWalkable(a, z) && g.isWalkable(a + 1, z)).toBe(true);
+    // A different kind of door next to it isn't its other half.
+    g.setDoor(a + 2, z, 2);
+    expect(g.doorPartner(a + 2, z)).toBeNull();
+    // A run of four of the same pairs up from the west end: two double doors.
+    g.setDoor(a + 2, z, 1);
+    g.setDoor(a + 3, z, 1);
+    expect(g.doorPartner(a + 2, z)).toEqual([a + 3, z]);
+    expect(g.doorPartner(a + 1, z)).toEqual([a, z]);
+    // Survives saving.
+    const h = new Grid(0, { width: 1, depth: 2 });
+    h.decodeWalls(g.encodeWalls());
+    expect(h.doorPartner(a, z)).toEqual([a + 1, z]);
+  });
+
+  it('fill a two-tile gap in a wall (one door alone can’t)', () => {
+    const g = new Grid(0, { width: 1, depth: 2 });
+    const r = layoutRect({ width: 1, depth: 2 });
+    const z = r.z0 + 4;
+    // Wall, two-tile gap, wall.
+    const a = r.x0 + 4;
+    for (let x = r.x0 + 1; x <= r.x0 + 8; x++) if (x !== a && x !== a + 1) g.setWall(x, z, 0);
+    expect(g.doorRun(a, z)).toBeNull();
+    expect(g.doorRun(a + 1, z)).toBeNull();
+    expect(g.doorPair([a, z], [a + 1, z])).toBe('x');
+    // Not across the gap the other way, nor a three-tile gap.
+    expect(g.doorPair([a, z - 1], [a, z])).toBeNull();
+    g.setWall(a + 2, z, -1);
+    expect(g.doorPair([a, z], [a + 1, z])).toBeNull();
+    g.setWall(a + 2, z, 0);
+    // Hung, both halves run along the wall and pair up.
+    g.setDoor(a, z, 1);
+    g.setDoor(a + 1, z, 1);
+    expect(g.doorRun(a, z)).toBe('x');
+    expect(g.doorRun(a + 1, z)).toBe('x');
+    expect(g.doorPartner(a, z)).toEqual([a + 1, z]);
+    // Two wall tiles work as before.
+    expect(g.doorPair([a + 2, z], [a + 3, z])).toBe('x');
+  });
+
+  it('pairs along north-south walls too', () => {
+    const g = new Grid(0, { width: 1, depth: 2 });
+    const r = layoutRect({ width: 1, depth: 2 });
+    const x = r.x0 + 5;
+    for (let z = r.z0 + 1; z <= r.z0 + 8; z++) g.setWall(x, z, 0);
+    g.setDoor(x, r.z0 + 4, 0);
+    g.setDoor(x, r.z0 + 5, 0);
+    expect(g.doorPartner(x, r.z0 + 5)).toEqual([x, r.z0 + 4]);
+  });
+});

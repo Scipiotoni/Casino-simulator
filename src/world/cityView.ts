@@ -3,10 +3,26 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { mat, glow } from '../render/materials';
 import { asphaltTexture, canvasTexture, makeCanvas, sidewalkTexture } from '../render/textures';
 import { disposeTree } from '../items/models/common';
-import { CENTER_X, FACADE_Z, ROAD_MID } from './grid';
+import { Obstacles, Strips, cullByDistance, instancedChunks, place } from './nature';
+import { CENTER_X, FACADE_Z, LOT_STRIDE, ROAD_MID } from './grid';
 import {
-  AVE_WALK, ROAD_HALF, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blocksFor, cityX, cityZ, colX, hash01, streetZ,
+  AVE_WALK, BLOCK_COLS, MAX_DEPTH, PARK_BLOCKS, PARK_STREET, RESIDENTIAL_ROWS, ROAD_HALF, ROW_GAP, STREET_NAMES, STREET_ROWS, avenueMid, avenueName, avenueX, blockX0,
+  blocksFor, colX, hash01, inParkSlot, slotToGlobal, streetZ,
 } from './city';
+import { type CityPlan, crosses } from './plan';
+import { CITY_LANE, type RoadNet } from './roadNet';
+import { OCC_HEAD, OCC_TOP, occupantMesh, randomLook } from '../entities/occupant';
+
+/** Someone sitting in a traffic car: which seat, their figure, how much more they can take. */
+export interface Occupant {
+  seat: number;
+  mesh: THREE.Mesh;
+  hp: number;
+  dead: boolean;
+}
+
+/** Car windows: clear enough to see who's inside. */
+const GLASS = new THREE.MeshBasicMaterial({ color: 0x2a3a44, transparent: true, opacity: 0.2, depthWrite: false });
 
 /** Global x of the gun shop's door (column 1, north side of the Casino Strip). */
 function colGallery(): number {
@@ -14,12 +30,38 @@ function colGallery(): number {
 }
 
 /** Lane offset from the centre line (drive on the right). */
-const LANE = 2.2;
+const LANE = CITY_LANE;
 /** Half the width of a road (the box an intersection occupies). */
 const BOX = ROAD_HALF;
 /** Where a car's centre waits before an intersection. */
 const STOP_AT = BOX + 2.8;
 const LIGHT_CYCLE = 22;
+/** Traffic further than this from you is brought back closer. */
+const BUBBLE = 320;
+/** Out of town you can see much further: cars on the roads there are kept (and shown) further out. */
+const ROAD_BUBBLE = 480;
+const ROAD_SEEN = 330;
+/** Cars out of town at once (the rest wait in town). */
+const ROAD_CARS = 22;
+/** Out-of-town roads are drawn this far above their profile. */
+const ROAD_LIFT = 0.06;
+
+/** Is the car out on the roads round town (or turning onto one)? */
+function outOfTown(c: Car): boolean {
+  return c.rd >= 0 || (c.turn?.next.rd ?? -1) >= 0;
+}
+
+/** The control point of a turn from (a, heading ha) to (b, heading hb): where the two headings meet. */
+function corner(ax: number, az: number, hax: number, haz: number, bx: number, bz: number, hbx: number, hbz: number): THREE.Vector2 {
+  // a + t·ha = b − u·hb
+  const den = hax * hbz - haz * hbx;
+  const mid = new THREE.Vector2((ax + bx) / 2, (az + bz) / 2);
+  if (Math.abs(den) < 0.08) return mid;
+  const t = ((bx - ax) * hbz - (bz - az) * hbx) / den;
+  const span = Math.hypot(bx - ax, bz - az);
+  if (t <= 0 || t > span * 1.5) return mid;
+  return new THREE.Vector2(ax + hax * t, az + haz * t);
+}
 
 type Axis = 'x' | 'z';
 
@@ -29,7 +71,20 @@ interface Turn {
   p2: THREE.Vector2;
   t: number;
   len: number;
-  next: { axis: Axis; line: number; dir: 1 | -1; pos: number };
+  /** Onto a city street (axis, line, pos) or, with `rd`, onto a road out of town at `s`. */
+  next: { axis: Axis; line: number; dir: 1 | -1; pos: number; rd?: number; s?: number };
+  /** The road it turned off (it crosses the new one right here). */
+  from: number;
+  /** Height at the start and the end, and how fast it takes the turn. */
+  y0?: number;
+  y1?: number;
+  v?: number;
+}
+
+/** Where you sit driving a car taken from the traffic: the driver's seat, low enough for your head to clear the roof. */
+export function trafficSeat(kind: number): THREE.Vector3 {
+  const { seats, roof } = carSeats(kind);
+  return new THREE.Vector3(seats[0].x, Math.min(seats[0].y, roof - 0.98), seats[0].z);
 }
 
 /** One car driving around the city (global frame). */
@@ -53,33 +108,107 @@ export class Car {
   x = 0;
   z = 0;
   yaw = 0;
+  /** Out of town: the road it's on (in the road net) and how far along it; -1 = a city street. */
+  rd = -1;
+  s = 0;
+  y = 0;
+  pitch = 0;
+  /** The people inside (traffic cars; police cruisers and stolen cars have none). */
+  readonly people: Occupant[] = [];
+  /** The driver was shot: it rolls to a stop and stays put (hazards on) until it's towed away. */
+  dead = false;
+  deadT = 0;
+  /** Pulling out onto another road: which way along it (0 = not). */
+  merging: 0 | 1 | -1 = 0;
+  /** Seconds spent waiting for a gap to pull out. */
+  wait = 0;
   readonly lights: THREE.Mesh;
   readonly hazard: THREE.Mesh;
 
-  constructor(readonly kind: number, readonly color: number) {
+  constructor(readonly kind: number, readonly color: number, withPeople = false) {
     const proto = carProto(kind);
-    const paint = mat(color, { rough: 0.25, metal: 0.55 });
+    // Satin, not mirror-bright: a glossy roof in the sun blooms white and hides who's inside.
+    const paint = mat(color, { rough: 0.45, metal: 0.2 });
     const body = new THREE.Mesh(proto.paint, paint);
     body.castShadow = true;
     this.root.add(body, new THREE.Mesh(proto.dark, mat(0x15141a, { rough: 0.3, metal: 0.4 })), new THREE.Mesh(proto.trim, mat(0xd8d8e0, { rough: 0.25, metal: 0.8 })));
+    this.root.add(new THREE.Mesh(proto.inner, mat(0x2a2630, { rough: 0.85 })));
+    const glass = new THREE.Mesh(proto.glass, GLASS);
+    glass.renderOrder = 2;
+    this.root.add(glass);
+    if (withPeople) this.seatPeople();
     this.lights = new THREE.Mesh(proto.lights, glow(0xfff2c8, 2.2));
     this.hazard = new THREE.Mesh(proto.rear, glow(0xff8a1f, 2.4));
     this.hazard.visible = false;
     this.root.add(this.lights, new THREE.Mesh(proto.rear, glow(0xff2a2a, 1.4)), this.hazard);
+    this.root.rotation.order = 'YXZ';
     this.max = [9, 8, 7, 12, 6][kind] ?? 9;
     this.length = kind === 4 ? 8.5 : 4.2;
     this.hp = this.maxHp = kind === 4 ? 220 : kind === 3 ? 140 : 100;
   }
 
   readonly length: number;
+
+  /** A driver, and now and then passengers (a bus is never empty). */
+  seatPeople(): void {
+    this.clearPeople();
+    const { seats } = carSeats(this.kind);
+    const free = seats.map((_, i) => i).slice(1).sort(() => Math.random() - 0.5);
+    const extra = this.kind === 4 ? 3 + Math.floor(Math.random() * 8) : Math.random() < 0.45 ? 1 + Math.floor(Math.random() * free.length) : 0;
+    for (const i of [0, ...free.slice(0, extra)]) {
+      const mesh = occupantMesh(randomLook(i === 0));
+      mesh.position.copy(seats[i]);
+      this.root.add(mesh);
+      this.people.push({ seat: i, mesh, hp: 60, dead: false });
+    }
+    this.dead = false;
+    this.deadT = 0;
+  }
+
+  /** Everyone out (the car was stolen or towed away). */
+  clearPeople(): void {
+    for (const o of this.people) {
+      o.mesh.removeFromParent();
+      o.mesh.geometry.dispose();
+    }
+    this.people.length = 0;
+  }
 }
 
-/** Shared geometry per car type, split by material: paint, dark glass/tyres, chrome, lamps. */
-const protoCache = new Map<number, { paint: THREE.BufferGeometry; dark: THREE.BufferGeometry; trim: THREE.BufferGeometry; lights: THREE.BufferGeometry; rear: THREE.BufferGeometry }>();
-function carProto(kind: number) {
+/** Shared geometry per car type, split by material: paint, glass, interior, tyres, chrome, lamps. */
+interface CarProto {
+  paint: THREE.BufferGeometry;
+  glass: THREE.BufferGeometry;
+  inner: THREE.BufferGeometry;
+  dark: THREE.BufferGeometry;
+  trim: THREE.BufferGeometry;
+  lights: THREE.BufferGeometry;
+  rear: THREE.BufferGeometry;
+}
+const protoCache = new Map<number, CarProto>();
+
+/**
+ * The seats in a traffic car (car frame, hips; the driver's first) and the height of its
+ * window line: below it the body is solid, above it you see in through the glass.
+ */
+export function carSeats(kind: number): { seats: THREE.Vector3[]; belt: number; roof: number } {
+  const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+  if (kind === 3) return { belt: 0.9, roof: 1.46, seats: [V(-0.38, 0.58, -0.3), V(0.38, 0.58, -0.3)] };
+  if (kind === 2) return { belt: 1.3, roof: 1.85, seats: [V(-0.42, 1.0, 1.0), V(0.42, 1.0, 1.0), V(-0.42, 1.0, -0.1), V(0.42, 1.0, -0.1), V(-0.42, 1.0, -1.1), V(0.42, 1.0, -1.1)] };
+  if (kind === 4) {
+    const seats = [V(-0.75, 1.15, 3.25)];
+    for (let z = 2.0; z > -3.6; z -= 1.1) seats.push(V(-0.72, 1.15, z), V(0.72, 1.15, z));
+    return { belt: 1.45, roof: 2.35, seats };
+  }
+  return { belt: 1.05, roof: 1.6, seats: [V(-0.4, 0.72, 0.15), V(0.4, 0.72, 0.15), V(-0.4, 0.72, -0.8), V(0.4, 0.72, -0.8)] };
+}
+
+function carProto(kind: number): CarProto {
   const hit = protoCache.get(kind);
   if (hit) return hit;
   const paint: THREE.BufferGeometry[] = [];
+  const glass: THREE.BufferGeometry[] = [];
+  const inner: THREE.BufferGeometry[] = [];
   const dark: THREE.BufferGeometry[] = [];
   const trim: THREE.BufferGeometry[] = [];
   const lights: THREE.BufferGeometry[] = [];
@@ -95,21 +224,44 @@ function carProto(kind: number) {
   const W = kind === 4 ? 2.4 : 1.8;
   const bodyH = kind === 4 ? 2.4 : kind === 2 ? 1.7 : kind === 3 ? 0.55 : 0.7;
   const base = 0.35;
-  bx(paint, W, bodyH, L, 0, base + bodyH / 2, 0);
-  if (kind === 0 || kind === 1) {
-    bx(paint, W * 0.86, 0.55, L * 0.5, 0, base + bodyH + 0.27, -0.2);
-    bx(dark, W * 0.88, 0.42, L * 0.46, 0, base + bodyH + 0.26, -0.2);
-  } else if (kind === 3) {
-    bx(paint, W * 0.8, 0.42, L * 0.38, 0, base + bodyH + 0.2, -0.35);
-    bx(dark, W * 0.82, 0.32, L * 0.36, 0, base + bodyH + 0.2, -0.35);
+  const { seats, belt } = carSeats(kind);
+  // The body up to the window line; above it a glass cabin under a roof on pillars, so you
+  // can see who's inside (and shoot them through the glass).
+  bx(paint, W, belt - base, L, 0, (base + belt) / 2, 0);
+  const cabin = (cw: number, z0: number, z1: number, top: number, posts: number[]) => {
+    bx(glass, cw, top - belt - 0.04, z1 - z0, 0, (belt + top) / 2 - 0.02, (z0 + z1) / 2);
+    // The cabin floor (the shiny paint under it would glare through the glass).
+    bx(inner, cw - 0.03, 0.03, z1 - z0 - 0.03, 0, belt + 0.016, (z0 + z1) / 2);
+    bx(paint, cw + 0.03, 0.07, z1 - z0 + 0.04, 0, top, (z0 + z1) / 2);
+    for (const z of posts) for (const sx of [-1, 1]) bx(paint, 0.07, top - belt, 0.08, sx * (cw / 2 + 0.005), (belt + top) / 2, z);
+  };
+  if (kind === 0 || kind === 1) cabin(W * 0.86, -1.25, 0.85, 1.6, [-1.25, -0.2, 0.85]);
+  else if (kind === 3) {
+    cabin(W * 0.8, -1.13, 0.43, 1.46, [-1.13, 0.43]);
     bx(paint, W, 0.08, 0.5, 0, base + bodyH + 0.35, -L / 2 + 0.3);
   } else if (kind === 2) {
-    bx(dark, W + 0.02, 0.6, 0.9, 0, base + bodyH - 0.4, L / 2 - 0.5);
-    bx(dark, W + 0.02, 0.5, L * 0.5, 0, base + bodyH - 0.4, -0.3);
+    cabin(W - 0.04, -L / 2 + 0.2, L / 2 - 0.25, 1.85, [-L / 2 + 0.2, -0.6, 0.5, L / 2 - 0.25]);
+    bx(paint, W, 2.05 - 1.85, L, 0, 1.95, 0);
   } else {
-    for (let i = 0; i < 6; i++) bx(dark, W + 0.02, 0.8, 1.0, 0, base + 1.6, -L / 2 + 1 + i * 1.25);
-    bx(dark, W * 0.9, 1.2, 0.05, 0, base + 1.5, L / 2 + 0.01);
+    const posts: number[] = [];
+    for (let z = -L / 2 + 0.2; z < L / 2 - 0.1; z += 1.25) posts.push(z);
+    posts.push(L / 2 - 0.15);
+    cabin(W - 0.04, -L / 2 + 0.2, L / 2 - 0.15, 2.35, posts);
+    bx(paint, W, 2.75 - 2.35, L, 0, 2.55, 0);
   }
+  // Inside: seats with headrests, the dashboard and the wheel.
+  const front = kind === 3 ? 0.43 : kind === 2 ? L / 2 - 0.25 : kind === 4 ? L / 2 - 0.15 : 0.85;
+  for (const st of seats) {
+    bx(inner, kind === 4 ? 0.5 : 0.46, 0.62, 0.1, st.x, st.y + 0.33, st.z - 0.2);
+    bx(inner, 0.26, 0.15, 0.09, st.x, st.y + 0.72, st.z - 0.21);
+    bx(inner, kind === 4 ? 0.5 : 0.46, 0.1, 0.46, st.x, st.y - 0.02, st.z + 0.03);
+  }
+  bx(inner, W * 0.8, 0.14, 0.36, 0, belt + 0.04, front - 0.22);
+  const dr = seats[0];
+  const wheel = new THREE.TorusGeometry(0.16, 0.025, 6, 16);
+  wheel.rotateX(-0.45);
+  wheel.translate(dr.x, dr.y + 0.42, dr.z + 0.42);
+  inner.push(wheel);
   if (kind === 1) {
     bx(lights, 0.7, 0.22, 0.3, 0, base + bodyH + 0.66, -0.2);
   }
@@ -136,7 +288,7 @@ function carProto(kind: number) {
     for (const g of list) g.dispose();
     return out;
   };
-  const p = { paint: m(paint), dark: m(dark), trim: m(trim), lights: m(lights), rear: m(rear) };
+  const p = { paint: m(paint), glass: m(glass), inner: m(inner), dark: m(dark), trim: m(trim), lights: m(lights), rear: m(rear) };
   protoCache.set(kind, p);
   return p;
 }
@@ -183,34 +335,78 @@ class Quads {
     mesh.receiveShadow = true;
     return mesh;
   }
+
+  /**
+   * The same quads split into square chunks of the city (each quad goes where its middle is),
+   * so markings off screen or far away aren't drawn.
+   */
+  chunks(m: THREE.Material, size = 400, far = 360): THREE.Group {
+    const cells = new Map<string, { pos: number[]; uv: number[] }>();
+    for (let q = 0; q < this.pos.length; q += 18) {
+      let cx = 0;
+      let cz = 0;
+      for (let k = 0; k < 6; k++) {
+        cx += this.pos[q + k * 3];
+        cz += this.pos[q + k * 3 + 2];
+      }
+      const key = `${Math.floor(cx / 6 / size)},${Math.floor(cz / 6 / size)}`;
+      let c = cells.get(key);
+      if (!c) cells.set(key, (c = { pos: [], uv: [] }));
+      for (let i = 0; i < 18; i++) c.pos.push(this.pos[q + i]);
+      for (let i = 0; i < 12; i++) c.uv.push(this.uv[(q / 3) * 2 + i]);
+    }
+    const out = new THREE.Group();
+    for (const c of cells.values()) {
+      const part = new Quads(this.uvScale);
+      part.pos = c.pos;
+      part.uv = c.uv;
+      const mesh = part.mesh(m);
+      cullByDistance(mesh, far);
+      out.add(mesh);
+    }
+    return out;
+  }
 }
 
-function instanced(geo: THREE.BufferGeometry, m: THREE.Material, mats: THREE.Matrix4[]): THREE.InstancedMesh | null {
-  if (!mats.length) return null;
-  const im = new THREE.InstancedMesh(geo, m, mats.length);
-  mats.forEach((x, i) => im.setMatrixAt(i, x));
-  im.frustumCulled = false;
-  return im;
+/** Many copies of one shape, chunked so the ones off screen or far away are skipped (the city is big). */
+function instanced(geo: THREE.BufferGeometry, m: THREE.Material, mats: THREE.Matrix4[], far = 300): THREE.Group | null {
+  return instancedChunks(geo, m, mats, false, 400, far);
 }
 
-const signCache = new Map<string, THREE.CanvasTexture>();
-function signTexture(text: string): THREE.CanvasTexture {
-  const hit = signCache.get(text);
-  if (hit) return hit;
-  const { canvas, ctx } = makeCanvas(256, 64);
-  ctx.fillStyle = '#1d6b3e';
-  ctx.fillRect(0, 0, 256, 64);
-  ctx.strokeStyle = '#f4f1ea';
-  ctx.lineWidth = 4;
-  ctx.strokeRect(5, 5, 246, 54);
-  ctx.fillStyle = '#f4f1ea';
-  ctx.font = '800 30px Nunito, Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text.toUpperCase(), 128, 34, 236);
-  const t = canvasTexture(canvas);
-  signCache.set(text, t);
-  return t;
+/** Two shapes with the same material as one (one draw call instead of two). */
+function merge2(a: THREE.BufferGeometry, b: THREE.BufferGeometry): THREE.BufferGeometry {
+  const g = mergeGeometries([a.index ? a.toNonIndexed() : a, b.index ? b.toNonIndexed() : b], false)!;
+  a.dispose();
+  b.dispose();
+  return g;
+}
+
+/** Cast (and receive) shadows on every chunk. */
+function shadows(g: THREE.Object3D, cast: boolean): void {
+  g.traverse((o) => {
+    o.castShadow = cast;
+    o.receiveShadow = true;
+  });
+}
+
+/** Every street and avenue name sign in one texture, one name per row. */
+function signAtlas(names: string[]): THREE.CanvasTexture {
+  const H = 64;
+  const { canvas, ctx } = makeCanvas(256, H * names.length);
+  names.forEach((text, i) => {
+    const y = i * H;
+    ctx.fillStyle = '#1d6b3e';
+    ctx.fillRect(0, y, 256, H);
+    ctx.strokeStyle = '#f4f1ea';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(5, y + 5, 246, H - 10);
+    ctx.fillStyle = '#f4f1ea';
+    ctx.font = '800 30px Nunito, Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text.toUpperCase(), 128, y + 34, 236);
+  });
+  return canvasTexture(canvas);
 }
 
 /**
@@ -228,11 +424,20 @@ export class CityView {
   private heads: { x: number; z: number; yaw: number; axis: Axis }[] = [];
   private lightT = 0;
   private lastPhase = -1;
-  private cols = 0;
+  /** Which streets and avenues exist, and how far they run. */
+  plan: CityPlan | null = null;
+  /** The ring road and the highways out of town (cars drive out onto them). */
+  private net: RoadNet | null = null;
+  /** Cars out of town right now. */
+  private roadCars = 0;
+  /** Where the next look for far-away cars starts (a few are checked each frame). */
+  private scan = 0;
   /** Where the player stands (global), so cars stop for them. */
   player = { x: -9999, z: -9999 };
   readonly targets: Target[] = [];
   private targetGroup = new THREE.Group();
+  /** Hedges and dumpsters behind the buildings (solid). */
+  readonly props = new Obstacles();
   /** A car got shot: the game plays the alarm. */
   onCarHit: ((c: Car) => void) | null = null;
   onHonk: ((c: Car) => void) | null = null;
@@ -242,7 +447,7 @@ export class CityView {
   }
 
   /** Tin cans and bottles on crates along the sidewalks, and a shooting gallery outside the gun shop. */
-  private buildTargets(cols: number, crates: THREE.Matrix4[]): void {
+  private buildTargets(plan: CityPlan, crates: THREE.Matrix4[]): void {
     for (const t of this.targets) t.mesh.removeFromParent();
     this.targets.length = 0;
     const can = new THREE.CylinderGeometry(0.07, 0.07, 0.2, 12);
@@ -272,8 +477,11 @@ export class CityView {
     // A crate of cans every block, on both sidewalks of every street.
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      for (let k = 0; k < blocksFor(cols); k++) {
+      const st = plan.streets[r];
+      if (!st) continue;
+      for (let k = 0; k < blocksFor(plan.cols); k++) {
         const [, a1] = avenueX(k);
+        if (a1 + 28 > st.xb || a1 < st.xa) continue;
         crate(a1 + 9, zc - BOX - 2.3, r * 97 + k * 7);
         crate(a1 + 28, zc + BOX + 2.3, r * 97 + k * 7 + 3);
       }
@@ -341,15 +549,14 @@ export class CityView {
     }
   }
 
-  build(cols: number): void {
-    this.cols = cols;
+  build(plan: CityPlan): void {
+    const cols = plan.cols;
+    this.plan = plan;
     this.statics.removeFromParent();
     disposeTree(this.statics);
     this.statics = new THREE.Group();
     this.group.add(this.statics);
     const s = this.statics;
-    const [x0, x1] = cityX(cols);
-    const [z0, z1] = cityZ();
     const nb = blocksFor(cols);
     const asphalt = new Quads(2);
     const walk = new Quads(1);
@@ -367,8 +574,15 @@ export class CityView {
     };
     const roadZ = (r: number): [number, number] => [streetZ(r) - BOX, streetZ(r) + BOX];
     const aves = Array.from({ length: nb + 1 }, (_, k) => avenueX(k));
-    // Streets: road and both sidewalks across the whole city.
+    /** The avenues that cross street `r` (only those make intersections). */
+    const crossing = (r: number) => aves.filter((_, k) => crosses(plan, r, k));
+    // Streets: road and both sidewalks, from the first block to the last on each street.
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = plan.streets[r];
+      if (!st) continue;
+      const x0 = st.xa;
+      const x1 = st.xb;
+      const cr = crossing(r);
       const [ra, rb] = roadZ(r);
       asphalt.add(x0, ra, x1, rb, -0.01);
       const nA = FACADE_Z + (streetZ(r) - ROAD_MID);
@@ -376,7 +590,7 @@ export class CityView {
       walk.add(x0, rb, x1, 2 * streetZ(r) - nA, 0.002);
       // Curbs, broken where the avenues cross.
       let cx = x0;
-      for (const [a, b] of aves) {
+      for (const [a, b] of cr) {
         const ra0 = a + AVE_WALK;
         const rb0 = b - AVE_WALK;
         if (ra0 > cx) {
@@ -391,20 +605,27 @@ export class CityView {
       }
       // Centre dashes and edge lines, skipping intersections.
       for (let x = x0 + 1; x < x1 - 1; x += 3) {
-        if (aves.some(([a, b]) => x > a + AVE_WALK - 1 && x < b - AVE_WALK + 1)) continue;
+        if (cr.some(([a, b]) => x > a + AVE_WALK - 1 && x < b - AVE_WALK + 1)) continue;
         yellow.add(x, streetZ(r) - 0.08, x + 1.6, streetZ(r) + 0.08, 0.004);
       }
     }
-    // Avenues: road and sidewalks in the gaps between the streets.
-    const gaps: [number, number][] = [];
-    let za = z0;
-    for (let r = 0; r < STREET_ROWS; r++) {
-      const [ra, rb] = roadZ(r);
-      gaps.push([za, ra]);
-      za = rb;
-    }
-    gaps.push([za, z1]);
-    for (const [a, b] of aves) {
+    // Avenues: road and sidewalks between the streets they cross, from end to end.
+    const aveGaps = (k: number): [number, number][] => {
+      const av = plan.avenues[k];
+      if (!av) return [];
+      const out: [number, number][] = [];
+      let za = av.za;
+      for (let r = 0; r < STREET_ROWS; r++) {
+        if (!crosses(plan, r, k)) continue;
+        const [ra, rb] = roadZ(r);
+        if (ra > za) out.push([za, ra]);
+        za = rb;
+      }
+      if (av.zb > za) out.push([za, av.zb]);
+      return out;
+    };
+    for (const [k, [a, b]] of aves.entries()) {
+      const gaps = aveGaps(k);
       const ra0 = a + AVE_WALK;
       const rb0 = b - AVE_WALK;
       for (const [ga, gb] of gaps) {
@@ -419,7 +640,7 @@ export class CityView {
     // Crosswalks and stop lines at every intersection.
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      for (const [a, b] of aves) {
+      for (const [a, b] of crossing(r)) {
         const xc = (a + b) / 2;
         const rw = (b - a) / 2 - AVE_WALK;
         for (const sx of [-1, 1]) {
@@ -443,8 +664,8 @@ export class CityView {
     s.add(
       asphalt.mesh(mat(0xffffff, { map: asph, rough: 0.95 })),
       walk.mesh(mat(0xffffff, { map: swTex, rough: 0.9 })),
-      white.mesh(mat(0xf4f1ea, { rough: 0.6, emissive: 0x302c28, emissiveIntensity: 0.4 })),
-      yellow.mesh(mat(0xffd23f, { emissive: 0x6b5200, emissiveIntensity: 0.4 })),
+      white.chunks(mat(0xf4f1ea, { rough: 0.6, emissive: 0x302c28, emissiveIntensity: 0.4 })),
+      yellow.chunks(mat(0xffd23f, { emissive: 0x6b5200, emissiveIntensity: 0.4 })),
     );
     const cm = instanced(curbGeo, mat(0xb9b4c2, { rough: 0.8 }), curbs);
     if (cm) s.add(cm);
@@ -461,18 +682,14 @@ export class CityView {
       m.setPosition(x, 0, z);
       list.push(m);
     };
-    const inAve = (x: number, pad = 0) => aves.some(([a, b]) => x > a - pad && x < b + pad);
-    const inStreet = (z: number, pad = 0) => {
-      for (let r = 0; r < STREET_ROWS; r++) {
-        const zc = streetZ(r);
-        if (z > zc - BOX - 4.5 - pad && z < zc + BOX + 4.5 + pad) return true;
-      }
-      return false;
-    };
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = plan.streets[r];
+      if (!st) continue;
+      const cr = crossing(r);
+      const inAve = (x: number, pad = 0) => cr.some(([a, b]) => x > a - pad && x < b + pad);
       const zc = streetZ(r);
       let i = 0;
-      for (let x = x0 + 6; x < x1 - 6; x += 7, i++) {
+      for (let x = st.xa + 6; x < st.xb - 6; x += 7, i++) {
         if (inAve(x, 2)) continue;
         for (const side of [-1, 1]) {
           const z = zc + side * (BOX + 0.85);
@@ -486,9 +703,19 @@ export class CityView {
         }
       }
     }
-    for (const [a, b] of aves) {
+    for (const [k, [a, b]] of aves.entries()) {
+      const av = plan.avenues[k];
+      if (!av) continue;
+      const inStreet = (z: number, pad = 0) => {
+        for (let r = 0; r < STREET_ROWS; r++) {
+          if (!crosses(plan, r, k)) continue;
+          const zc = streetZ(r);
+          if (z > zc - BOX - 4.5 - pad && z < zc + BOX + 4.5 + pad) return true;
+        }
+        return false;
+      };
       let i = 0;
-      for (let z = z0 + 6; z < z1 - 6; z += 7, i++) {
+      for (let z = av.za + 6; z < av.zb - 6; z += 7, i++) {
         if (inStreet(z, 2)) continue;
         for (const side of [-1, 1]) {
           const x = side < 0 ? a + AVE_WALK - 0.85 : b - AVE_WALK + 0.85;
@@ -508,7 +735,8 @@ export class CityView {
     headGeo.scale(1, 0.6, 1.3);
     headGeo.translate(0, 4.0, 1.0);
     const poleMat = mat(0x5b5668, { metal: 0.6, rough: 0.4 });
-    for (const [geo, m] of [[poleGeo, poleMat], [armGeo, poleMat], [headGeo, glow(0xffe2a8, 2.6)]] as const) {
+    const lampPole = merge2(poleGeo, armGeo);
+    for (const [geo, m] of [[lampPole, poleMat], [headGeo, glow(0xffe2a8, 2.6)]] as const) {
       const im = instanced(geo, m, lamps);
       if (im) s.add(im);
     }
@@ -523,7 +751,7 @@ export class CityView {
     for (const [geo, m] of [[trunk, mat(0x6b4422, { rough: 0.9 })], [crown, mat(0x2f8f45, { rough: 0.8, flat: true })], [crown2, mat(0x3aa655, { rough: 0.8, flat: true })], [pit, mat(0x3a2a1c, { rough: 1 })]] as const) {
       const im = instanced(geo, m, trees);
       if (im) {
-        im.castShadow = geo !== pit;
+        shadows(im, geo !== pit);
         s.add(im);
       }
     }
@@ -533,7 +761,7 @@ export class CityView {
     benchBack.translate(0, 0.72, -0.22);
     const benchLegs = new THREE.BoxGeometry(1.5, 0.45, 0.4);
     benchLegs.translate(0, 0.22, 0);
-    for (const [geo, m] of [[benchSeat, mat(0x8a5a2e, { rough: 0.8 })], [benchBack, mat(0x8a5a2e, { rough: 0.8 })], [benchLegs, mat(0x2b2b35, { metal: 0.6, rough: 0.5 })]] as const) {
+    for (const [geo, m] of [[merge2(benchSeat, benchBack), mat(0x8a5a2e, { rough: 0.8 })], [benchLegs, mat(0x2b2b35, { metal: 0.6, rough: 0.5 })]] as const) {
       const im = instanced(geo, m, benches);
       if (im) s.add(im);
     }
@@ -541,7 +769,7 @@ export class CityView {
     hyd.translate(0, 0.3, 0);
     const hydTop = new THREE.SphereGeometry(0.15, 10, 6);
     hydTop.translate(0, 0.62, 0);
-    for (const [geo, m] of [[hyd, mat(0xd62a2a, { rough: 0.5 })], [hydTop, mat(0xd62a2a, { rough: 0.5 })]] as const) {
+    for (const [geo, m] of [[merge2(hyd, hydTop), mat(0xd62a2a, { rough: 0.5 })]] as const) {
       const im = instanced(geo, m, hydrants);
       if (im) s.add(im);
     }
@@ -555,7 +783,7 @@ export class CityView {
     const sigPole: THREE.Matrix4[] = [];
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      for (const [a, b] of aves) {
+      for (const [a, b] of crossing(r)) {
         const xc = (a + b) / 2;
         const hw = (b - a) / 2 - AVE_WALK + 0.6;
         // Corner poles; each faces traffic coming towards it on one axis.
@@ -591,7 +819,7 @@ export class CityView {
       const x = instanced(geo, m, list);
       if (x) s.add(x);
     }
-    const litGeo = new THREE.SphereGeometry(0.13, 10, 8);
+    const litGeo = new THREE.SphereGeometry(0.13, 6, 4);
     litGeo.scale(1, 1, 0.4);
     this.litLamps = new THREE.InstancedMesh(litGeo, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), this.heads.length);
     this.litLamps.frustumCulled = false;
@@ -599,73 +827,252 @@ export class CityView {
     s.add(this.litLamps);
     this.lastPhase = -1;
 
-    // Street-name signs on one corner of every intersection.
+    // Street-name signs on one corner of every intersection: one atlas, one merged mesh.
+    const names = [...STREET_NAMES.slice(0, STREET_ROWS), ...aves.map((_, k) => avenueName(k))];
+    const atlas = signAtlas(names);
+    const signGeos: THREE.BufferGeometry[] = [];
+    const signPoles: THREE.Matrix4[] = [];
+    const signQuad = (row: number, x: number, y: number, z: number, yaw: number) => {
+      const q = new THREE.PlaneGeometry(1.8, 0.45);
+      const uv = q.getAttribute('uv') as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - (row + 1 - uv.getY(i)) / names.length);
+      q.rotateY(yaw);
+      q.translate(x, y, z);
+      signGeos.push(q);
+    };
     for (let r = 0; r < STREET_ROWS; r++) {
       const zc = streetZ(r);
-      aves.forEach(([a, b], k) => {
+      aves.forEach(([, b], k) => {
+        if (!crosses(plan, r, k)) return;
         const x = b - AVE_WALK + 2.2;
         const z = zc - BOX - 2.2;
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3.3, 6), poleMat);
-        pole.position.set(x, 1.65, z);
-        s.add(pole);
-        const st = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.45), new THREE.MeshStandardMaterial({ map: signTexture(STREET_NAMES[r] ?? 'Street'), side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: signTexture(STREET_NAMES[r] ?? 'Street') }));
-        st.position.set(x + 0.9, 3.1, z);
-        s.add(st);
-        const av = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.45), new THREE.MeshStandardMaterial({ map: signTexture(avenueName(k)), side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: signTexture(avenueName(k)) }));
-        av.rotation.y = Math.PI / 2;
-        av.position.set(x, 2.6, z - 0.9);
-        s.add(av);
+        signPoles.push(new THREE.Matrix4().makeTranslation(x, 1.65, z));
+        signQuad(r, x + 0.9, 3.1, z, 0);
+        signQuad(STREET_ROWS + k, x, 2.6, z - 0.9, Math.PI / 2);
       });
     }
+    const sp = instanced(new THREE.CylinderGeometry(0.05, 0.05, 3.3, 6), poleMat, signPoles);
+    if (sp) s.add(sp);
+    if (signGeos.length) {
+      const merged = mergeGeometries(signGeos, false)!;
+      for (const g of signGeos) g.dispose();
+      s.add(new THREE.Mesh(merged, new THREE.MeshStandardMaterial({ map: atlas, side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0.25, emissiveMap: atlas })));
+    }
+    this.buildBackyards(plan);
     const crates: THREE.Matrix4[] = [];
-    this.buildTargets(cols, crates);
+    this.buildTargets(plan, crates);
     const crateGeo = new THREE.BoxGeometry(1.1, 0.6, 0.6);
     const cr = instanced(crateGeo, mat(0x9a6a3c, { rough: 0.85 }), crates);
     if (cr) s.add(cr);
     this.spawnCars();
   }
 
+  /**
+   * Behind the buildings: lawns and hedges in the residential rows, and dumpsters along the
+   * alleys between the backs of the lots (they're solid: see `props`).
+   */
+  private buildBackyards(plan: CityPlan): void {
+    const cols = plan.cols;
+    const s = this.statics;
+    this.props.clear();
+    const grass = new Strips();
+    const hedges: THREE.Matrix4[] = [];
+    const dumpsters: THREE.Matrix4[] = [];
+    const lids: THREE.Matrix4[] = [];
+    const back = FACADE_Z - MAX_DEPTH;
+    for (const row of RESIDENTIAL_ROWS) {
+      if (row >= STREET_ROWS) continue;
+      for (let col = 0; col < cols; col++) {
+        for (const side of [0, 1] as const) {
+          const slot = { row, col, side };
+          if (inParkSlot(slot) || !plan.has(slot)) continue;
+          const a = slotToGlobal(slot, CENTER_X - LOT_STRIDE / 2 + 0.4, back);
+          const b = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2 - 0.4, FACADE_Z - 0.6);
+          grass.rect(Math.min(a.x, b.x), Math.min(a.z, b.z), Math.max(a.x, b.x), Math.max(a.z, b.z), -0.018);
+          // A hedge along the east side of every yard (the west one belongs to the neighbour).
+          if ((col + 1) % BLOCK_COLS === 0 || !plan.has({ row, col: col + 1, side })) continue;
+          const h0 = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2, back + 2);
+          const h1 = slotToGlobal(slot, CENTER_X + LOT_STRIDE / 2, FACADE_Z - 6);
+          const len = Math.abs(h1.z - h0.z);
+          hedges.push(place(h0.x, 0, (h0.z + h1.z) / 2, 0, 0.7, 1, len));
+          this.props.rect(h0.x - 0.4, h0.x + 0.4, Math.min(h0.z, h1.z), Math.max(h0.z, h1.z));
+        }
+      }
+    }
+    // Dumpsters along every alley (not inside Central Park).
+    for (let r = 0; r < STREET_ROWS - 1; r++) {
+      const az = streetZ(r) + ROW_GAP / 2;
+      for (let k = 0; k < blocksFor(cols); k++) {
+        if (r === PARK_STREET && k >= PARK_BLOCKS[0] && k <= PARK_BLOCKS[1]) continue;
+        // Only behind lots that are there.
+        let any = false;
+        for (let c = k * BLOCK_COLS; c < (k + 1) * BLOCK_COLS && !any; c++) any = plan.has({ row: r, col: c, side: 1 }) || plan.has({ row: r + 1, col: c, side: 0 });
+        if (!any) continue;
+        for (let i = 0; i < 3; i++) {
+          const x = blockX0(k) + 22 + i * 50 + hash01(r * 131 + k * 7 + i) * 8;
+          const z = az + (i % 2 ? 2.4 : -2.4);
+          const yaw = hash01(r * 17 + k * 3 + i) * 0.3 - 0.15;
+          dumpsters.push(place(x, 0, z, yaw));
+          lids.push(place(x, 0, z, yaw));
+          this.props.rect(x - 1.25, x + 1.25, z - 0.85, z + 0.85);
+        }
+      }
+    }
+    const gm = grass.mesh(mat(0x4a8a3c, { rough: 1 }));
+    if (gm) s.add(gm);
+    const hedgeGeo = new THREE.BoxGeometry(1, 1.3, 1);
+    hedgeGeo.translate(0, 0.65, 0);
+    const hg = instanced(hedgeGeo, mat(0x2f6a34, { rough: 0.95, flat: true }), hedges);
+    if (hg) {
+      shadows(hg, true);
+      s.add(hg);
+    }
+    const bin = new THREE.BoxGeometry(2.2, 1.3, 1.4);
+    bin.translate(0, 0.75, 0);
+    const lid = new THREE.BoxGeometry(2.3, 0.12, 1.5);
+    lid.translate(0, 1.46, 0);
+    const dg = instanced(bin, mat(0x2e6a4a, { rough: 0.6, metal: 0.3 }), dumpsters);
+    if (dg) {
+      shadows(dg, true);
+      s.add(dg);
+    }
+    const lg = instanced(lid, mat(0x1d1f24, { rough: 0.7 }), lids);
+    if (lg) s.add(lg);
+  }
+
+  /** The roads out of town are laid (or re-laid): cars out there come back into town first. */
+  setRoads(net: RoadNet | null): void {
+    this.net = net;
+    for (const c of this.cars) if (outOfTown(c)) this.respawn(c, true);
+  }
+
+  /** The road on out of town from the lo (0) or hi (1) end of a street or avenue, if cars may take it. */
+  private exitFor(axis: Axis, line: number, edge: 0 | 1): { road: number; s: number; dir: 1 | -1 } | null {
+    if (!this.net || this.roadCars >= ROAD_CARS) return null;
+    return this.net.exit(axis, line, edge);
+  }
+
   private spawnCars(): void {
     for (const c of this.cars) c.root.removeFromParent();
     this.cars = [];
-    const n = 14 + STREET_ROWS * 4 + blocksFor(this.cols) * 2;
+    // The city is big: the cars stay in a bubble around you (see update), so a fixed number does.
+    const n = 64;
     for (let i = 0; i < n; i++) {
       const kind = i % 9 === 0 ? 4 : i % 5 === 0 ? 1 : i % 7 === 0 ? 3 : i % 4 === 0 ? 2 : 0;
-      const car = new Car(kind, kind === 1 ? 0xffc21a : kind === 4 ? 0x2fb8c9 : CAR_COLORS[i % CAR_COLORS.length]);
+      const car = new Car(kind, kind === 1 ? 0xffc21a : kind === 4 ? 0x2fb8c9 : CAR_COLORS[i % CAR_COLORS.length], true);
       this.respawn(car, true);
       this.cars.push(car);
       this.carGroup.add(car.root);
     }
   }
 
+  /** All the roads cars can drive: every planned street (x) and avenue (z) with its ends. */
+  private lines(): { axis: Axis; line: number; lo: number; hi: number }[] {
+    const plan = this.plan;
+    const out: { axis: Axis; line: number; lo: number; hi: number }[] = [];
+    if (!plan) return out;
+    plan.streets.forEach((st, r) => st && out.push({ axis: 'x', line: r, lo: st.xa, hi: st.xb }));
+    plan.avenues.forEach((av, k) => av && out.push({ axis: 'z', line: k, lo: av.za, hi: av.zb }));
+    return out;
+  }
+
+  /** Where a road starts and ends. */
+  private span(axis: Axis, line: number): [number, number] {
+    const plan = this.plan;
+    if (axis === 'x') {
+      const st = plan?.streets[line];
+      return st ? [st.xa, st.xb] : [0, 0];
+    }
+    const av = plan?.avenues[line];
+    return av ? [av.za, av.zb] : [0, 0];
+  }
+
   /** Put a car on a random lane (at its starting end, or anywhere along it at first). */
   private respawn(c: Car, anywhere: boolean): void {
-    const nb = blocksFor(this.cols);
-    const [x0, x1] = cityX(this.cols);
-    const [z0, z1] = cityZ();
+    const lines = this.lines();
+    c.rd = -1;
+    c.merging = 0;
     c.turn = null;
     c.decided = -999;
     c.speed = c.max * 0.6;
     c.dir = Math.random() < 0.5 ? 1 : -1;
-    if (Math.random() < 0.6) {
-      c.axis = 'x';
-      c.line = Math.floor(Math.random() * STREET_ROWS);
-      c.pos = anywhere ? x0 + 6 + Math.random() * (x1 - x0 - 12) : c.dir > 0 ? x0 + 2 : x1 - 2;
-    } else {
-      c.axis = 'z';
-      c.line = Math.floor(Math.random() * (nb + 1));
-      c.pos = anywhere ? z0 + 6 + Math.random() * (z1 - z0 - 12) : c.dir > 0 ? z0 + 2 : z1 - 2;
-    }
+    const ln = lines[Math.floor(Math.random() * lines.length)];
+    if (!ln) return;
+    c.axis = ln.axis;
+    c.line = ln.line;
+    c.pos = anywhere ? ln.lo + 6 + Math.random() * Math.max(1, ln.hi - ln.lo - 12) : c.dir > 0 ? ln.lo + 2 : ln.hi - 2;
     // Don't spawn inside an intersection.
-    const stops = this.stopsFor(c.axis);
-    for (const s of stops) if (Math.abs(c.pos - s) < BOX + 2) c.pos = s - c.dir * (BOX + 6);
+    for (const st of this.stopsFor(c.axis, c.line)) if (Math.abs(c.pos - st.at) < BOX + 2) c.pos = st.at - c.dir * (BOX + 6);
     this.place(c);
   }
 
-  /** Intersection centres along a street (x) or an avenue (z). */
-  private stopsFor(axis: Axis): number[] {
-    if (axis === 'x') return Array.from({ length: blocksFor(this.cols) + 1 }, (_, k) => avenueMid(k));
-    return Array.from({ length: STREET_ROWS }, (_, r) => streetZ(r));
+  /** Put a car on a road near (fx, fz), but out of sight. */
+  private respawnNear(c: Car, fx: number, fz: number): boolean {
+    const near = this.lines().filter((ln) => (ln.axis === 'x'
+      ? Math.abs(streetZ(ln.line) - fz) < BUBBLE * 0.8 && fx > ln.lo - BUBBLE && fx < ln.hi + BUBBLE
+      : Math.abs(avenueMid(ln.line) - fx) < BUBBLE * 0.8 && fz > ln.lo - BUBBLE && fz < ln.hi + BUBBLE));
+    // Out of town (or near its edge): the ring road and the highways round you.
+    const spots = this.net && (this.roadCars < ROAD_CARS || outOfTown(c)) ? this.net.spotsNear(fx, fz, ROAD_SEEN + 10, ROAD_BUBBLE - 20) : [];
+    if (spots.length && Math.random() * (spots.length + near.length * 6) < spots.length) return this.respawnOnRoad(c, spots);
+    for (let tries = 0; tries < 6 && near.length; tries++) {
+      const ln = near[Math.floor(Math.random() * near.length)];
+      const alongX = ln.axis === 'x';
+      const off = (170 + Math.random() * (BUBBLE - 190)) * (Math.random() < 0.5 ? -1 : 1);
+      let pos = Math.max(ln.lo + 4, Math.min(ln.hi - 4, (alongX ? fx : fz) + off));
+      const axis = ln.axis;
+      const line = ln.line;
+      for (const st of this.stopsFor(axis, line)) if (Math.abs(pos - st.at) < BOX + 3) pos = st.at + (pos < st.at ? -1 : 1) * (BOX + 6);
+      const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+      const p = this.laneXY(axis, line, dir, pos);
+      if (Math.hypot(p.x - fx, p.y - fz) < 160) continue;
+      if (this.cars.some((o) => o !== c && o.axis === axis && o.line === line && o.dir === dir && Math.abs(o.pos - pos) < 12)) continue;
+      c.rd = -1;
+      c.merging = 0;
+      c.axis = axis;
+      c.line = line;
+      c.dir = dir;
+      c.pos = pos;
+      c.turn = null;
+      c.decided = -999;
+      c.speed = c.max * 0.6;
+      this.place(c);
+      return true;
+    }
+    return false;
+  }
+
+  /** Put a car on one of these spots out of town, if nothing's close to it already. */
+  private respawnOnRoad(c: Car, spots: { road: number; s: number }[]): boolean {
+    const net = this.net!;
+    for (let tries = 0; tries < 5; tries++) {
+      const sp = spots[Math.floor(Math.random() * spots.length)];
+      const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+      const p = net.lane(sp.road, sp.s, dir);
+      if (this.cars.some((o) => o !== c && Math.abs(o.x - p.x) < 40 && Math.abs(o.z - p.z) < 40 && Math.hypot(o.x - p.x, o.z - p.z) < 40)) continue;
+      c.rd = sp.road;
+      c.s = sp.s;
+      c.dir = dir;
+      c.turn = null;
+      c.merging = 0;
+      c.decided = -999;
+      c.speed = net.roads[sp.road].speed * 0.8;
+      this.place(c);
+      return true;
+    }
+    return false;
+  }
+
+  /** The intersections along a street (x) or an avenue (z): where, and which road crosses there. */
+  private stopsFor(axis: Axis, line: number): { at: number; cross: number }[] {
+    const plan = this.plan;
+    if (!plan) return [];
+    const out: { at: number; cross: number }[] = [];
+    if (axis === 'x') {
+      for (let k = 0; k < plan.avenues.length; k++) if (crosses(plan, line, k)) out.push({ at: avenueMid(k), cross: k });
+    } else {
+      for (let r = 0; r < plan.streets.length; r++) if (crosses(plan, r, line)) out.push({ at: streetZ(r), cross: r });
+    }
+    return out;
   }
 
   private laneXY(axis: Axis, line: number, dir: 1 | -1, pos: number): THREE.Vector2 {
@@ -673,14 +1080,23 @@ export class CityView {
   }
 
   private place(c: Car): void {
-    if (!c.turn) {
+    if (!c.turn && c.rd >= 0 && this.net) {
+      const p = this.net.lane(c.rd, c.s, c.dir);
+      c.x = p.x;
+      c.z = p.z;
+      c.y = p.y + ROAD_LIFT;
+      c.yaw = Math.atan2(p.dx, p.dz);
+      c.pitch = -Math.atan(p.grade);
+    } else if (!c.turn) {
       const p = this.laneXY(c.axis, c.line, c.dir, c.pos);
       c.x = p.x;
       c.z = p.y;
+      c.y = 0;
+      c.pitch = 0;
       c.yaw = c.axis === 'x' ? (c.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : c.dir > 0 ? 0 : Math.PI;
     }
-    c.root.position.set(c.x, 0, c.z);
-    c.root.rotation.y = c.yaw;
+    c.root.position.set(c.x, c.y, c.z);
+    c.root.rotation.set(c.pitch, c.yaw, 0);
   }
 
   /** Which axis has green right now ('x' streets, 'z' avenues), and whether it's amber. */
@@ -711,11 +1127,35 @@ export class CityView {
       this.litLamps.instanceMatrix.needsUpdate = true;
       if (this.litLamps.instanceColor) this.litLamps.instanceColor.needsUpdate = true;
     }
-    if (sim > 0) for (const c of this.cars) this.drive(c, sim, ph);
+    this.roadCars = 0;
+    for (const c of this.cars) if (outOfTown(c)) this.roadCars++;
+    if (sim > 0) for (const c of this.cars) {
+      if (c.dead) c.deadT += sim;
+      this.drive(c, sim, ph);
+    }
+    // Cars that drove far away from you come back on a road near you (out of sight).
+    const n = this.cars.length;
+    if (sim > 0 && n) {
+      let moved = 0;
+      let tried = 0;
+      for (let i = 0; i < n && moved < 3 && tried < 8; i++) {
+        const c = this.cars[(this.scan + i) % n];
+        const far = outOfTown(c) ? ROAD_BUBBLE : BUBBLE;
+        // A car whose driver was shot is towed away after a while (once you've moved off).
+        const towed = c.dead && c.deadT > 45 && Math.hypot(c.x - fx, c.z - fz) > 50;
+        if (!towed && (c.turn || c.shaken > 0 || c.dead || Math.hypot(c.x - fx, c.z - fz) < far)) continue;
+        tried++;
+        if (this.respawnNear(c, fx, fz)) {
+          moved++;
+          if (c.dead || c.people.some((o) => o.dead)) c.seatPeople();
+        }
+      }
+      this.scan = (this.scan + 7) % n;
+    }
     this.updateTargets(dt);
     for (const c of this.cars) {
-      c.root.visible = Math.abs(c.x - fx) < 150 && Math.abs(c.z - fz) < 150;
-      if (c.shaken > 0) c.hazard.visible = Math.floor(c.shaken * 3) % 2 === 0;
+      c.root.visible = outOfTown(c) ? Math.hypot(c.x - fx, c.z - fz) < ROAD_SEEN : Math.abs(c.x - fx) < 150 && Math.abs(c.z - fz) < 150;
+      if (c.shaken > 0 || c.dead) c.hazard.visible = Math.floor((c.shaken || this.lightT) * 3) % 2 === 0;
       else if (c.hazard.visible) c.hazard.visible = false;
     }
   }
@@ -725,15 +1165,23 @@ export class CityView {
     c.honkT = Math.max(0, c.honkT - dt);
     if (c.turn) {
       const tr = c.turn;
-      tr.t += (c.speed * dt) / tr.len;
-      c.speed += (c.max * 0.55 - c.speed) * Math.min(1, dt * 2);
+      tr.t += (Math.max(c.speed, c.dead ? 0.3 : 1) * dt) / tr.len;
+      c.speed += (c.dead ? -c.speed : (tr.v ?? c.max * 0.55) - c.speed) * Math.min(1, dt * 2);
       if (tr.t >= 1) {
-        c.axis = tr.next.axis;
-        c.line = tr.next.line;
         c.dir = tr.next.dir;
-        c.pos = tr.next.pos;
         c.turn = null;
-        c.decided = this.stopsFor(c.axis).findIndex((s) => Math.abs(s - c.pos) < BOX + 3);
+        c.merging = 0;
+        // The road it came off is the one crossing here: don't decide about it again.
+        c.decided = tr.from;
+        if (tr.next.rd !== undefined && tr.next.rd >= 0) {
+          c.rd = tr.next.rd;
+          c.s = tr.next.s ?? 0;
+        } else {
+          c.rd = -1;
+          c.axis = tr.next.axis;
+          c.line = tr.next.line;
+          c.pos = tr.next.pos;
+        }
         this.place(c);
         return;
       }
@@ -742,32 +1190,38 @@ export class CityView {
       const d = tr.p1.clone().sub(tr.p0).multiplyScalar(2 * (1 - t)).add(tr.p2.clone().sub(tr.p1).multiplyScalar(2 * t));
       c.x = a.x;
       c.z = a.y;
-      c.yaw = Math.atan2(d.x, d.y);
+      if (d.lengthSq() > 1e-6) c.yaw = Math.atan2(d.x, d.y);
+      c.y = (tr.y0 ?? 0) + ((tr.y1 ?? 0) - (tr.y0 ?? 0)) * t;
+      c.pitch *= Math.max(0, 1 - dt * 4);
       this.place(c);
       return;
     }
-    let target = c.shaken > 0 ? 0 : c.max;
-    const stops = this.stopsFor(c.axis);
+    if (c.rd >= 0 && this.net) {
+      this.driveRoad(c, dt);
+      return;
+    }
+    let target = c.shaken > 0 || c.dead ? 0 : c.max;
+    const stops = this.stopsFor(c.axis, c.line);
     // Next intersection ahead
     let idx = -1;
     let best = Infinity;
     stops.forEach((s, i) => {
-      const ahead = (s - c.pos) * c.dir;
+      const ahead = (s.at - c.pos) * c.dir;
       if (ahead > -BOX && ahead < best) {
         best = ahead;
         idx = i;
       }
     });
-    if (idx >= 0 && idx !== c.decided) {
+    if (idx >= 0 && stops[idx].cross !== c.decided) {
       const toStop = best - STOP_AT;
       const red = ph.green !== c.axis || (ph.amber && toStop > 3);
       if (red && toStop > -0.5 && toStop < 30) target = Math.min(target, Math.max(0, toStop * 0.9));
-      if (best <= BOX + 0.3 && !(red && toStop > -1.5)) this.decide(c, idx, stops[idx]);
+      if (best <= BOX + 0.3 && !(red && toStop > -1.5)) this.decide(c, stops[idx]);
       else if (best <= BOX + 0.3 && red) target = 0;
     }
     // Keep a gap to the car ahead in the same lane
     for (const o of this.cars) {
-      if (o === c || o.turn) continue;
+      if (o === c || o.turn || o.rd >= 0) continue;
       if (o.axis === c.axis && o.line === c.line && o.dir === c.dir) {
         const gap = (o.pos - c.pos) * c.dir;
         if (gap > 0 && gap < 12) target = Math.min(target, Math.max(0, (gap - 5.5) * 1.6));
@@ -792,48 +1246,249 @@ export class CityView {
     c.speed += (target - c.speed) * Math.min(1, dt * (target < c.speed ? 4 : 1.5));
     if (c.speed < 0.05 && target === 0) c.speed = 0;
     c.pos += c.dir * c.speed * dt;
-    const [lo, hi] = c.axis === 'x' ? cityX(this.cols) : cityZ();
+    const [lo, hi] = this.span(c.axis, c.line);
     if (c.pos < lo - 1 || c.pos > hi + 1) {
+      // Off the end of town: on out along the road there, if there is one.
+      const out = c.pos < lo ? lo - c.pos : c.pos - hi;
+      const ex = this.exitFor(c.axis, c.line, c.pos < lo ? 0 : 1);
+      if (ex) {
+        c.rd = ex.road;
+        c.dir = ex.dir;
+        c.s = ex.s + ex.dir * out;
+        c.decided = -999;
+        c.merging = 0;
+        this.place(c);
+        return;
+      }
       this.respawn(c, false);
       return;
     }
     this.place(c);
   }
 
-  /** At an intersection: carry straight on or turn into the crossing road. */
-  private decide(c: Car, idx: number, centre: number): void {
-    c.decided = idx;
-    const roll = Math.random();
-    if (roll < 0.55) return;
-    const nb = blocksFor(this.cols);
-    const right = roll < 0.78;
-    // New axis and direction (right turn: rotate heading -90° in screen space).
-    let next: { axis: Axis; line: number; dir: 1 | -1 };
-    if (c.axis === 'x') {
-      const k = idx;
-      // Heading east (+x): right turn heads south (+z); heading west: right heads north.
-      const dir = (right ? c.dir : -c.dir) as 1 | -1;
-      next = { axis: 'z', line: k, dir };
-      const zc = streetZ(c.line);
-      const [z0, z1] = cityZ();
-      if ((dir > 0 && zc + 20 > z1) || (dir < 0 && zc - 20 < z0)) return;
-    } else {
-      const r = idx;
-      // Heading south (+z): right turn heads west (-x); north: right heads east.
-      const dir = (right ? -c.dir : c.dir) as 1 | -1;
-      next = { axis: 'x', line: r, dir };
-      const xa = avenueMid(c.line);
-      if ((dir < 0 && c.line === 0) || (dir > 0 && c.line === nb)) return;
-      void xa;
+  /**
+   * Out of town: along the lane at the road's speed, easing off for bends, cars ahead and
+   * people in the road; turning off where other roads join, pulling out onto the road at the
+   * end (when there's a gap), turning round where a road just ends, or back into town.
+   */
+  private driveRoad(c: Car, dt: number): void {
+    const net = this.net!;
+    const R = net.roads[c.rd];
+    const L = R.path.length;
+    c.shaken = Math.max(0, c.shaken - dt);
+    c.honkT = Math.max(0, c.honkT - dt);
+    let target = c.shaken > 0 || c.dead ? 0 : R.speed * (c.max / 9);
+    // Bends: no faster than a comfortable sideways pull allows.
+    const h0 = R.path.pointAt(net.wrap(c.rd, c.s));
+    const h1 = R.path.pointAt(net.wrap(c.rd, c.s + c.dir * 25));
+    const th = Math.acos(Math.max(-1, Math.min(1, h0.dx * h1.dx + h0.dz * h1.dz)));
+    if (th > 0.05) target = Math.min(target, Math.max(6, Math.sqrt(75 / th)));
+    // Whatever is in the lane ahead: cars (out here or turning), you, parked cars.
+    const fx = Math.sin(c.yaw);
+    const fz = Math.cos(c.yaw);
+    const look = 12 + c.speed * 1.3;
+    const ahead = (x: number, z: number, room: number): number => {
+      const dx = x - c.x;
+      const dz = z - c.z;
+      if (Math.abs(dx) > look || Math.abs(dz) > look) return Infinity;
+      const ah = dx * fx + dz * fz;
+      if (ah <= 0 || ah > look || Math.abs(dx * fz - dz * fx) > room) return Infinity;
+      return ah;
+    };
+    for (const o of this.cars) {
+      if (o === c) continue;
+      const ah = ahead(o.x, o.z, 2.1);
+      if (ah < Infinity) target = Math.min(target, Math.max(0, (ah - (o.length + c.length) / 2 - 2.5) * 1.3));
     }
+    const pa = ahead(this.player.x, this.player.z, 1.8);
+    if (pa < Infinity) {
+      target = Math.min(target, Math.max(0, (pa - 4) * 1.5));
+      if (c.honkT <= 0 && pa < 9) {
+        c.honkT = 4;
+        this.onHonk?.(c);
+      }
+    }
+    for (const ob of this.obstacles) {
+      const oa = ahead(ob.x, ob.z, 2);
+      if (oa < Infinity) target = Math.min(target, Math.max(0, (oa - 5) * 1.5));
+    }
+    // The end of the road ahead: slow down for it.
+    const edge: 0 | 1 = c.dir > 0 ? 1 : 0;
+    const end = R.loop ? null : R.ends[edge];
+    const toEnd = c.dir > 0 ? L - c.s : c.s;
+    let stopAt = Infinity;
+    // Where it waits to pull out onto the road at the end.
+    let clearS = c.dir > 0 ? L : 0;
+    if (end?.kind === 'road') {
+      const j = net.roads[end.road].joins.find((x) => x.road === c.rd && x.end === edge);
+      if (j) clearS = j.clear;
+      stopAt = (clearS - c.s) * c.dir;
+    } else if (end?.kind === 'dead') stopAt = toEnd - 10;
+    if (stopAt < Infinity) target = Math.min(target, Math.max(end?.kind === 'road' ? 2 : 4, stopAt * 0.7));
+    c.speed += (target - c.speed) * Math.min(1, dt * (target < c.speed ? 3 : 0.8));
+    if (c.speed < 0.05 && target === 0) c.speed = 0;
+    c.s += c.dir * c.speed * dt;
+    if (R.loop) c.s = net.wrap(c.rd, c.s);
+    // Roads joining this one: now and then, turn off onto one.
+    for (const j of R.joins) {
+      if (c.decided === j.road) continue;
+      const d1 = net.ahead(c.rd, c.s, j.s, c.dir);
+      const jr = net.roads[j.road];
+      const away: 1 | -1 = j.end === 0 ? 1 : -1;
+      const tp = net.lane(j.road, j.clear, away);
+      const right = (tp.x - c.x) * -fz + (tp.z - c.z) * fx > 0;
+      const lead = (right ? 4 : 9) + jr.lane;
+      if (d1 > lead || d1 < lead - 6) continue;
+      c.decided = j.road;
+      if (Math.random() > 0.3) continue;
+      this.startTurn(c, tp.x, tp.z, tp.dx, tp.dz, tp.y + ROAD_LIFT, { axis: c.axis, line: c.line, dir: away, pos: 0, rd: j.road, s: j.clear }, c.rd, 9);
+      return;
+    }
+    if (end && !R.loop) {
+      if (end.kind === 'road' && (c.s - clearS) * c.dir >= -0.5) {
+        // Pull out onto the road at the end, when there's a gap.
+        c.s = clearS;
+        if (!c.merging) c.merging = Math.random() < 0.5 ? 1 : -1;
+        const mdir = c.merging;
+        const into = net.wrap(end.road, end.s + mdir * (R.line.half + 5));
+        const tp = net.lane(end.road, into, mdir);
+        const busy = this.cars.some((q) => q !== c && q.rd === end.road && q.dir === mdir && (() => {
+          const d = net.ahead(end.road, q.s, into, mdir);
+          return d > -6 && d < 32;
+        })());
+        c.wait += dt;
+        if (busy && c.wait < 8) {
+          c.speed = 0;
+        } else {
+          this.startTurn(c, tp.x, tp.z, tp.dx, tp.dz, tp.y + ROAD_LIFT, { axis: c.axis, line: c.line, dir: mdir, pos: 0, rd: end.road, s: into }, c.rd, 7);
+          return;
+        }
+      } else if (end.kind === 'dead' && toEnd < 11) {
+        // The road just ends: turn round.
+        const back = net.lane(c.rd, c.s, (-c.dir) as 1 | -1);
+        const mid = R.path.pointAt(net.wrap(c.rd, c.s + c.dir * Math.max(4, Math.min(9, toEnd - 1))));
+        c.turn = {
+          p0: new THREE.Vector2(c.x, c.z), p1: new THREE.Vector2(mid.x, mid.z), p2: new THREE.Vector2(back.x, back.z), t: 0, len: 4 * R.lane + 8,
+          next: { axis: c.axis, line: c.line, dir: (-c.dir) as 1 | -1, pos: 0, rd: c.rd, s: c.s }, from: -999, y0: c.y, y1: back.y + ROAD_LIFT, v: 4,
+        };
+        return;
+      } else if (end.kind === 'city' && toEnd <= 0.5) {
+        // Back into town.
+        if (end.edge >= 0) {
+          c.rd = -1;
+          c.axis = end.axis;
+          c.line = end.line;
+          c.dir = end.edge === 0 ? 1 : -1;
+          const [lo, hi] = this.span(end.axis, end.line);
+          c.pos = end.edge === 0 ? lo + 0.5 : hi - 0.5;
+          c.decided = -999;
+          this.place(c);
+          return;
+        }
+        const [lo, hi] = this.span(end.axis, end.line);
+        let d: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+        if ((d > 0 ? hi - end.pos : end.pos - lo) < 30) d = -d as 1 | -1;
+        const pos = Math.max(lo + 1, Math.min(hi - 1, end.pos + d * (BOX + 1)));
+        const p = this.laneXY(end.axis, end.line, d, pos);
+        const hx = end.axis === 'x' ? d : 0;
+        const hz = end.axis === 'z' ? d : 0;
+        this.startTurn(c, p.x, p.y, hx, hz, 0, { axis: end.axis, line: end.line, dir: d, pos }, -999, 6);
+        return;
+      }
+    }
+    if (!R.loop) c.s = Math.max(0, Math.min(L, c.s));
+    this.place(c);
+  }
+
+  /** Start a smooth turn from where the car is to a point and heading on another road. */
+  private startTurn(c: Car, x: number, z: number, hx: number, hz: number, y: number, next: Turn['next'], from: number, v: number): void {
+    const fx = Math.sin(c.yaw);
+    const fz = Math.cos(c.yaw);
+    const p0 = new THREE.Vector2(c.x, c.z);
+    const p2 = new THREE.Vector2(x, z);
+    const p1 = corner(c.x, c.z, fx, fz, x, z, hx, hz);
+    const len = p0.distanceTo(p1) + p1.distanceTo(p2);
+    c.merging = 0;
+    c.wait = 0;
+    c.turn = { p0, p1, p2, t: 0, len: Math.max(2, len * 0.85), next, from, y0: c.y, y1: y, v };
+  }
+
+  /**
+   * At an intersection: carry straight on or turn into the crossing road (always turn if the
+   * road ends just ahead, and never onto a road that ends right away).
+   */
+  private decide(c: Car, stop: { at: number; cross: number }): void {
+    c.decided = stop.cross;
+    const centre = stop.at;
+    const [lo, hi] = this.span(c.axis, c.line);
+    // A road that carries on out of town counts as room ahead.
+    const straightOk = (c.dir > 0 ? hi - centre : centre - lo) > 45 || !!this.exitFor(c.axis, c.line, c.dir > 0 ? 1 : 0);
+    const roll = Math.random();
+    if (roll < 0.55 && straightOk) return;
+    // Which ways the crossing road goes from here (+1 / -1 along it).
+    const crossAxis: Axis = c.axis === 'x' ? 'z' : 'x';
+    const [clo, chi] = this.span(crossAxis, stop.cross);
+    const here = c.axis === 'x' ? streetZ(c.line) : avenueMid(c.line);
+    const can = (d: 1 | -1) => (d > 0 ? chi - here : here - clo) > 30 || !!this.exitFor(crossAxis, stop.cross, d > 0 ? 1 : 0);
+    // Right turn: heading east (+x) a right turn heads south (+z); south (+z) → west (-x).
+    const rightDir = (c.axis === 'x' ? c.dir : -c.dir) as 1 | -1;
+    let dir: 1 | -1 = roll < 0.78 ? rightDir : (-rightDir as 1 | -1);
+    if (!can(dir)) dir = -dir as 1 | -1;
+    if (!can(dir)) return;
+    const next = { axis: (c.axis === 'x' ? 'z' : 'x') as Axis, line: stop.cross, dir };
     const entry = this.laneXY(c.axis, c.line, c.dir, centre - c.dir * BOX);
-    const exitCentre = next.axis === 'x' ? avenueMid(c.line) : streetZ(c.line);
-    const exitPos = exitCentre + next.dir * BOX;
+    const exitPos = here + next.dir * BOX;
     const exit = this.laneXY(next.axis, next.line, next.dir, exitPos);
     // Corner: where the two lane lines cross.
     const corner = c.axis === 'x' ? new THREE.Vector2(exit.x, entry.y) : new THREE.Vector2(entry.x, exit.y);
     const len = entry.distanceTo(corner) + corner.distanceTo(exit);
-    c.turn = { p0: entry, p1: corner, p2: exit, t: 0, len: len * 0.8, next: { ...next, pos: exitPos } };
+    c.turn = { p0: entry, p1: corner, p2: exit, t: 0, len: len * 0.8, next: { ...next, pos: exitPos }, from: c.line };
+  }
+
+  /**
+   * Whoever sits in a car's line of fire (global ray from o along unit h, between sMin and
+   * sMax), nearest first. `heightAt` gives the bullet's height above the road at a distance
+   * along the ray (null: aiming flat, heights don't count).
+   */
+  shootPeople(c: Car, ox: number, oz: number, hx: number, hz: number, sMin: number, sMax: number, heightAt: ((s: number) => number) | null): { occ: Occupant; s: number; head: boolean } | null {
+    const { seats } = carSeats(c.kind);
+    const co = Math.cos(c.yaw);
+    const si = Math.sin(c.yaw);
+    let best: { occ: Occupant; s: number; head: boolean } | null = null;
+    for (const o of c.people) {
+      if (o.dead) continue;
+      const st = seats[o.seat];
+      const px = c.x + co * st.x + si * st.z - ox;
+      const pz = c.z - si * st.x + co * st.z - oz;
+      const s = px * hx + pz * hz;
+      if (s < sMin - 0.4 || s > sMax || (best && s >= best.s)) continue;
+      if (Math.hypot(px - hx * s, pz - hz * s) > 0.24) continue;
+      let head = false;
+      if (heightAt) {
+        const y = heightAt(s);
+        if (y < st.y - 0.05 || y > st.y + OCC_TOP) continue;
+        head = y > st.y + OCC_HEAD;
+      }
+      best = { occ: o, s, head };
+    }
+    return best;
+  }
+
+  /** Someone in a car was shot. Returns true if that finished them (a shot driver stops the car). */
+  hurtPerson(c: Car, o: Occupant, dmg: number): boolean {
+    if (o.dead || dmg <= 0) return false;
+    o.hp -= dmg;
+    if (o.hp > 0) return false;
+    o.dead = true;
+    // Slumped forward in the seat.
+    o.mesh.rotation.x = 0.7;
+    o.mesh.position.y -= 0.12;
+    o.mesh.position.z += 0.1;
+    if (o.seat === 0) {
+      c.dead = true;
+      c.deadT = 0;
+    }
+    return true;
   }
 
   /** First car a bullet hits along a ray (global frame), within `range`. */
@@ -858,6 +1513,9 @@ export class CityView {
     const i = this.cars.indexOf(c);
     if (i >= 0) this.cars.splice(i, 1);
     c.hazard.visible = false;
+    // You took it: whoever was inside is out on the road.
+    c.clearPeople();
+    c.dead = false;
   }
 
   hitCar(c: Car): void {

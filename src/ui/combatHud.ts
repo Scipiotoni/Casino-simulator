@@ -2,6 +2,7 @@ import type { Game } from '../game/game';
 import { h } from './dom';
 import { formatMoney } from '../core/math';
 import { MAX_HP } from '../game/combat';
+import { MAX_STAMINA } from '../game/melee';
 import { PERFECT_WINDOW } from '../game/guns';
 import { drawReticle, reticleKey } from './reticle';
 
@@ -17,6 +18,10 @@ export class CombatHud {
   private hpWrap: HTMLElement;
   private hpFill = h('i');
   private hpText = h('span');
+  /** Fist fights: stamina, and your stance (blocking, combo, wind-up, counter ready, stunned). */
+  private stFill = h('i');
+  private stText = h('span', { class: 'st-text' });
+  private stWrap = h('div', { class: 'stbar', hidden: true, 'aria-label': 'Stamina' }, h('span', { class: 'st-ico', text: '⚡' }), h('div', { class: 'st-track' }, this.stFill), this.stText);
   private vignette = h('div', { class: 'hurt-vig' });
   private arrow = h('div', { class: 'hurt-arrow' });
   private koEl = h('div', { class: 'ko-screen', hidden: true });
@@ -48,13 +53,16 @@ export class CombatHud {
   private feedEl = h('div', { class: 'kill-feed' });
   private feedKey = '';
   private bannerEl = h('div', { class: 'ko-banner', hidden: true });
+  /** The drift going on (score, angle), and the one you just finished. */
+  private driftEl = h('div', { class: 'drift-meter', hidden: true });
+  private driftKey = '';
   private bannerT = -1;
 
   constructor(private game: Game) {
     this.hpWrap = h('div', { class: 'hpbar', hidden: true, 'aria-label': 'Health' }, h('span', { class: 'hp-ico', text: '❤' }), h('div', { class: 'hp-track' }, this.hpFill), this.hpText);
     this.lockHint.innerHTML = '<b>🖱 Click to lock the mouse</b><span>It stays in the middle for smooth 360° looking · A/D strafe · right-click aims · Esc frees it</span>';
     this.lockHint.addEventListener('click', () => game.input.requestLock());
-    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl);
+    this.el = h('div', { class: 'combat-hud' }, this.vignette, this.scope, this.optic, this.cross, this.marker, this.arrow, this.hpWrap, this.stWrap, this.koEl, this.lockHint, this.wanted, this.speedo, this.wp, this.reloadEl, this.chargeEl, this.feedEl, this.bannerEl, this.driftEl);
     this.wp.addEventListener('click', () => game.clearWaypoint());
     // The tank's fire button (redrawn with the speedo, so listen on the speedo itself).
     this.speedo.addEventListener('pointerdown', (e) => {
@@ -63,7 +71,16 @@ export class CombatHud {
         e.stopPropagation();
         game.drive.fireRequest = true;
       }
+      // Touch: hold DRIFT for the handbrake.
+      if ((e.target as HTMLElement).closest('.drift-btn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        game.drive.handbrake = true;
+      }
     });
+    const release = () => (game.drive.handbrake = false);
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
   }
 
   update(dt: number): void {
@@ -173,6 +190,19 @@ export class CombatHud {
       const lock = c.teleportLock;
       this.hpText.textContent = `${c.protect > 0 ? 'Safe' : Math.ceil(c.hp)}${lock > 0 ? ` · 📍✕ ${Math.ceil(lock)}s` : ''}`;
     }
+    // Stamina and stance while your fists (or a melee weapon) are up, or while you get your breath back.
+    const br = c.brawl;
+    const melee = armed && !!gp.def?.melee;
+    const showSt = playing && !g.inside && c.ko <= 0 && (melee || br.stamina < MAX_STAMINA - 0.5 || br.stunned);
+    this.stWrap.hidden = !showSt;
+    if (showSt) {
+      this.stFill.style.width = `${((br.stamina / MAX_STAMINA) * 100).toFixed(1)}%`;
+      this.stWrap.classList.toggle('low', br.winded);
+      const stance = br.stunned ? '💫 Stunned!' : br.riposte > 0 ? '⚔ Counter ready (×2)' : br.blocking ? (br.parryArmed && br.blockFor < 0.25 ? '🛡 Parry!' : '🛡 Blocking') : br.charge > 0 ? `💪 Heavy ${Math.round(br.charge * 100)}%` : br.combo > 0 ? `👊 Combo ${br.combo + 1}/3` : '';
+      this.stText.textContent = stance;
+      this.stText.hidden = !stance;
+      this.stWrap.classList.toggle('alert', br.stunned || br.riposte > 0);
+    }
     this.vignette.style.opacity = String(Math.min(0.85, c.flash + (c.hp < 35 && c.ko <= 0 ? 0.25 + Math.sin(performance.now() / 160) * 0.08 : 0)));
     if (c.hitFrom !== null && c.flash > 0.05) {
       this.arrow.hidden = false;
@@ -184,15 +214,31 @@ export class CombatHud {
     const ko = playing && c.ko > 0;
     this.koEl.hidden = !ko;
     if (ko) {
-      const key = `${c.lastKo?.by}|${c.lastKo?.lost}|${Math.ceil(c.ko)}`;
+      const spots = g.respawnSpots();
+      const dest = g.respawnDest;
+      const key = `${c.lastKo?.by}|${c.lastKo?.lost}|${Math.ceil(c.ko)}|${spots.join()}|${dest}`;
       if (key !== this.koKey) {
         this.koKey = key;
         this.koEl.innerHTML = '';
+        const label = { casino: '🎰 Casino', hotel: '🏨 Hotel', house: '🏠 House' } as const;
+        const near = g.nearestSpot();
         this.koEl.append(
           h('div', { class: 'ko-title', text: c.lastKo?.busted ? 'BUSTED' : 'KNOCKED OUT' }),
           h('div', { class: 'ko-by', text: c.lastKo?.busted ? 'The police caught up with you' : c.lastKo ? `by ${c.lastKo.by}` : '' }),
           h('div', { class: 'ko-lost', text: c.lastKo && c.lastKo.lost > 0 ? `−${formatMoney(c.lastKo.lost)} ${c.lastKo.busted ? 'fine' : 'taken from your pockets'}` : 'Your pockets were empty' }),
           h('div', { class: 'ko-tip', text: g.house?.vault ? `Your vault is untouched: ${formatMoney(g.house.vault)} safe at home.` : 'Money in your vault at home is always safe.' }),
+          h('div', { class: 'ko-where', text: 'Wake up at' }),
+          h('div', { class: 'ko-spots', role: 'radiogroup', 'aria-label': 'Where you wake up' },
+            ...spots.map((d, i) => h('button', {
+              class: `ko-spot${d === dest ? ' on' : ''}`,
+              role: 'radio',
+              'aria-checked': d === dest ? 'true' : 'false',
+              title: `Wake up in your ${d} (${i + 1})`,
+              onClick: () => {
+                g.respawnPick = d;
+                this.koKey = '';
+              },
+            }, h('b', { text: String(i + 1) }), label[d], d === near ? h('small', { text: 'nearest' }) : null))),
           h('div', { class: 'ko-timer', text: `Back on your feet in ${Math.ceil(c.ko)}…` }),
         );
       }
@@ -241,7 +287,24 @@ export class CombatHud {
     if (skey !== this.speedoKey) {
       this.speedoKey = skey;
       this.speedo.hidden = !car;
-      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/E' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i><em class="carhp${hpPct < 25 ? ' crit' : hpPct < 50 ? ' low' : ''}" title="Durability"><u style="width:${hpPct}%"></u></em><span>🛠 ${hpPct}%</span>${cannon >= 0 ? `<button class="tank-fire" type="button">${cannon > 0 ? `Reloading ${cannon}s` : '💥 FIRE · click / F'}</button>` : ''}${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>${car.def?.infiniteNitro ? 'NITRO ∞' : 'NITRO'} · Shift</span>` : ''}`;
+      if (car) this.speedo.innerHTML = `<b>${Math.round(Math.abs(car.speed) * 3.6)}</b><span>km/h</span><div class="gearbox"><strong class="${dr.rpm > 0.93 ? 'red' : ''}">${gearLabel}</strong><em class="rpm"><u style="width:${Math.min(100, Math.round(dr.rpm * 100))}%"></u></em><small>${dr.manual ? 'MANUAL · Q/R' : 'AUTO · Z'}</small></div><i>${car.name}${car.stolen ? ' · stolen' : ''}</i><em class="carhp${hpPct < 25 ? ' crit' : hpPct < 50 ? ' low' : ''}" title="Durability"><u style="width:${hpPct}%"></u></em><span>🛠 ${hpPct}%</span>${cannon >= 0 ? `<button class="tank-fire" type="button">${cannon > 0 ? `Reloading ${cannon}s` : '💥 FIRE · click / F'}</button>` : g.input.isTouch ? '<button class="drift-btn" type="button">💨 DRIFT</button>' : ''}${nitro >= 0 ? `<em class="nitro"><u style="width:${nitro * 5}%"></u></em><span>${car.def?.infiniteNitro ? 'NITRO ∞' : 'NITRO'} · Shift</span>` : ''}`;
+    }
+    // Drift score: live while you slide, then what you banked (or WIPED OUT).
+    const dft = car && !car.def?.cannon ? dr.drift : null;
+    const live = !!dft && dft.t > 0.35;
+    const done = !!dft && !live && dft.doneT > 0;
+    const dkey = live ? `l${Math.round(dft!.score / 10)}|${Math.round(dft!.angle * 57.3 / 5)}` : done ? `d${dft!.done}|${dft!.wiped}` : '';
+    if (dkey !== this.driftKey) {
+      this.driftKey = dkey;
+      this.driftEl.hidden = !live && !done;
+      this.driftEl.classList.toggle('done', done);
+      this.driftEl.classList.toggle('wiped', done && dft!.wiped);
+      if (live) {
+        const mult = 1 + Math.min(2, dft!.t / 3);
+        this.driftEl.innerHTML = `<small>DRIFT · ${Math.round(dft!.angle * 57.3)}°</small><b>${Math.round(dft!.score).toLocaleString('en-US')}</b><em>×${mult.toFixed(1)}</em>`;
+      } else if (done) {
+        this.driftEl.innerHTML = dft!.wiped ? '<small>DRIFT LOST</small><b>WIPED OUT</b>' : `<small>NICE DRIFT</small><b>+${dft!.done.toLocaleString('en-US')}</b>${(g.stats.bestDrift ?? 0) <= dft!.done ? '<em>BEST!</em>' : ''}`;
+      }
     }
     // Waypoint: what it is, how far, and which way (relative to where the camera looks).
     const wpt = playing ? g.waypoint : null;

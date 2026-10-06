@@ -14,6 +14,7 @@ import { TitleScreen } from './ui/title';
 import { audio } from './core/audio';
 import { loadJSON, removeKey, saveJSON } from './core/storage';
 import { formatMoney } from './core/math';
+import { setTabCloak } from './ui/tabCloak';
 
 const SAVE_KEY = 'jackpot-tycoon:save:v1';
 const SETTINGS_KEY = 'jackpot-tycoon:settings:v1';
@@ -74,6 +75,7 @@ async function start(hotData: unknown): Promise<void> {
   }
   const stored = loadJSON<Partial<Settings>>(SETTINGS_KEY);
   const settings: Settings = { ...DEFAULT_SETTINGS, quality: guessQuality(), ...stored };
+  setTabCloak(!!settings.hideTab);
   app.innerHTML = '';
   const stage = document.createElement('div');
   stage.className = 'stage';
@@ -142,6 +144,9 @@ async function start(hotData: unknown): Promise<void> {
     hud.banner(`Welcome to ${opts.name}!`, 'Tap Build to buy your first slot machine.', 'level');
     window.setTimeout(() => game.notify('Tip: every bet lands straight in your bank, and every guest win comes out of it. The house edge does the rest.', 'info'), 4200);
     window.setTimeout(() => game.notify('Tip: walk out the front door to visit the rival casino down the street.', 'info'), 12000);
+    window.setTimeout(() => {
+      if (game.state === 'playing' && game.dailyInfo().claimable) game.notify('📅 A daily reward is waiting for you in the Menu. Come back every day for a bigger one!', 'event');
+    }, 30000);
   };
   title.onContinue = () => {
     const s = readSave();
@@ -150,6 +155,10 @@ async function start(hotData: unknown): Promise<void> {
       game.load(s);
       enterGame();
       game.notify(`Welcome back! ${s.name} is open for business.`, 'good');
+      // A new day: offer the login reward.
+      window.setTimeout(() => {
+        if (game.state === 'playing' && !hud.modals.isOpen && game.dailyInfo().claimable) hud.modals.openDaily();
+      }, 1500);
     } catch (err) {
       console.error(err);
       game.notify('That save could not be loaded. Starting fresh.', 'bad');
@@ -167,6 +176,7 @@ async function start(hotData: unknown): Promise<void> {
   game.events.on('camera', () => saveJSON(SETTINGS_KEY, settings));
   hud.modals.onSettingsChanged = () => {
     applyAudio();
+    setTabCloak(!!settings.hideTab);
     saveJSON(SETTINGS_KEY, settings);
   };
 

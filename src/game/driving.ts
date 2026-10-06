@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import type { Game } from './game';
 import { type CarDef, type CarMods, DEALER_CARS, STOLEN_SPECS, buildCar, carDef, carHp, carWidth, defaultMods, engineOf, repairCost, sanitizeMods, tunedSpecs } from '../world/vehicles';
-import { Car, rayBox } from '../world/cityView';
+import { Car, rayBox, trafficSeat } from '../world/cityView';
 import { GARAGE_W, GarageModel } from '../world/garage';
 import { CENTER_X, FACADE_Z, SIDEWALK_Z0, WIDTHS } from '../world/grid';
-import { type ParkedCar, garageTier } from './house';
+import { NO_GARAGE_IDS, type ParkedCar, garageTier } from './house';
 import { AVE_W, ROAD_HALF, STREET_ROWS, avenueX, blocksFor, openGround, streetZ } from '../world/city';
+import { groundAt } from '../world/terrain';
 import { HEAT } from '../world/police';
 import { audio } from '../core/audio';
+import { canvasTexture, makeCanvas } from '../render/textures';
 import { clamp, damp, formatMoney } from '../core/math';
 import { GEARS, autoGear, drive, gearTop, rpmOf } from './gearbox';
 
@@ -39,6 +41,10 @@ export interface Vehicle {
   brakeLights: THREE.Mesh[];
   /** A traffic car you took (its body and paint), so it can be kept in your garage. */
   kept?: { kind: number; color: number };
+  /** One you've driven (or brought to the curb): yours out on the street, on the map. */
+  mine?: boolean;
+  /** Taken from another player (their name). */
+  from?: string;
   /** Durability left (0 = blown up), out of `maxHp`. */
   hp: number;
   maxHp: number;
@@ -52,10 +58,21 @@ export interface Vehicle {
   turret?: THREE.Object3D;
   muzzle?: THREE.Object3D;
   cannonT?: number;
+  /** A tank's turret angle (relative to the hull), the hull's rock after a shot. */
+  turretYaw?: number;
+  recoil?: number;
+  /** Sideways speed (m/s, + = to the left of the nose): the car slides when the rear lets go. */
+  lat?: number;
+  /** How fast the car is turning (rad/s): it keeps rotating in a slide. */
+  yawRate?: number;
   /** Roof lights that flash with the siren. */
   beacons?: THREE.Mesh[];
   /** Parked at the military base (taking it sets off the alarm). */
   base?: boolean;
+  /** Height of the ground under it, and how the ground tips it (nose up, left side up). */
+  y?: number;
+  pitch?: number;
+  roll?: number;
 }
 
 /** What a bullet or blast can hit: a traffic car, a police cruiser or a car on the street. */
@@ -106,7 +123,7 @@ export function modsOf(gs: GarageState, id: string): CarMods {
 
 export function sanitizeGarage(raw: unknown): GarageState {
   const r = (raw ?? {}) as Record<string, unknown>;
-  const owned = Array.isArray(r.owned) ? [...new Set(r.owned.filter((x): x is string => typeof x === 'string' && !!carDef(x)))] : [];
+  const owned = Array.isArray(r.owned) ? [...new Set(r.owned.filter((x): x is string => typeof x === 'string' && !!carDef(x) && !NO_GARAGE_IDS.includes(x)))] : [];
   const colors: Record<string, number> = {};
   if (r.colors && typeof r.colors === 'object') {
     for (const [k, v] of Object.entries(r.colors as Record<string, unknown>)) {
@@ -130,6 +147,17 @@ export function sanitizeGarage(raw: unknown): GarageState {
 }
 
 let nextUid = 1;
+
+/** Seconds the tank's cannon takes to reload. */
+const TANK_RELOAD = 2.2;
+/** Track marks kept on the ground at once. */
+const TREAD_MARKS = 600;
+/** Skid marks kept on the ground at once. */
+const SKID_MARKS = 1400;
+
+function angleDiff(a: number, b: number): number {
+  return ((a - b + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
 
 /**
  * Cars: buy them at Velocity Motors, have them brought to you, steal any car out of the
@@ -159,7 +187,7 @@ export class Driving {
   /** Tyre squeal (0..1), smoothed for the sound. */
   private skid = 0;
   /** Tank shells in flight (global frame). */
-  private shells: { x: number; z: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh }[] = [];
+  private shells: { x: number; z: number; y0: number; y1: number; tx: number; tz: number; t: number; dur: number; mesh: THREE.Mesh; from?: Vehicle }[] = [];
 
   constructor(private g: Game) {}
 
@@ -181,16 +209,50 @@ export class Driving {
     return true;
   }
 
+  /**
+   * Unstuck: if the car you're in is wedged in a wall, a building, the water or a cliff, put it
+   * back on open road nearby (stopped). Returns whether it had to move.
+   */
+  unstick(): boolean {
+    const v = this.driving;
+    if (!v) return false;
+    v.speed = 0;
+    v.lat = 0;
+    v.yawRate = 0;
+    if (this.fits(v.x, v.z, v.yaw, v.length * 0.8, v.width * 0.72)) return false;
+    for (let r = 2; r < 160; r += 2) {
+      for (let k = 0; k < 32; k++) {
+        const a = (k / 32) * Math.PI * 2;
+        const x = v.x + Math.cos(a) * r;
+        const z = v.z + Math.sin(a) * r;
+        for (const yaw of [v.yaw, v.yaw + Math.PI / 2]) {
+          if (!this.fits(x, z, yaw, v.length, v.width)) continue;
+          v.x = x;
+          v.z = z;
+          v.yaw = yaw;
+          this.settle(v);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** A curbside spot on the nearest road (global), lined up with it. */
   private roadSpot(px: number, pz: number, len: number): { x: number; z: number; yaw: number } | null {
     const cands: { x: number; z: number; yaw: number; d: number }[] = [];
+    const plan = this.g.street.plan;
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = plan.streets[r];
+      if (!st || px < st.xa + 8 || px > st.xb - 8) continue;
       for (const side of [-1, 1]) {
         const z = streetZ(r) + side * ROAD_HALF * 0.55;
         cands.push({ x: px, z, yaw: side > 0 ? Math.PI / 2 : -Math.PI / 2, d: Math.abs(z - pz) });
       }
     }
     for (let k = 0; k <= blocksFor(this.cols); k++) {
+      const av = plan.avenues[k];
+      if (!av || pz < av.za + 8 || pz > av.zb - 8) continue;
       const [a, b] = avenueX(k);
       for (const side of [-1, 1]) {
         const x = (a + b) / 2 + side * (AVE_W / 2 - 2.2);
@@ -250,9 +312,36 @@ export class Driving {
     return !!v;
   }
 
+  /**
+   * Sit a vehicle on the ground under it (global frame): its height, and its nose and sides
+   * tipped to the slope. With a frame time it eases there (bumps), without it snaps.
+   */
+  settle(v: Vehicle, dt = 0): void {
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    const L = v.length * 0.42;
+    const W = v.width * 0.45;
+    const yf = groundAt(v.x + fx * L, v.z + fz * L);
+    const yb = groundAt(v.x - fx * L, v.z - fz * L);
+    // The car's left (local +x) in the global frame.
+    const yl = groundAt(v.x + fz * W, v.z - fx * W);
+    const yr = groundAt(v.x - fz * W, v.z + fx * W);
+    const y = Math.max(groundAt(v.x, v.z), (yf + yb + yl + yr) / 4);
+    const pitch = -Math.atan2(yf - yb, 2 * L);
+    const roll = Math.atan2(yl - yr, 2 * W);
+    const k = dt > 0 ? Math.min(1, dt * 16) : 1;
+    v.y = v.y === undefined || Math.abs(y - v.y) > 2 ? y : v.y + (y - v.y) * k;
+    v.pitch = (v.pitch ?? pitch) + (pitch - (v.pitch ?? pitch)) * k;
+    v.roll = (v.roll ?? roll) + (roll - (v.roll ?? roll)) * k;
+    v.root.rotation.order = 'YXZ';
+    v.root.position.set(v.x, v.y, v.z);
+    v.root.rotation.x = v.pitch;
+    v.root.rotation.z = v.roll;
+  }
+
   /** Put a vehicle on the street (global frame); used by the military base too. */
   addVehicle(def: CarDef, m: ReturnType<typeof buildCar>, color: number, x: number, z: number, yaw: number, owned: boolean, stolen: boolean, mods: CarMods | null = null): Vehicle {
-    m.root.position.set(x, 0, z);
+    m.root.position.set(x, groundAt(x, z), z);
     m.root.rotation.y = yaw;
     this.group.add(m.root);
     const v: Vehicle = {
@@ -262,8 +351,52 @@ export class Driving {
     };
     // Your own cars keep their damage until you pay to have them fixed.
     if (owned) v.hp = Math.max(1, Math.round(v.maxHp * conditionOf(this.g.garage, def.id)));
+    v.mine = owned;
     this.vehicles.push(v);
+    this.settle(v);
     return v;
+  }
+
+  /** Your cars out on the street (not the one you're in): on the map, and other players can take them. */
+  myCars(): Vehicle[] {
+    return this.vehicles.filter((v) => v.mine && v !== this.driving && v.wreck < 0 && !v.base);
+  }
+
+  /**
+   * Another player's car you walked up to and took: a copy of it here (their model, paint and
+   * look), parked where theirs was. Theirs disappears from their street when they hear of it.
+   */
+  takeFrom(o: { def: CarDef | null; kind: number; color: number; mods: CarMods | null; x: number; z: number; yaw: number; owner: string }): Vehicle {
+    let v: Vehicle;
+    if (o.def) {
+      const m = buildCar(o.def, o.color, o.mods ?? undefined);
+      v = this.addVehicle(o.def, m, o.color, o.x, o.z, o.yaw, false, false, o.mods);
+      v.name = `${o.owner}'s ${o.def.name}`;
+    } else {
+      // A car they took out of the traffic.
+      const c = new Car(o.kind, o.color);
+      c.root.position.set(o.x, groundAt(o.x, o.z), o.z);
+      c.root.rotation.y = o.yaw;
+      this.group.add(c.root);
+      v = {
+        uid: nextUid++, def: null, name: `${o.owner}'s car`, color: o.color, root: c.root, wheels: [], front: [], open: false, seat: trafficSeat(o.kind),
+        x: o.x, z: o.z, yaw: o.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: false, mods: null, flames: [], brakeLights: [],
+        kept: { kind: o.kind, color: o.color }, hp: c.hp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
+      };
+      this.vehicles.push(v);
+      this.settle(v);
+    }
+    v.from = o.owner;
+    v.mine = true;
+    return v;
+  }
+
+  /** Another player took this car of yours (it was parked near x, z): it's gone from here. What it was, or null. */
+  giveUp(uid: number, x: number, z: number): { name: string; owned: boolean } | null {
+    const v = this.vehicles.find((q) => q.uid === uid && q.mine && q !== this.driving && q.wreck < 0);
+    if (!v || Math.hypot(v.x - x, v.z - z) > 30) return null;
+    this.remove(v);
+    return { name: v.owned && v.def ? v.def.name : v.name, owned: v.owned };
   }
 
   private remove(v: Vehicle): void {
@@ -277,7 +410,7 @@ export class Driving {
     const g = this.g;
     g.street.city.releaseCar(c);
     const v: Vehicle = {
-      uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+      uid: nextUid++, def: null, name: 'stolen car', color: 0, root: c.root, wheels: [], front: [], open: false, seat: trafficSeat(c.kind),
       x: c.x, z: c.z, yaw: c.yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: true, mods: null, flames: [], brakeLights: [],
       kept: { kind: c.kind, color: c.color }, hp: c.hp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
     };
@@ -319,11 +452,12 @@ export class Driving {
     g.standUp();
     if (g.build.active) g.build.cancel();
     this.driving = v;
+    v.mine = true;
     v.speed = 0;
     this.gear = 1;
     if (!this.prevCam) this.prevCam = { mode: g.cam.mode, dist: g.cam.distTarget };
     g.setCameraMode('third', false);
-    g.cam.setThirdDist(v.def?.kind === 'tank' ? 13 : v.length > 6 ? 11 : 8.5);
+    g.cam.setThirdDist(v.def?.kind === 'tank' ? 22 : v.length > 6 ? 11 : 8.5);
     audio.play('doorbell', { pitch: 0.6 });
     audio.play('ignition', { pitch: v.def?.kind === 'tank' ? 0.6 : 1, volume: 0.8 });
     if (v.base) {
@@ -341,6 +475,12 @@ export class Driving {
     if (!v) return;
     this.driving = null;
     v.speed = 0;
+    v.lat = 0;
+    v.yawRate = 0;
+    v.root.rotation.z = 0;
+    v.root.rotation.x = 0;
+    this.handbrake = false;
+    if (this.drift.t > 0) this.endDrift(false);
     audio.engine(null);
     this.siren = false;
     v.beacons?.forEach((b) => (b.visible = true));
@@ -412,7 +552,13 @@ export class Driving {
     this.updateCondition(dt);
     this.updateShells(dt);
     const v = this.driving;
-    g.cam.chase = !!v;
+    // A tank's camera stays up high, so you can see what you're aiming at.
+    g.cam.chase = !!v && v.def?.kind !== 'tank';
+    const tank = v?.def?.kind === 'tank';
+    if (!tank && this.reticle?.visible) {
+      this.reticle.visible = false;
+      if (this.aimLine) this.aimLine.visible = false;
+    }
     if (!v) {
       audio.engine(null);
       return;
@@ -455,17 +601,18 @@ export class Driving {
     }
     for (const b of v.brakeLights) b.scale.y = throttle < 0 && v.speed > 0.5 ? 1.6 : 1;
     if (nitroOn && Math.random() < dt * 6) audio.play('whoosh', { volume: 0.3, pitch: 0.6 });
-    // Gearbox: Q/E shift yourself (switches to manual), Z goes back to automatic.
-    if (!g.modalOpen) {
-      const up = input.hit('KeyE');
+    // Gearbox: R/Q shift up and down yourself (switches to manual), Z goes back to automatic.
+    // (A tank's Q/R turn its turret; E gets you out.)
+    if (!g.modalOpen && !tank) {
+      const up = input.hit('KeyR');
       const down = input.hit('KeyQ');
       if ((up || down) && !this.manual) {
         this.manual = true;
-        g.notify('Manual gearbox: E shifts up, Q shifts down. Z for automatic.', 'info');
+        g.notify('Manual gearbox: R shifts up, Q shifts down. Z for automatic.', 'info');
       }
       if (input.hit('KeyZ')) {
         this.manual = !this.manual;
-        g.notify(this.manual ? 'Manual gearbox: E shifts up, Q shifts down.' : 'Automatic gearbox.', 'info');
+        g.notify(this.manual ? 'Manual gearbox: R shifts up, Q shifts down.' : 'Automatic gearbox.', 'info');
       }
       if (this.manual && (up || down) && v.speed >= -0.5) {
         const next = clamp(this.gear + (up ? 1 : -1), 1, GEARS);
@@ -507,27 +654,56 @@ export class Driving {
     else v.speed = damp(v.speed, 0, 0.8, dt);
     // Too fast for the gear (a manual downshift): engine braking pulls the speed down.
     if (this.gear > 0 && v.speed > gearTopNow) v.speed = Math.max(gearTopNow, v.speed - 7 * dt);
+    // Hills: gravity pulls you back going up and speeds you up going down.
+    {
+      const L = v.length * 0.42;
+      const sfx = Math.sin(v.yaw);
+      const sfz = Math.cos(v.yaw);
+      const rise = (groundAt(v.x + sfx * L, v.z + sfz * L) - groundAt(v.x - sfx * L, v.z - sfz * L)) / (2 * L);
+      v.speed -= 9.8 * clamp(rise, -0.6, 0.6) * (tank ? 0.4 : 0.7) * dt;
+    }
     v.speed = clamp(v.speed, -9, top * boost);
     v.steer = damp(v.steer, steer, 8, dt);
-    // Sharper turns at low speed, gentler at high speed.
-    const turn = v.steer * grip * 2.3 * clamp(v.speed / 7, -1, 1) * (1 - Math.min(0.55, Math.abs(v.speed) / (top * 2.2)));
-    v.yaw += turn * dt;
-    const nx = v.x + Math.sin(v.yaw) * v.speed * dt;
-    const nz = v.z + Math.cos(v.yaw) * v.speed * dt;
+    // Sharper turns at low speed, gentler at high speed. A tank turns on the spot (one track
+    // forward, one back), standing still or not.
+    const grippy = v.steer * grip * 2.3 * clamp(v.speed / 7, -1, 1) * (1 - Math.min(0.55, Math.abs(v.speed) / (top * 2.2)));
+    const handbrake = !g.modalOpen && (input.down('Space') || this.handbrake);
+    if (tank) {
+      v.yaw += v.steer * 1.25 * (1 - Math.min(0.3, Math.abs(v.speed) / 50)) * dt;
+      // Space: both tracks locked.
+      if (handbrake) v.speed = damp(v.speed, 0, 3, dt);
+      v.lat = 0;
+      v.yawRate = 0;
+    } else this.slide(v, dt, grippy, throttle, handbrake, grip);
+    const fx0 = Math.sin(v.yaw);
+    const fz0 = Math.cos(v.yaw);
+    const lat = v.lat ?? 0;
+    // Moving: forward speed along the nose plus the sideways slide.
+    const nx = v.x + (fx0 * v.speed + fz0 * lat) * dt;
+    const nz = v.z + (fz0 * v.speed - fx0 * lat) * dt;
     // Hitbox a little inside the body, so you can squeeze past corners and lamp posts.
     if (this.fits(nx, nz, v.yaw, v.length * 0.8, v.width * 0.72)) {
       v.x = nx;
       v.z = nz;
     } else {
-      // Into a wall: bounce back.
-      this.crash(v, Math.abs(v.speed));
+      // Into a wall: bounce back (a drift into a wall ends badly).
+      this.crash(v, Math.hypot(v.speed, lat));
       v.speed *= -0.3;
+      v.lat = 0;
+      v.yawRate = 0;
+      if (this.drift.t > 0.6) this.endDrift(true);
     }
     if (v.wreck >= 0) return;
     // Traffic
     for (const c of city.traffic) {
       if (!c.root.visible) continue;
       const d = Math.hypot(c.x - v.x, c.z - v.z);
+      if (tank && d < c.length + v.length && carsTouch(v, c.x, c.z, c.length) && Math.abs(v.speed) > 0.3) {
+        // A tank rolls right over cars: flattened.
+        this.crushTraffic(c);
+        v.speed *= 0.9;
+        continue;
+      }
       if (d < c.length + v.length && carsTouch(v, c.x, c.z, c.length) && Math.abs(v.speed) > 0.5) {
         const away = Math.atan2(v.x - c.x, v.z - c.z);
         v.x += Math.sin(away) * 0.4;
@@ -541,8 +717,13 @@ export class Driving {
       }
     }
     // Other parked cars
-    for (const o of this.vehicles) {
+    for (const o of [...this.vehicles]) {
       if (o === v) continue;
+      if (tank && o.wreck < 0 && o.armor >= 0.5 && carsTouch(v, o.x, o.z, o.length) && Math.abs(v.speed) > 0.3) {
+        this.crushVehicle(o);
+        v.speed *= 0.9;
+        continue;
+      }
       if (carsTouch(v, o.x, o.z, o.length) && Math.abs(v.speed) > 0.5) {
         const away = Math.atan2(v.x - o.x, v.z - o.z);
         v.x += Math.sin(away) * 0.4;
@@ -563,8 +744,8 @@ export class Driving {
       if (fresh) this.hurtCruiser(c, crashDamage(hitSpeed) * (v.armor < 0.5 ? 6 : 1.2), true);
       if (v.armor >= 0.5) v.speed *= -0.25;
     }
-    // People in the way
-    if (Math.abs(v.speed) > 4) {
+    // People in the way (nobody stands up to a tank)
+    if (Math.abs(v.speed) > (tank ? 1.2 : 4)) {
       const fx = Math.sin(v.yaw);
       const fz = Math.cos(v.yaw);
       const hx = v.x + fx * v.length * 0.35 * Math.sign(v.speed);
@@ -585,9 +766,9 @@ export class Driving {
         }
       }
     }
-    // Model
-    v.root.position.set(v.x, 0, v.z);
+    // Model: on the ground, tipped to the slope.
     v.root.rotation.y = v.yaw;
+    this.settle(v, dt);
     for (const w of v.wheels) w.rotation.x += (v.speed * dt) / 0.37;
     for (const f of v.front) f.rotation.y = v.steer * 0.45;
     // You're in the driver's seat.
@@ -599,11 +780,20 @@ export class Driving {
     g.player.seat = { x: w.x, z: w.z, yaw: yawW, sit: true, height: v.seat.y };
     g.player.playEmote('sit', 999);
     g.player.yaw = yawW;
-    g.cam.followYaw = yawW;
-    if (v.turret) {
-      // The turret settles back to face forward; the barrel recoils after a shot.
-      v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - 2.2) * 0.8;
+    // In a slide the camera swings round towards where the car is going, so you see it sideways.
+    g.cam.followYaw = yawW + clamp(-this.slipAngle(v), -0.9, 0.9) * 0.6;
+    // Body roll in a slide, and a little squat under the handbrake.
+    if (!tank) {
+      v.root.rotation.z = (v.roll ?? 0) + clamp(-(v.lat ?? 0) * 0.012, -0.07, 0.07);
+      v.root.rotation.x = (v.pitch ?? 0) + (handbrake && Math.abs(v.speed) > 3 ? 0.02 : 0);
     }
+    if (v.turret) {
+      // The barrel recoils after a shot; the hull rocks back.
+      v.turret.position.z = -0.3 - Math.max(0, (v.cannonT ?? 0) - (TANK_RELOAD - 0.4)) * 0.8;
+      v.recoil = damp(v.recoil ?? 0, 0, 5, dt);
+      v.root.rotation.x = (v.pitch ?? 0) - (v.recoil ?? 0) * 0.07 + clamp(-throttle * Math.abs(v.speed) * 0.002, -0.025, 0.025);
+    }
+    if (tank) this.tankUpdate(v, dt);
     // Engine: a running engine voice that follows the revs and how hard you're on the gas.
     const profile = engineOf(v.def);
     const speedAbs = Math.abs(v.speed);
@@ -611,12 +801,14 @@ export class Driving {
     const corner = Math.abs(v.steer) * speedAbs / Math.max(10, top) * (2.2 - grip);
     const braking = throttle < 0 && v.speed > 8 ? 0.6 : 0;
     const launch = throttle > 0 && speedAbs < 6 && this.gear <= 1 && accel > 11 ? 0.5 : 0;
-    const want = profile === 'tank' ? 0 : clamp(Math.max(corner - 0.35, braking, launch), 0, 1);
+    const slideSkid = clamp(Math.abs(this.slipAngle(v)) * 2.4 * Math.min(1, speedAbs / 8), 0, 1);
+    const want = profile === 'tank' ? 0 : clamp(Math.max(corner - 0.35, braking, launch, slideSkid, handbrake && speedAbs > 3 ? 0.7 : 0), 0, 1);
     this.skid = damp(this.skid, want, 10, dt);
-    if (this.skid > 0.35 && Math.random() < dt * 12) {
+    if (this.skid > 0.35 && Math.random() < dt * 12 && slideSkid < 0.3) {
       const w = g.street.globalToWorld(v.x - Math.sin(v.yaw) * v.length * 0.4, v.z - Math.cos(v.yaw) * v.length * 0.4);
       g.effects.dust(w.x, w.z, 0.4);
     }
+    if (!tank) this.driftFx(v, dt, slideSkid, handbrake);
     audio.engine({ profile, rpm: this.gear === 0 ? Math.min(0.6, speedAbs / 9) : this.rpm, throttle: Math.max(0, throttle) * (this.shiftT > 0 ? 0.3 : 1), skid: this.skid, damage: 1 - health, speed: speedAbs });
     // Shifting up at speed: the turbo's blow-off and a crackle from the exhaust.
     if (this.gear !== this.lastGear) {
@@ -649,13 +841,482 @@ export class Driving {
       const ph = Math.floor(performance.now() / 160) % 2 === 0;
       v.beacons?.forEach((b, i) => (b.visible = !this.siren || (i % 2 === 0) === ph));
     } else if (input.hit('KeyC')) audio.play('honk', { pitch: v.armor < 0.5 ? 0.6 : 1 });
-    // Tank: click or F fires the main gun.
+    // Tank: click or F fires the main gun where the reticle is; hold right click for the machine gun.
     if (v.def?.cannon && v.muzzle) {
       v.cannonT = Math.max(0, (v.cannonT ?? 0) - dt);
       const fire = !g.modalOpen && (input.hit('KeyF') || (input.mousePresses > 0 && !input.isTouch) || this.fireRequest);
       this.fireRequest = false;
       if (fire && v.cannonT <= 0) this.fireCannon(v);
+      else if (fire && v.cannonT > 0) audio.play('empty', { volume: 0.5 });
+      this.coaxT = Math.max(0, this.coaxT - dt);
+      if (!g.modalOpen && input.rightHeld && !input.isTouch && this.coaxT <= 0) {
+        this.coaxT = 0.09;
+        this.coaxShot(v);
+      }
     }
+  }
+
+  // ------------------------------------------------------------------ drifting
+
+  /** The touch DRIFT button is held. */
+  handbrake = false;
+  /** The drift going on: its score, how long, the widest angle; the last one shown a moment. */
+  drift = { score: 0, t: 0, angle: 0, done: 0, doneT: 0, wiped: false, grace: 0 };
+  private skids: THREE.InstancedMesh | null = null;
+  private skidI = 0;
+  private skidDist = 0;
+  private wasHandbrake = false;
+
+  /** How far the car is sliding sideways: the angle between its nose and where it's going. */
+  slipAngle(v: Vehicle): number {
+    const s = Math.abs(v.speed);
+    if (s < 0.5 && Math.abs(v.lat ?? 0) < 0.5) return 0;
+    return Math.atan2(v.lat ?? 0, Math.max(1, s)) * Math.sign(v.speed || 1);
+  }
+
+  /**
+   * Car physics with grip that can run out. The car has a sideways speed besides its forward
+   * one; the tyres scrub it away, quickly while they grip, slowly once the rear lets go. Pull
+   * the handbrake (Space) to lock the rear and kick the tail out; the car keeps rotating into
+   * the slide (more with throttle on), steering against it (countersteer) catches it, lifting
+   * off or letting go of the handbrake brings the grip back.
+   */
+  private slide(v: Vehicle, dt: number, grippy: number, throttle: number, hand: boolean, grip: number): void {
+    const spd = Math.abs(v.speed);
+    let lat = v.lat ?? 0;
+    let rate = v.yawRate ?? grippy;
+    const slip = this.slipAngle(v);
+    const sliding = Math.abs(slip) > 0.2 && spd > 5;
+    // Some cars let go more easily (the Drift King has a loose rear on purpose).
+    const loose = clamp(1.25 - grip * 0.45, 0.5, 1);
+    if (hand && !this.wasHandbrake && spd > 6 && Math.abs(v.steer) > 0.15) {
+      // Yank the handbrake mid-corner: the tail steps out.
+      rate += Math.sign(v.steer) * Math.sign(v.speed) * Math.min(1.6, spd / 9) * loose;
+    }
+    this.wasHandbrake = hand;
+    const slideMode = sliding || (hand && spd > 5);
+    if (slideMode) {
+      // In the slide: steering still turns the car, the slide itself keeps rotating it (power
+      // oversteer with the throttle on), and countersteer cuts the rotation.
+      const k = clamp(spd / 12, 0.5, 1.15);
+      // Steering into it keeps the slide going; let go of the wheel and the front tyres pull the
+      // car straight again.
+      const engaged = 0.3 + 0.7 * Math.min(1, Math.abs(v.steer));
+      const keepRotating = -lat * (throttle > 0 ? 0.26 : 0.11) * loose * engaged * Math.sign(v.speed || 1);
+      const target = v.steer * 2.1 * k * Math.sign(v.speed || 1) + keepRotating;
+      rate = damp(rate, target, 3.2, dt);
+    } else rate = damp(rate, grippy, 14, dt);
+    // Rotate the car, keeping its velocity (that's what makes it slide).
+    const vx = Math.sin(v.yaw) * v.speed + Math.cos(v.yaw) * lat;
+    const vz = Math.cos(v.yaw) * v.speed - Math.sin(v.yaw) * lat;
+    const mag = Math.hypot(vx, vz);
+    v.yaw += rate * dt;
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    v.speed = vx * fx + vz * fz;
+    lat = vx * fz - vz * fx;
+    const dir = Math.sign(v.speed) || 1;
+    if (slideMode) {
+      // Sliding: the tyres scrub the sideways speed away slowly (a locked rear barely at all),
+      // and scrubbing costs speed.
+      const gLat = (hand ? 1.1 * loose : (throttle > 0 ? 1.7 : 3.4) * (2 - loose)) * (!hand && Math.abs(v.steer) < 0.1 ? 2.2 : 1);
+      const before = lat;
+      lat *= Math.exp(-gLat * dt);
+      const scrub = Math.abs(before - lat);
+      v.speed -= dir * Math.min(Math.abs(v.speed), scrub * 0.25 + (hand ? 4.5 * dt : 0));
+    } else {
+      // Gripping: the tyres turn the car's momentum to where the nose points (no speed lost).
+      lat *= Math.exp(-12 * grip * dt);
+      v.speed = dir * Math.sqrt(Math.max(0, mag * mag - lat * lat));
+    }
+    if (Math.abs(lat) < 0.02) lat = 0;
+    v.lat = lat;
+    v.yawRate = rate;
+  }
+
+  /** Tyre smoke, skid marks and the drift score. */
+  private driftFx(v: Vehicle, dt: number, amount: number, hand: boolean): void {
+    const g = this.g;
+    const spd = Math.hypot(v.speed, v.lat ?? 0);
+    const slip = Math.abs(this.slipAngle(v));
+    const marking = (amount > 0.25 || (hand && Math.abs(v.speed) > 4)) && spd > 3;
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    const back = v.length * 0.32;
+    const half = v.width * 0.42;
+    const wheels = [-1, 1].map((sd) => ({ x: v.x - fx * back + fz * half * sd, z: v.z - fz * back - fx * half * sd }));
+    const vx = fx * v.speed + fz * (v.lat ?? 0);
+    const vz = fz * v.speed - fx * (v.lat ?? 0);
+    if (marking) {
+      if (Math.random() < dt * 36 * Math.max(0.35, amount)) {
+        for (const wh of wheels) {
+          const w = g.street.globalToWorld(wh.x, wh.z);
+          g.effects.tyreSmoke(w.x, w.z, vx, vz, amount);
+        }
+      }
+      this.skidDist += spd * dt;
+      if (this.skidDist > 0.35) {
+        this.skidDist = 0;
+        this.addSkids(wheels, Math.atan2(vx, vz), Math.min(1, 0.4 + amount));
+      }
+    }
+    // Score: angle × speed × time; it grows while you hold the slide.
+    const d = this.drift;
+    if (slip > 0.22 && spd > 7) {
+      d.t += dt;
+      d.grace = 0.7;
+      d.angle = slip;
+      d.score += (slip * 57.3) * spd * dt * 0.5 * (1 + Math.min(2, d.t / 3));
+    } else if (d.t > 0) {
+      // A moment to link it into the next slide (a flick the other way keeps the combo).
+      d.angle = slip;
+      d.grace -= dt;
+      if (d.grace <= 0) this.endDrift(false);
+    }
+    d.doneT = Math.max(0, d.doneT - dt);
+  }
+
+  /** A drift ends: banked (shown big for a moment), or lost if it ended in a crash. */
+  private endDrift(crashed: boolean): void {
+    const d = this.drift;
+    const g = this.g;
+    if (d.t > 0.6 && d.score > 50) {
+      d.done = crashed ? 0 : Math.round(d.score);
+      d.wiped = crashed;
+      d.doneT = 2.4;
+      if (!crashed) {
+        g.stats.bestDrift = Math.max(g.stats.bestDrift ?? 0, d.done);
+        if (d.done > 2000) audio.play('streak', { volume: 0.5 });
+      }
+    }
+    d.score = 0;
+    d.t = 0;
+    d.angle = 0;
+  }
+
+  /** Dark rubber marks behind the rear wheels (they fade as new ones replace the old). */
+  private addSkids(wheels: { x: number; z: number }[], yaw: number, dark: number): void {
+    if (!this.skids) {
+      const geo = new THREE.PlaneGeometry(0.26, 0.42);
+      geo.rotateX(-Math.PI / 2);
+      const m = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0x141214, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 }), SKID_MARKS);
+      const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+      for (let i = 0; i < SKID_MARKS; i++) m.setMatrixAt(i, zero);
+      m.frustumCulled = false;
+      this.skids = m;
+      this.group.add(m);
+    }
+    const m = this.skids;
+    for (const wh of wheels) {
+      const t = new THREE.Matrix4().makeRotationY(yaw);
+      t.scale(new THREE.Vector3(1, 1, 0.8 + dark * 0.4));
+      t.setPosition(wh.x, 0.012, wh.z);
+      m.setMatrixAt(this.skidI, t);
+      this.skidI = (this.skidI + 1) % SKID_MARKS;
+    }
+    m.instanceMatrix.needsUpdate = true;
+  }
+
+  // ------------------------------------------------------------------ the tank
+
+  private coaxT = 0;
+  /** Aim with the mouse until Q/E is used (then the keys turn the turret). */
+  private aimKeys = false;
+  /** Where the shell would land right now (global), and whether the mouse is pointing there. */
+  private impact = { x: 0, z: 0, mouse: false };
+  private reticle: THREE.Group | null = null;
+  private aimLine: THREE.Mesh | null = null;
+  private treads: THREE.InstancedMesh | null = null;
+  private treadI = 0;
+  private treadDist = 0;
+  private told = false;
+
+  /** World yaw (global frame) the tank's gun points along. */
+  private gunYaw(v: Vehicle): number {
+    return v.yaw + (v.turretYaw ?? 0);
+  }
+
+  /** Muzzle position (global). */
+  private muzzleOf(v: Vehicle): { x: number; z: number } {
+    const a = this.gunYaw(v);
+    // The turret sits 0.3 m behind the hull's centre; the gun reaches 5.35 m beyond it.
+    const tx = v.x - Math.sin(v.yaw) * 0.3;
+    const tz = v.z - Math.cos(v.yaw) * 0.3;
+    return { x: tx + Math.sin(a) * 5.4, z: tz + Math.cos(a) * 5.4 };
+  }
+
+  /** Where the mouse points on the ground (global), or null. */
+  private pointerGround(): { x: number; z: number } | null {
+    const g = this.g;
+    const input = g.input;
+    if (input.isTouch || !input.pointer.over) return null;
+    const { w, h } = g.renderer.size;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), g.renderer.camera);
+    const hit = new THREE.Vector3();
+    // The ground round the tank (it may be up on a hill).
+    const y = (this.driving?.y ?? 0) + g.streetDrop;
+    if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -(y + 0.6)), hit)) return null;
+    return g.street.worldToGlobal(hit.x, hit.z);
+  }
+
+  /**
+   * How far a shot along the gun goes (global frame): to the first building, car, person,
+   * soldier or machine, or to `range`.
+   */
+  private shotReach(ox: number, oz: number, fx: number, fz: number, range: number): number {
+    const g = this.g;
+    const st = g.street;
+    let t = 0;
+    for (; t < range; t += 0.8) if (!st.isOpen(ox + fx * t, oz + fz * t)) break;
+    t = Math.min(t, range);
+    const car = this.raycast(ox, oz, fx, fz, t);
+    if (car) t = Math.min(t, car.t);
+    for (const p of st.crowd.raycast(ox, oz, fx, fz, t)) t = Math.min(t, p.s);
+    for (const c of st.police.raycast(ox, oz, fx, fz, t)) t = Math.min(t, c.s);
+    for (const so of g.base.raycast(ox, oz, fx, fz, t)) t = Math.min(t, so.s);
+    for (const m of g.base.raycastMachines(ox, oz, fx, fz, t)) if (m.machine.kind !== 'heli' || m.machine.y < 4) t = Math.min(t, m.s);
+    return Math.max(0.5, t);
+  }
+
+  /** Turn the turret (mouse, Q/E, or onto the nearest threat on touch), and show where it'll hit. */
+  private tankUpdate(v: Vehicle, dt: number): void {
+    const g = this.g;
+    const input = g.input;
+    if (!this.told) {
+      this.told = true;
+      g.notify(input.isTouch ? '🎯 Tank: the turret locks onto targets ahead. Fire button shoots the cannon.' : '🎯 Tank: aim the turret with the mouse (or Q/R), click or F to fire the cannon, hold right click for the machine gun. A/D turn on the spot. E gets out.', 'info');
+    }
+    let rel = v.turretYaw ?? 0;
+    let want = rel;
+    let aimDist = 140;
+    let mouse = false;
+    const q = !g.modalOpen && input.down('KeyQ');
+    const e = !g.modalOpen && input.down('KeyR');
+    if (q || e) {
+      this.aimKeys = true;
+      want = rel + (q ? 1 : -1) * 0.6;
+    } else {
+      if (input.pointer.moved) this.aimKeys = false;
+      const pg = this.aimKeys ? null : this.pointerGround();
+      if (pg) {
+        const tx = v.x - Math.sin(v.yaw) * 0.3;
+        const tz = v.z - Math.cos(v.yaw) * 0.3;
+        const d = Math.hypot(pg.x - tx, pg.z - tz);
+        if (d > 2) {
+          want = angleDiff(Math.atan2(pg.x - tx, pg.z - tz), v.yaw);
+          aimDist = clamp(d - 5.4, 4, 140);
+          mouse = true;
+        }
+      } else if (input.isTouch) want = this.autoTurret(v);
+    }
+    // The turret traverses at a steady rate (it's heavy).
+    const step = 1.8 * dt;
+    const d = angleDiff(want, rel);
+    rel += Math.abs(d) <= step ? d : Math.sign(d) * step;
+    v.turretYaw = angleDiff(rel, 0);
+    if (v.turret) v.turret.rotation.y = v.turretYaw;
+    // Predicted impact: the reticle on the ground and a faint line from the muzzle.
+    const a = this.gunYaw(v);
+    const fx = Math.sin(a);
+    const fz = Math.cos(a);
+    const m = this.muzzleOf(v);
+    const onTarget = Math.abs(angleDiff(want, rel)) < 0.05;
+    const reach = this.shotReach(m.x, m.z, fx, fz, mouse && onTarget ? aimDist : 140);
+    this.impact = { x: m.x + fx * reach, z: m.z + fz * reach, mouse };
+    this.showReticle(v, m, reach, a);
+    // Tread marks, dust and exhaust.
+    const moved = Math.abs(v.speed) * dt + Math.abs(v.steer) * dt * 1.2;
+    this.treadDist += moved;
+    if (this.treadDist > 0.55) {
+      this.treadDist = 0;
+      this.addTreads(v);
+    }
+    if (Math.abs(v.speed) > 4 && Math.random() < dt * 10) {
+      const bx = v.x - Math.sin(v.yaw) * v.length * 0.45;
+      const bz = v.z - Math.cos(v.yaw) * v.length * 0.45;
+      const w = g.street.globalToWorld(bx + (Math.random() - 0.5) * 2.4, bz + (Math.random() - 0.5) * 2.4);
+      g.effects.dust(w.x, w.z, 0.6);
+    }
+    if (Math.random() < dt * (2 + Math.abs(v.speed) * 0.5)) {
+      const ex = v.x - Math.sin(v.yaw) * v.length * 0.5;
+      const ez = v.z - Math.cos(v.yaw) * v.length * 0.5;
+      const w = g.street.globalToWorld(ex, ez);
+      g.effects.soot(w.x, (v.y ?? 0) + 1.4, w.z, 0);
+    }
+  }
+
+  /** Touch: swing the turret onto the nearest soldier, machine, cop car or cop ahead. */
+  private autoTurret(v: Vehicle): number {
+    const g = this.g;
+    let best = 0;
+    let bestD = 90;
+    const consider = (x: number, z: number) => {
+      const d = Math.hypot(x - v.x, z - v.z);
+      if (d > bestD || d < 3) return;
+      const rel = angleDiff(Math.atan2(x - v.x, z - v.z), v.yaw);
+      if (Math.abs(rel) > 1.2) return;
+      bestD = d;
+      best = rel;
+    };
+    for (const so of g.base.soldiers) if (so.ko <= 0) consider(so.x, so.z);
+    for (const m of g.base.machines) if (m.dead < 0 && m.kind !== 'fuel') consider(m.x, m.z);
+    for (const c of g.street.police.cruisersNear(v.x, v.z, 90)) consider(c.root.position.x, c.root.position.z);
+    return best;
+  }
+
+  private showReticle(v: Vehicle, m: { x: number; z: number }, reach: number, a: number): void {
+    const g = this.g;
+    if (!this.reticle) {
+      const r = new THREE.Group();
+      const ringMat = new THREE.MeshBasicMaterial({ color: 0x39ff88, transparent: true, opacity: 0.85, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(1.0, 1.3, 36), ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      r.add(ring);
+      for (let i = 0; i < 4; i++) {
+        const tick = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.8), ringMat);
+        tick.rotation.x = -Math.PI / 2;
+        tick.rotation.z = (i * Math.PI) / 2;
+        tick.position.set(Math.sin((i * Math.PI) / 2) * 1.75, 0, Math.cos((i * Math.PI) / 2) * 1.75);
+        r.add(tick);
+      }
+      r.userData.mat = ringMat;
+      this.reticle = r;
+      this.group.add(r);
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 1), new THREE.MeshBasicMaterial({ color: 0x39ff88, transparent: true, opacity: 0.3, depthWrite: false, toneMapped: false }));
+      line.geometry.translate(0, 0, 0.5);
+      this.aimLine = line;
+      this.group.add(line);
+    }
+    const ready = (v.cannonT ?? 0) <= 0;
+    const col = ready ? 0x39ff88 : 0xff5a3a;
+    (this.reticle.userData.mat as THREE.MeshBasicMaterial).color.setHex(col);
+    const k = ready ? 1 : 0.6 + 0.4 * (1 - (v.cannonT ?? 0) / TANK_RELOAD);
+    this.reticle.scale.setScalar(k);
+    const rx = m.x + Math.sin(a) * reach;
+    const rz = m.z + Math.cos(a) * reach;
+    this.reticle.position.set(rx, groundAt(rx, rz) + 0.08, rz);
+    this.reticle.rotation.y += 0.02;
+    this.reticle.visible = true;
+    if (this.aimLine) {
+      (this.aimLine.material as THREE.MeshBasicMaterial).color.setHex(col);
+      this.aimLine.position.set(m.x, (v.y ?? 0) + 1.8, m.z);
+      this.aimLine.scale.set(1, 1, reach);
+      this.aimLine.rotation.set(0, a, 0);
+      this.aimLine.rotateX(Math.atan2((v.y ?? 0) + 1.7 - groundAt(rx, rz), reach));
+      this.aimLine.visible = !g.input.isTouch;
+    }
+  }
+
+  /** Two strips of track marks behind the tank (they fade as new ones replace them). */
+  private addTreads(v: Vehicle): void {
+    if (!this.treads) {
+      const geo = new THREE.PlaneGeometry(0.78, 0.5);
+      geo.rotateX(-Math.PI / 2);
+      const { canvas, ctx } = makeCanvas(32, 32);
+      ctx.fillStyle = 'rgba(0,0,0,0)';
+      ctx.clearRect(0, 0, 32, 32);
+      ctx.fillStyle = 'rgba(30,24,18,0.9)';
+      for (let y = 2; y < 32; y += 8) ctx.fillRect(2, y, 28, 4);
+      const tex = canvasTexture(canvas);
+      const tm = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 }), TREAD_MARKS);
+      const zero = new THREE.Matrix4().makeScale(0, 0, 0);
+      for (let i = 0; i < TREAD_MARKS; i++) tm.setMatrixAt(i, zero);
+      tm.frustumCulled = false;
+      this.treads = tm;
+      this.group.add(tm);
+    }
+    const tm = this.treads;
+    const rx = Math.cos(v.yaw);
+    const rz = -Math.sin(v.yaw);
+    for (const side of [-1, 1]) {
+      const x = v.x + rx * side * 1.45 - Math.sin(v.yaw) * v.length * 0.3;
+      const z = v.z + rz * side * 1.45 - Math.cos(v.yaw) * v.length * 0.3;
+      const m = new THREE.Matrix4().makeRotationY(v.yaw);
+      m.setPosition(x, 0.015, z);
+      tm.setMatrixAt(this.treadI, m);
+      this.treadI = (this.treadI + 1) % TREAD_MARKS;
+    }
+    tm.instanceMatrix.needsUpdate = true;
+  }
+
+  /** A tank rolled over a traffic car: it's flattened (and out of the traffic). */
+  private crushTraffic(c: Car): void {
+    const g = this.g;
+    g.street.city.releaseCar(c);
+    c.root.removeFromParent();
+    c.hazard.visible = false;
+    this.group.add(c.root);
+    const v: Vehicle = {
+      uid: nextUid++, def: null, name: 'car', color: c.color, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(),
+      x: c.x, z: c.z, yaw: c.root.rotation.y, speed: 0, steer: 0, length: c.length, width: 2, owned: false, stolen: false, mods: null, flames: [], brakeLights: [],
+      hp: 0, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
+    };
+    this.vehicles.push(v);
+    this.crushVehicle(v);
+  }
+
+  /** Flatten a car under the tank's tracks. */
+  private crushVehicle(o: Vehicle): void {
+    const g = this.g;
+    if (this.driving === o) return;
+    o.hp = 0;
+    o.wreck = 0;
+    o.burnT = 0;
+    o.speed = 0;
+    o.root.scale.set(1.08, 0.3, 1.02);
+    o.root.position.y = o.y ?? 0;
+    this.noteCondition(o);
+    const w = g.street.globalToWorld(o.x, o.z);
+    audio.playAt('crash', w.x, w.z, 1);
+    audio.playAt('glass', w.x, w.z, 0.7);
+    g.effects.sparkle(w.x, (o.y ?? 0) + 0.6, w.z, 14, 0xfff2c8, 0.5);
+    g.effects.dust(w.x, w.z, 1);
+    g.cam.shake(0.12);
+    g.street.police.crime(HEAT.wreck);
+    g.stats.carsWrecked = (g.stats.carsWrecked ?? 0) + 1;
+    if (o.owned && o.def) g.notify(`You flattened your own ${o.def.name}! Rebuilding it costs ${formatMoney(repairCost(o.def))}.`, 'bad');
+  }
+
+  /** The tank's machine gun: a quick round along the gun's line. */
+  private coaxShot(v: Vehicle): void {
+    const g = this.g;
+    const st = g.street;
+    const a = this.gunYaw(v) + (Math.random() - 0.5) * 0.04;
+    const fx = Math.sin(a);
+    const fz = Math.cos(a);
+    const m = this.muzzleOf(v);
+    const ox = m.x - fx * 1.6;
+    const oz = m.z - fz * 1.6;
+    const range = 80;
+    let t = 0;
+    for (; t < range; t += 0.6) if (!st.isOpen(ox + fx * t, oz + fz * t)) break;
+    const dmg = 16;
+    const hits: { t: number; hit: () => void }[] = [];
+    const car = this.raycast(ox, oz, fx, fz, t);
+    if (car) hits.push({ t: car.t, hit: () => this.shoot(car, dmg) });
+    const ped = st.crowd.raycast(ox, oz, fx, fz, t)[0];
+    if (ped) hits.push({ t: ped.s, hit: () => {
+      const r = st.crowd.damage(ped.ped, dmg, fx, fz);
+      st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      g.combat.landed(false, r.ko);
+    } });
+    const cop = st.police.raycast(ox, oz, fx, fz, t)[0];
+    if (cop) hits.push({ t: cop.s, hit: () => g.combat.landed(false, st.police.damage(cop.cop, dmg)) });
+    const so = g.base.raycast(ox, oz, fx, fz, t)[0];
+    if (so) hits.push({ t: so.s, hit: () => g.combat.landed(false, g.base.damage(so.soldier, dmg)) });
+    const mc = g.base.raycastMachines(ox, oz, fx, fz, t)[0];
+    if (mc) hits.push({ t: mc.s, hit: () => g.combat.landed(false, g.base.damageMachine(mc.machine, dmg)) });
+    hits.sort((p, q) => p.t - q.t);
+    if (hits[0]) {
+      t = hits[0].t;
+      hits[0].hit();
+    }
+    const a3 = st.globalToWorld(m.x, m.z);
+    const b3 = st.globalToWorld(ox + fx * t, oz + fz * t);
+    g.gunplay.enemyTracer(new THREE.Vector3(a3.x, 1.75, a3.z), new THREE.Vector3(b3.x, hits[0] ? 1.1 : 0.4, b3.z), 0xfff2a8);
+    audio.play('smg', { volume: 0.55, pitch: 0.8 });
+    if (!hits[0]) g.effects.sparkle(b3.x, 0.3, b3.z, 3, 0xffe2a8, 0.2);
   }
 
   /** The HUD's fire button (touch) asks the tank to fire. */
@@ -764,11 +1425,11 @@ export class Driving {
       if (m.isMesh) m.material = burnt;
     });
     for (const f of v.flames) f.visible = false;
-    v.root.rotation.z = (Math.random() - 0.5) * 0.12;
-    v.root.position.y = -0.08;
+    v.root.rotation.z = (v.roll ?? 0) + (Math.random() - 0.5) * 0.12;
+    v.root.position.y = (v.y ?? 0) - 0.08;
     const w = g.street.globalToWorld(v.x, v.z);
     const big = v.def?.kind === 'tank' || v.def?.kind === 'apc' ? 1.6 : 1;
-    g.effects.explosion(w.x, 0.8, w.z, big);
+    g.effects.explosion(w.x, (v.y ?? 0) + 0.8, w.z, big);
     audio.playAt('explosion', w.x, w.z, 1.4);
     const pg = this.playerGlobal();
     const dist = Math.hypot(pg.x - v.x, pg.z - v.z);
@@ -873,8 +1534,8 @@ export class Driving {
         v.burnT = Math.max(0, v.burnT - dt);
         if (near) {
           const w = st.globalToWorld(v.x, v.z);
-          if (v.burnT > 0 && Math.random() < dt * 30) g.effects.fire(w.x, 0.9, w.z, 1.2);
-          if (Math.random() < dt * (v.burnT > 0 ? 8 : 2)) g.effects.soot(w.x, 1.2, w.z, 1);
+          if (v.burnT > 0 && Math.random() < dt * 30) g.effects.fire(w.x, (v.y ?? 0) + 0.9, w.z, 1.2);
+          if (Math.random() < dt * (v.burnT > 0 ? 8 : 2)) g.effects.soot(w.x, (v.y ?? 0) + 1.2, w.z, 1);
         }
         // Towed away after a while.
         if (v.wreck > 45) this.remove(v);
@@ -885,8 +1546,8 @@ export class Driving {
         const fx = v.x + Math.sin(v.yaw) * v.length * 0.35;
         const fz = v.z + Math.cos(v.yaw) * v.length * 0.35;
         const w = st.globalToWorld(fx, fz);
-        g.effects.soot(w.x, 1.0, w.z, f < 0.25 ? 1 : 0);
-        if (f < 0.15) g.effects.fire(w.x, 0.9, w.z, 0.6);
+        g.effects.soot(w.x, (v.y ?? 0) + 1.0, w.z, f < 0.25 ? 1 : 0);
+        if (f < 0.15) g.effects.fire(w.x, (v.y ?? 0) + 0.9, w.z, 0.6);
       }
       // On fire: it goes up when the fire reaches the tank.
       if (v.burnT > 0) {
@@ -927,36 +1588,37 @@ export class Driving {
     else if (tg.v) this.damage(tg.v, shotDamage(dmg, tg.v.armor), true);
   }
 
-  /** The tank's main gun: a shell flies down the barrel's line and explodes where it lands. */
+  /** The tank's main gun: a shell flies to where the reticle is and explodes there. */
   private fireCannon(v: Vehicle): void {
     const g = this.g;
     const st = g.street;
-    v.cannonT = 2.6;
-    const fx = Math.sin(v.yaw);
-    const fz = Math.cos(v.yaw);
-    const mx = v.x + fx * (v.length / 2 + 1.8);
-    const mz = v.z + fz * (v.length / 2 + 1.8);
-    // Where it lands: the first building, car, person or the end of its range.
-    let t = 0;
-    const range = 140;
-    for (; t < range; t += 0.8) {
-      const w = st.globalToWorld(mx + fx * t, mz + fz * t);
-      if (!st.isOutdoors(w.x, w.z)) break;
+    v.cannonT = TANK_RELOAD;
+    v.recoil = 1;
+    const a = this.gunYaw(v);
+    const fx = Math.sin(a);
+    const fz = Math.cos(a);
+    const m = this.muzzleOf(v);
+    const tx = this.impact.x;
+    const tz = this.impact.z;
+    const t = Math.hypot(tx - m.x, tz - m.z);
+    const wm = st.globalToWorld(m.x, m.z);
+    const my = (v.y ?? 0) + 1.8;
+    g.effects.explosion(wm.x, my, wm.z, 0.35);
+    g.effects.smoke(wm.x, my, wm.z, 4);
+    // The blast kicks up dust all round the tank.
+    for (let i = 0; i < 4; i++) {
+      const w = st.globalToWorld(v.x + (Math.random() - 0.5) * 6, v.z + (Math.random() - 0.5) * 6);
+      g.effects.dust(w.x, w.z, 1);
     }
-    const car = this.raycast(mx, mz, fx, fz, t);
-    if (car) t = Math.min(t, car.t);
-    for (const p of st.crowd.raycast(mx, mz, fx, fz, t)) t = Math.min(t, p.s);
-    for (const c of st.police.raycast(mx, mz, fx, fz, t)) t = Math.min(t, c.s);
-    for (const so of g.base.raycast(mx, mz, fx, fz, t)) t = Math.min(t, so.s);
-    const wm = st.globalToWorld(mx, mz);
-    g.effects.explosion(wm.x, 2.0, wm.z, 0.35);
     audio.play('cannon');
-    g.cam.shake(0.22);
-    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd28a, toneMapped: false }));
-    shell.position.set(wm.x, 2.0, wm.z);
+    g.cam.shake(0.3);
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffd28a, toneMapped: false }));
+    shell.position.set(wm.x, my, wm.z);
     g.effects.group.add(shell);
-    this.shells.push({ x: mx, z: mz, tx: mx + fx * t, tz: mz + fz * t, t: 0, dur: Math.max(0.05, t / 180), mesh: shell });
-    v.speed -= 1.5;
+    this.shells.push({ x: m.x, z: m.z, y0: my, y1: groundAt(tx, tz) + 0.6, tx, tz, t: 0, dur: Math.max(0.05, t / 160), mesh: shell, from: v });
+    v.speed -= Math.cos(v.turretYaw ?? 0) * 1.5;
+    void fx;
+    void fz;
   }
 
   private updateShells(dt: number): void {
@@ -966,16 +1628,16 @@ export class Driving {
       s.t += dt;
       const u = Math.min(1, s.t / s.dur);
       const w = st.globalToWorld(s.x + (s.tx - s.x) * u, s.z + (s.tz - s.z) * u);
-      s.mesh.position.set(w.x, 2.0 - u * 1.2, w.z);
+      s.mesh.position.set(w.x, s.y0 + (s.y1 - s.y0) * u + Math.sin(u * Math.PI) * Math.min(4, s.dur * 6), w.z);
       if (u >= 1) {
         s.mesh.removeFromParent();
         s.mesh.geometry.dispose();
         this.shells.splice(i, 1);
         const e = st.globalToWorld(s.tx, s.tz);
-        this.g.effects.explosion(e.x, 0.8, e.z, 1.2);
+        this.g.effects.explosion(e.x, s.y1 + 0.2, e.z, 1.2);
         audio.playAt('explosion', e.x, e.z, 1.4);
         this.g.cam.shake(0.12);
-        this.blast(s.tx, s.tz, 8, 260, true);
+        this.blast(s.tx, s.tz, 8, 260, true, s.from);
       }
     }
   }
@@ -1120,6 +1782,7 @@ export class Driving {
     }
     g.spend(next.price, 'expand');
     h.garage = next.tier;
+    g.refreshStreet();
     g.events.emit('house', undefined);
     audio.play('levelup');
     g.notify(`${next.name} built next to your house: room for ${next.cap} cars. Drive up to the door and press Space to park.`, 'good');
@@ -1133,6 +1796,11 @@ export class Driving {
     const v = this.driving;
     const h = g.house;
     const t = h ? garageTier(h.garage) : null;
+    if (v?.def && NO_GARAGE_IDS.includes(v.def.id)) {
+      audio.play('error');
+      g.notify(`The ${v.name} won't go in your garage: the army would come looking for it. Enjoy it out on the streets while it lasts!`, 'bad');
+      return false;
+    }
     if (!v || !h) return false;
     if (!t) {
       audio.play('error');
@@ -1236,7 +1904,7 @@ export class Driving {
       c.root.rotation.y = yaw;
       this.group.add(c.root);
       v = {
-        uid: nextUid++, def: null, name: 'your car', color: p.color ?? 0, root: c.root, wheels: [], front: [], open: false, seat: new THREE.Vector3(-0.38, 0.8, 0),
+        uid: nextUid++, def: null, name: 'your car', color: p.color ?? 0, root: c.root, wheels: [], front: [], open: false, seat: trafficSeat(c.kind),
         x: at.x, z: at.z, yaw, speed: 0, steer: 0, length: c.length, width: 2, owned: true, stolen: false, mods: null, flames: [], brakeLights: [],
         kept: { kind: c.kind, color: c.color }, hp: c.maxHp, maxHp: c.maxHp, armor: 1, wreck: -1, burnT: 0,
       };

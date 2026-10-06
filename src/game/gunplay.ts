@@ -9,6 +9,11 @@ import type { Ped } from '../world/crowd';
 import { HEAT, type Officer } from '../world/police';
 import { shotDamage } from './driving';
 import { mat } from '../render/materials';
+import { type Attack } from './melee';
+import { groundAt } from '../world/terrain';
+import { carSeats } from '../world/cityView';
+/** Chance a passer-by you punch (and don't knock out) fights back. */
+const BRAWL_CHANCE = 0.4;
 
 interface Tracer {
   mesh: THREE.Mesh;
@@ -60,10 +65,14 @@ type Hit =
   | { kind: 'wall' | 'ground' | 'air'; t: number }
   | { kind: 'target'; t: number; target: import('../world/cityView').Target }
   | { kind: 'car'; t: number; tg: import('./driving').CarTarget }
+  | { kind: 'occupant'; t: number; car: import('../world/cityView').Car; occ: import('../world/cityView').Occupant; head: boolean }
+  | { kind: 'crew'; t: number; machine: import('../world/militaryBase').Machine; crew: import('../world/militaryBase').Crew; head: boolean }
   | { kind: 'soldier'; t: number; soldier: import('../world/militaryBase').Soldier; head: boolean }
+  | { kind: 'machine'; t: number; machine: import('../world/militaryBase').Machine }
   | { kind: 'ped'; t: number; ped: Ped; head: boolean }
   | { kind: 'cop'; t: number; cop: Officer; head: boolean }
-  | { kind: 'player'; t: number; pid: string; name: string; head: boolean };
+  | { kind: 'player'; t: number; pid: string; name: string; head: boolean }
+  | { kind: 'guard'; t: number; target: import('./heist').HeistTarget; head: boolean };
 
 /**
  * Shooting out on the street: the gun in your hand, aiming (mouse on desktop, facing plus a
@@ -87,6 +96,8 @@ export class GunPlay {
   firePressed = false;
   /** Total shots (other players see your muzzle flash when it changes). */
   shots = 0;
+  /** Heavy melee blows swung (others see the big swing). */
+  heavies = 0;
   private spinV = 0;
   private aimYaw: number | null = null;
   private aimHold = 0;
@@ -102,6 +113,8 @@ export class GunPlay {
   private swingT = 0;
   private aimX = 0;
   private aimY = 0;
+  /** How far the gun in your hands is pulled back from a wall in front of you (0–1). */
+  private nearK = 0;
   private swayY = 0;
   private vmKick = 0;
   private bobT = 0;
@@ -168,11 +181,35 @@ export class GunPlay {
     }
   }
 
-  /** Out on the roads and sidewalks with your feet on the ground. */
+  /**
+   * Out on the roads and sidewalks with your feet on the ground, or inside a house where a
+   * heist is going down (robbing it, or defending your own).
+   */
   get canShoot(): boolean {
     const g = this.g;
     const p = g.player;
-    return g.state === 'playing' && !g.inside && p.floor === 0 && !p.seat && !g.photoMode && g.combat.ko <= 0 && g.street.isOutdoors(p.x, p.z);
+    // Seated you can't shoot, except riding along in someone's car: a drive-by.
+    if (g.state !== 'playing' || (p.seat && !g.riding) || g.photoMode || g.combat.ko > 0) return false;
+    if (g.indoorFight) return true;
+    return !g.inside && !g.underground && p.floor === 0 && g.street.isOutdoors(p.x, p.z);
+  }
+
+  /** Indoors (a heist fight): walls, shut doors, the ceiling and the outside stop a bullet. */
+  private indoorBlocked(x: number, y: number, z: number): boolean {
+    const g = this.g;
+    if (y > 2.95) return true;
+    const f = g.player.floor;
+    const grid = g.gridAt(f);
+    const tx = Math.floor(x);
+    const tz = Math.floor(z);
+    if (!grid.isOwned(tx, tz)) return true;
+    if (grid.solidAt(grid.idx(tx, tz))) return true;
+    return grid.doorAt(tx, tz) >= 0 && (g.levels[f]?.floor.walls.doorOpenness(tx, tz) ?? 1) < 0.45;
+  }
+
+  /** Where you're aiming the gun right now (world yaw), or null when you're not. */
+  get facing(): number | null {
+    return this.drawn && this.aimHold > 0 && this.aimYaw !== null ? this.aimYaw : null;
   }
 
   /** The gun is drawn and visible in your hand. */
@@ -188,7 +225,7 @@ export class GunPlay {
   /** Aiming down the sights (first person, right mouse or the AIM button). */
   get aiming(): boolean {
     const g = this.g;
-    return this.firstPerson && this.reloading <= 0 && !g.modalOpen && (g.input.rightHeld || this.adsTouch);
+    return this.firstPerson && !this.def?.melee && this.reloading <= 0 && !g.modalOpen && (g.input.rightHeld || this.adsTouch);
   }
 
   /** Fully zoomed in, looking through a scope (it fills the screen instead of the gun). */
@@ -364,9 +401,14 @@ export class GunPlay {
     const bob = Math.min(1, speed / 4) * (1 - this.adsK * 0.85);
     this.vmKick = Math.max(0, this.vmKick - dt * 9);
     const reload = this.reloading > 0 && this.def ? Math.sin(Math.min(1, 1 - this.reloading / this.def.reload) * Math.PI) : 0;
-    // Too close to a wall: pull the gun back and down.
+    // Too close to a wall: pull the gun back and tip it up out of the way (eased, so it
+    // doesn't snap). Indoors (a heist) that's the walls and shut doors, not the street's edge.
     const fwd = g.cam.lookDir(new THREE.Vector3());
-    const near = !g.street.isOutdoors(g.player.x + fwd.x * 0.75, g.player.z + fwd.z * 0.75) ? 1 : 0;
+    const ax = g.player.x + fwd.x * 0.75;
+    const az = g.player.z + fwd.z * 0.75;
+    const wall = g.indoorFight ? this.indoorBlocked(ax, 1.4, az) : !g.street.isOutdoors(ax, az);
+    this.nearK += ((wall ? 1 : 0) - this.nearK) * Math.min(1, dt * 10);
+    const near = this.nearK;
     const k = this.adsK;
     const sightY = -0.03 - vm.muzzle.y * vm.scale;
     const hip = { x: 0.072, y: -0.075, z: -0.24 };
@@ -411,7 +453,7 @@ export class GunPlay {
     const { w, h } = g.renderer.size;
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2((input.pointer.x / w) * 2 - 1, -(input.pointer.y / h) * 2 + 1), g.renderer.camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.1);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(g.player.y + 1.1));
     const hit = new THREE.Vector3();
     if (!ray.ray.intersectPlane(plane, hit)) return null;
     const dx = hit.x - g.player.x;
@@ -504,7 +546,26 @@ export class GunPlay {
     const ready = this.cool <= 0 && this.reloading <= 0 && !rolling;
     const want = pressed || (this.queued > 0 && ready);
     this.burstT = Math.max(0, this.burstT - dt);
-    if (d?.charge) {
+    const brawl = g.combat.brawl;
+    if (d?.melee && this.canShoot) {
+      // Fists and melee weapons: tap to jab, hold to wind up a heavy, right mouse (AIM) to block.
+      this.queued = 0;
+      const block = !blocked && (input.rightHeld || this.adsTouch);
+      // A click that came and went within one frame still counts as a tap (it lands next frame).
+      const atk = brawl.update(dt, { held: (held || pressed) && !rolling, block, rate: d.rate, base: d.dmg, now: performance.now() });
+      if (brawl.charge > 0 && Math.random() < dt * 20) {
+        const p = g.player;
+        const hx = p.x + Math.sin(p.yaw) * 0.45;
+        const hz = p.z + Math.cos(p.yaw) * 0.45;
+        g.effects.sparkle(hx, 1.25, hz, 1, brawl.charge >= 1 ? 0xff5a3a : 0xffc53d, 0.15 + brawl.charge * 0.2);
+      }
+      if (atk && !rolling) this.swing(d, atk);
+    } else {
+      brawl.update(dt, { held: false, block: false, rate: 1, base: 0, now: performance.now() });
+    }
+    if (d?.melee) {
+      // (handled above)
+    } else if (d?.charge) {
       // Railgun: hold to charge, let go to fire. The longer the charge, the harder it hits.
       this.queued = 0;
       if (held && this.canShoot && ready) {
@@ -549,8 +610,7 @@ export class GunPlay {
           g.notify(g.inside ? 'Guns stay holstered indoors: step out onto the street to shoot.' : 'You can only shoot out on the street.', 'bad');
         }
       } else if (ready) {
-        if (d.melee) this.swing(d);
-        else if (d.kind === 'minigun' && this.spinV < 12) {
+        if (d.kind === 'minigun' && this.spinV < 12) {
           // Barrels spin up first.
         } else this.fire(d);
       }
@@ -631,7 +691,7 @@ export class GunPlay {
     if (fp && this.vm) {
       this.vm.holder.updateMatrixWorld(true);
       muzzle = this.vm.gun.localToWorld(this.vm.muzzle.clone());
-    } else muzzle = this.held ? this.held.group.localToWorld(this.held.muzzle.clone()) : new THREE.Vector3(p.x + Math.sin(yaw) * 0.6, 1.3, p.z + Math.cos(yaw) * 0.6);
+    } else muzzle = this.held ? this.held.group.localToWorld(this.held.muzzle.clone()) : new THREE.Vector3(p.x + Math.sin(yaw) * 0.6, p.y + 1.3, p.z + Math.cos(yaw) * 0.6);
     // Muzzle flash
     if (d.kind !== 'paint' && d.kind !== 'flamer') {
       this.flash.position.copy(muzzle);
@@ -729,23 +789,35 @@ export class GunPlay {
     const st = g.street;
     const city = st.city;
     let best: Hit = { kind: 'air', t: d.range };
-    // Walls and the ground: march until the bullet leaves the street or hits the pavement.
+    const indoor = g.indoorFight;
+    // Walls and the ground: march until the bullet leaves the street or hits the pavement (or
+    // a hillside). Aiming flat (top-down, over the shoulder) the shot follows the ground.
     for (let t = 0.3; t < d.range; t += 0.25) {
       const x = o.x + dir.x * t;
       const y = o.y + dir.y * t;
       const z = o.z + dir.z * t;
-      if (y <= 0.02) {
-        best = { kind: 'ground', t: dir.y < -1e-4 ? Math.max(0, (o.y - 0.02) / -dir.y) : t };
+      const floor = indoor ? 0 : flat ? -Infinity : st.groundY(x, z) + g.streetDrop;
+      if (y <= (flat ? 0.02 : floor + 0.02)) {
+        best = { kind: 'ground', t: indoor && dir.y < -1e-4 ? Math.max(0, (o.y - 0.02) / -dir.y) : t };
         break;
       }
-      if (y < 60 && !st.isOutdoors(x, z)) {
+      // Buildings stand up to 60 m; out on the land, a slope too steep to climb stops a shot that skims it.
+      if (indoor ? this.indoorBlocked(x, y, z) : y < 60 + Math.max(0, floor) && !st.isOutdoors(x, z) && (floor < 0.5 || y < floor + 3)) {
         best = { kind: 'wall', t };
         break;
       }
     }
     const hlen = Math.hypot(dir.x, dir.z);
-    const yAt = (t: number) => o.y + dir.y * t;
     const og = st.worldToGlobal(o.x, o.z);
+    const flipped = st.placeOf(st.activeId).side === 1;
+    // Height of the bullet above the ground it's over (people stand on hills too).
+    const yAt = (t: number) => {
+      const y = o.y + dir.y * t;
+      if (indoor || hlen < 0.02) return y;
+      const sx = (flipped ? -dir.x : dir.x) * t;
+      const sz = (flipped ? -dir.z : dir.z) * t;
+      return y - groundAt(og.x + sx, og.z + sz) - g.streetDrop;
+    };
     const flip = st.placeOf(st.activeId).side === 1;
     const gdx = flip ? -dir.x : dir.x;
     const gdz = flip ? -dir.z : dir.z;
@@ -772,16 +844,39 @@ export class GunPlay {
         const t = car.t / hlen;
         const y = yAt(t);
         const top = car.v?.def?.kind === 'tank' || car.v?.def?.kind === 'apc' ? 2.6 : 1.55;
-        if (t < best.t && (flat || (y > 0 && y < top))) best = { kind: 'car', t, tg: car };
+        if (t < best.t && (flat || (y > 0 && y < top))) {
+          best = { kind: 'car', t, tg: car };
+          // In through the glass: whoever sits in the line of fire takes the bullet.
+          const tc = car.traffic;
+          if (tc?.people.length && (flat || y > carSeats(tc.kind).belt - 0.05)) {
+            const p = city.shootPeople(tc, og.x, og.z, hx, hz, car.t, car.t + tc.length + 1, flat ? null : (s) => yAt(s / hlen));
+            if (p) best = { kind: 'occupant', t: p.s / hlen, car: tc, occ: p.occ, head: p.head };
+          }
+        }
       }
       // Soldiers at the military base (tower guards stand up high).
       for (const c of g.base.raycast(og.x, og.z, hx, hz, best.t * hlen)) {
         if (done?.has(c.soldier)) continue;
         const t = c.s / hlen;
-        const y = yAt(t) - c.soldier.y;
+        const y = o.y + dir.y * t - g.streetDrop - c.soldier.y;
         const h = c.soldier.model.height;
         if (t < best.t && (flat || (y > 0 && y < h + 0.08))) {
           best = { kind: 'soldier', t, soldier: c.soldier, head: !flat && y > h - 0.42 };
+          break;
+        }
+      }
+      // The base's machine-gun nests, its tank, the helicopter and the fuel tanks.
+      for (const c of g.base.raycastMachines(og.x, og.z, hx, hz, best.t * hlen)) {
+        // The helicopter's cockpit: a bullet through the canopy finds the crew.
+        const cr = c.machine.kind === 'heli' ? g.base.crewHit(c.machine, o, dir, flat, best.t) : null;
+        if (cr && cr.t < best.t) {
+          best = { kind: 'crew', t: cr.t, machine: c.machine, crew: cr.crew, head: cr.head };
+          break;
+        }
+        const t = c.s / hlen;
+        const y = o.y + dir.y * t - g.streetDrop;
+        if (t < best.t && (flat || (y > c.y0 && y < c.y1))) {
+          best = { kind: 'machine', t, machine: c.machine };
           break;
         }
       }
@@ -819,20 +914,33 @@ export class GunPlay {
         const t = s / hlen;
         if (t >= best.t) continue;
         if (Math.hypot(px - wx * s, pz - wz * s) > 0.36) continue;
-        const y = yAt(t) - r.y;
+        const y = o.y + dir.y * t - r.y;
         if (!flat && (y < 0 || y > r.height + 0.08)) continue;
         best = { kind: 'player', t, pid: r.pid, name: r.name, head: !flat && y > r.height - 0.42 };
+      }
+      // A house's guards and its dog, mid-heist.
+      if (g.heist) {
+        for (const c of g.heist.raycast(o.x, o.z, wx, wz, best.t * hlen)) {
+          if (done?.has(c.target)) continue;
+          const t = c.s / hlen;
+          if (t >= best.t) break;
+          const y = yAt(t);
+          if (!flat && (y < 0 || y > c.height + 0.08)) continue;
+          best = { kind: 'guard', t, target: c.target, head: !flat && y > c.height - 0.42 };
+          break;
+        }
       }
     }
     const t = best.t;
     const hit = new THREE.Vector3(o.x + dir.x * t, flat ? muzzle.y : o.y + dir.y * t, o.z + dir.z * t);
     const fx = g.effects;
-    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player';
+    const person = best.kind === 'ped' || best.kind === 'cop' || best.kind === 'soldier' || best.kind === 'player' || best.kind === 'guard' || best.kind === 'occupant' || best.kind === 'crew';
     if (done) {
       if (best.kind === 'ped') done.add(best.ped);
       else if (best.kind === 'cop') done.add(best.cop);
       else if (best.kind === 'soldier') done.add(best.soldier);
       else if (best.kind === 'player') done.add(best.pid);
+      else if (best.kind === 'guard') done.add(best.target);
     }
     switch (best.kind) {
       case 'car': {
@@ -850,6 +958,40 @@ export class GunPlay {
         st.police.crime(HEAT.car, false);
         fx.sparkle(hit.x, Math.max(0.5, hit.y), hit.z, 8, 0xfff2c8, 0.4);
         if (Math.random() < 0.4) audio.playAt('ricochet', hit.x, hit.z, 0.6);
+        break;
+      }
+      case 'occupant': {
+        // Through the window: the glass goes, and so does whoever's behind it.
+        audio.playAt('glass', hit.x, hit.z, 0.8);
+        fx.sparkle(hit.x, hit.y, hit.z, 14, 0xbff6ff, 0.45);
+        if (flat) hit.y = 1.2;
+        if (best.car.shaken <= 0 && !best.car.dead && this.alarmT <= 0) {
+          this.alarmT = 1.5;
+          audio.playAt('carAlarm', hit.x, hit.z, 0.8);
+        }
+        city.hitCar(best.car);
+        const dmg = this.dmgOf(d, best.head, t);
+        if (dmg <= 0) break;
+        const ko = city.hurtPerson(best.car, best.occ, dmg);
+        st.police.crime(ko ? HEAT.knockout : HEAT.hitPerson);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
+        if (ko) {
+          g.stats.knockouts++;
+          if (best.occ.seat === 0) g.notify('🚗 You shot the driver: the car rolls to a stop.', 'bad');
+        }
+        break;
+      }
+      case 'crew': {
+        // The helicopter's canopy: hit the pilot and it goes down.
+        audio.playAt('glass', hit.x, hit.z, 0.8);
+        fx.sparkle(hit.x, hit.y, hit.z, 14, 0xbff6ff, 0.45);
+        const dmg = this.dmgOf(d, best.head, t);
+        if (dmg <= 0) break;
+        const ko = g.base.hitCrew(best.machine, best.crew, dmg);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
+        if (ko) g.stats.knockouts++;
         break;
       }
       case 'target': {
@@ -904,6 +1046,30 @@ export class GunPlay {
         g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
         g.combat.landed(best.head, ko);
         if (ko) g.stats.knockouts++;
+        break;
+      }
+      case 'machine': {
+        const m = best.machine;
+        if (flat) hit.y = m.y;
+        if (d.dmg <= 0) break;
+        const dmg = Math.max(1, Math.round(d.dmg * m.armor));
+        const gone = g.base.damageMachine(m, d.dmg);
+        audio.playAt('metalHit', hit.x, hit.z, 0.7);
+        fx.sparkle(hit.x, hit.y, hit.z, 8, 0xfff2c8, 0.4);
+        g.floaters.text(hit.clone().setY(hit.y + 0.6), `${dmg}`, 'dmg', 0.8, 0.6);
+        if (Math.random() < 0.3) audio.playAt('ricochet', hit.x, hit.z, 0.5);
+        g.combat.landed(false, gone);
+        break;
+      }
+      case 'guard': {
+        const dmg = this.dmgOf(d, best.head, t);
+        if (flat) hit.y = 1.2;
+        if (d.kind === 'paint') this.splat(hit.x, hit.y, hit.z, -dir.x, -dir.z, true);
+        if (dmg <= 0 || !g.heist) break;
+        const ko = g.heist.damage(best.target, dmg);
+        fx.sparkle(hit.x, hit.y, hit.z, best.head ? 10 : 5, best.head ? 0xffe08a : 0xffffff, 0.25);
+        g.floaters.text(hit.clone().setY(hit.y + 0.4), best.head ? `HEADSHOT ${Math.round(dmg)}` : `${Math.round(dmg)}`, best.head ? 'dmg head' : 'dmg', 0.9, 0.7);
+        g.combat.landed(best.head, ko);
         break;
       }
       case 'cop': {
@@ -1012,6 +1178,21 @@ export class GunPlay {
       st.city.hitTarget(tg, gdx, gdz);
       g.onTargetHit();
     }
+    // Guards and the dog (world frame).
+    if (g.heist) {
+      const wx = Math.sin(yaw);
+      const wz = Math.cos(yaw);
+      for (const t of g.heist.around(p.x, p.z, reach)) {
+        const dx = t.x - p.x;
+        const dz = t.z - p.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.6 && (dx * wx + dz * wz) / dist <= cone) continue;
+        if (!g.heist.clearSight(p.floor, p.x, p.z, t.x, t.z)) continue;
+        const ko = g.heist.damage(t, dmg);
+        if (show) g.floaters.text(new THREE.Vector3(t.x, 1.7, t.z), `🔥${dmg * 4}`, 'dmg', 0.8, 0.6);
+        g.combat.landed(false, ko);
+      }
+    }
   }
 
   /** Fire a grenade or rocket from the muzzle. */
@@ -1054,7 +1235,10 @@ export class GunPlay {
         const prev = p.pos.clone();
         p.vel.y -= (pr.gravity * dt) / steps;
         p.pos.addScaledVector(p.vel, dt / steps);
-        if (this.projectileHits(prev, p.pos)) boom = p.pos.y <= 0.1 ? p.pos.clone().setY(0.15) : prev;
+        if (this.projectileHits(prev, p.pos)) {
+          const floor = g.indoorFight ? 0 : g.street.groundY(p.pos.x, p.pos.z) + g.streetDrop;
+          boom = p.pos.y <= floor + 0.1 ? p.pos.clone().setY(floor + 0.15) : prev;
+        }
       }
       if (!boom && p.life > 5) boom = p.pos.clone();
       p.mesh.position.copy(p.pos);
@@ -1076,9 +1260,11 @@ export class GunPlay {
   private projectileHits(a: THREE.Vector3, b: THREE.Vector3): boolean {
     const g = this.g;
     const st = g.street;
-    if (b.y <= 0.1) return true;
-    if (b.y < 60 && !st.isOutdoors(b.x, b.z)) return true;
-    if (b.y > 2.4) return false;
+    const floor = g.indoorFight ? 0 : st.groundY(b.x, b.z) + g.streetDrop;
+    if (b.y <= floor + 0.1) return true;
+    if (g.indoorFight ? this.indoorBlocked(b.x, b.y, b.z) : b.y < 60 + Math.max(0, floor) && !st.isOutdoors(b.x, b.z) && (floor < 0.5 || b.y < floor + 3)) return true;
+    if (b.y > floor + 2.4) return false;
+    if (g.heist && b.y < 2 && g.heist.around(b.x, b.z, 0.55).length) return true;
     const ga = st.worldToGlobal(a.x, a.z);
     const gb = st.worldToGlobal(b.x, b.z);
     const len = Math.hypot(gb.x - ga.x, gb.z - ga.z);
@@ -1115,6 +1301,14 @@ export class GunPlay {
       g.floaters.text(new THREE.Vector3(r.x, 1.8, r.z), `💥${dmg}`, 'dmg head', 1, 0.8);
       g.combat.landed(false, false);
     }
+    if (g.heist) {
+      for (const t of g.heist.around(w.x, w.z, ex.radius)) {
+        const dmg = Math.round(power * (1 - Math.hypot(t.x - w.x, t.z - w.z) / ex.radius) * 1.5);
+        if (dmg <= 0) continue;
+        g.floaters.text(new THREE.Vector3(t.x, 1.8, t.z), `💥${dmg}`, 'dmg head', 1, 0.8);
+        g.combat.landed(false, g.heist.damage(t, dmg));
+      }
+    }
     st.police.crime(HEAT.hitPerson, false);
     this.booms.push({ i: Math.random().toString(36).slice(2, 9), x: Math.round(gp.x * 10) / 10, z: Math.round(gp.z * 10) / 10, r: ex.radius, t: Date.now() });
     if (this.booms.length > 6) this.booms.shift();
@@ -1124,12 +1318,15 @@ export class GunPlay {
    * Swing a melee weapon: everyone (and everything) in a cone in front of you within reach
    * gets hit. Same street-only rules, damage, knockouts and police heat as guns.
    */
-  private swing(d: GunDef): void {
+  private swing(d: GunDef, atk: Attack): void {
     const g = this.g;
     const st = g.street;
     const p = g.player;
-    this.cool = 1 / d.rate;
+    const dmg = atk.dmg;
+    // A heavy blow or a combo finisher sends people flying (and lunges you in).
+    const big = atk.heavy || atk.step === 2 || atk.riposte;
     this.shots++;
+    if (atk.heavy) this.heavies++;
     g.stats.shotsFired++;
     const fp = g.cam.mode === 'first';
     let yaw = this.aimYaw !== null && this.aimHold > 0 ? this.aimYaw : p.yaw;
@@ -1138,7 +1335,8 @@ export class GunPlay {
     p.model.root.rotation.y = yaw;
     p.model.swing = 1;
     this.swingT = 0.35;
-    audio.play('whoosh', { pitch: 1.3 + Math.random() * 0.3, volume: 0.6 });
+    audio.play('whoosh', { pitch: (atk.heavy ? 0.85 : 1.3) + Math.random() * 0.3, volume: atk.heavy ? 0.9 : 0.6 });
+    g.lunge(yaw, atk.heavy ? 0.9 : big ? 0.55 : 0.3);
     const og = st.worldToGlobal(p.x, p.z);
     const flip = st.placeOf(st.activeId).side === 1;
     const gdx = (flip ? -1 : 1) * Math.sin(yaw);
@@ -1155,17 +1353,21 @@ export class GunPlay {
       return new THREE.Vector3(w.x, y, w.z);
     };
     let landed = 0;
+    const label = `${dmg}${atk.riposte ? ' COUNTER!' : atk.heavy ? '!' : ''}`;
     const thump = () => {
-      if (!landed) audio.play('thud', { pitch: 0.9 + Math.random() * 0.2 });
+      if (!landed) audio.play('thud', { pitch: (atk.heavy ? 0.65 : 0.9) + Math.random() * 0.2, volume: big ? 1 : 0.8 });
       landed++;
     };
     for (const ped of st.crowd.around(og.x, og.z, reach)) {
       if (!inCone(ped.x - og.x, ped.z - og.z)) continue;
       const at = hitAt(ped.x, ped.z, 1.2);
-      const r = st.crowd.damage(ped, d.dmg, gdx, gdz);
-      st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      const r = st.crowd.damage(ped, dmg, big ? gdx * 3 : gdx, big ? gdz * 3 : gdz);
+      // Hitting someone who's already fighting you is self-defence.
+      if (!ped.fight) st.police.crime(r.ko ? HEAT.knockout : HEAT.hitPerson);
+      else if (atk.riposte || big) st.crowd.stagger(ped, big ? 0.9 : 0.4);
+      if (!r.ko && !ped.fight && Math.random() < BRAWL_CHANCE) st.crowd.provoke(ped);
       fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
-      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(at.clone().setY(1.7), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, r.ko);
       if (r.ko) g.onStreetKnockout(r.cash, at);
       thump();
@@ -1173,9 +1375,9 @@ export class GunPlay {
     for (const o of st.police.officers) {
       if (o.ko > 0 || o.leaving > 0 || !inCone(o.x - og.x, o.z - og.z)) continue;
       const at = hitAt(o.x, o.z, 1.2);
-      const ko = st.police.damage(o, d.dmg);
+      const ko = st.police.damage(o, dmg);
       fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
-      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(at.clone().setY(1.7), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, ko);
       if (ko) g.stats.knockouts++;
       thump();
@@ -1183,10 +1385,10 @@ export class GunPlay {
     for (const r of g.combat.remoteTargets()) {
       const rg = st.worldToGlobal(r.x, r.z);
       if (!inCone(rg.x - og.x, rg.z - og.z)) continue;
-      g.combat.onHitRemote?.(r.pid, d.dmg);
+      g.combat.onMeleeRemote?.(r.pid, dmg, atk.heavy);
       st.police.crime(HEAT.hitPerson);
       fx.sparkle(r.x, 1.2, r.z, 6, 0xffffff, 0.3);
-      g.floaters.text(new THREE.Vector3(r.x, 1.7, r.z), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(new THREE.Vector3(r.x, 1.7, r.z), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, false);
       thump();
     }
@@ -1201,9 +1403,9 @@ export class GunPlay {
     for (const so of g.base.soldiers) {
       if (so.ko > 0 || so.y > 1 || !inCone(so.x - og.x, so.z - og.z)) continue;
       const at = hitAt(so.x, so.z, 1.2);
-      const ko = g.base.damage(so, d.dmg);
+      const ko = g.base.damage(so, dmg);
       fx.sparkle(at.x, at.y, at.z, 6, 0xffffff, 0.3);
-      g.floaters.text(at.clone().setY(1.7), `${d.dmg}`, 'dmg', 0.9, 0.7);
+      g.floaters.text(at.clone().setY(1.7), label, 'dmg', 0.9, 0.7);
       g.combat.landed(false, ko);
       if (ko) g.stats.knockouts++;
       thump();
@@ -1211,14 +1413,29 @@ export class GunPlay {
     for (const c of st.city.traffic) {
       if (!c.root.visible || !inCone(c.x - og.x, c.z - og.z)) continue;
       st.city.hitCar(c);
-      g.drive.hurtTraffic(c, shotDamage(d.dmg), true);
+      g.drive.hurtTraffic(c, shotDamage(dmg), true);
       g.stats.carsHit++;
       st.police.crime(HEAT.car, false);
       audio.play('carAlarm');
       landed++;
       break;
     }
-    if (landed) g.cam.shake(0.05);
+    if (g.heist) {
+      const wx = Math.sin(yaw);
+      const wz = Math.cos(yaw);
+      for (const t of g.heist.around(p.x, p.z, reach)) {
+        const dx = t.x - p.x;
+        const dz = t.z - p.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.4 && (dx * wx + dz * wz) / dist <= cone) continue;
+        const ko = g.heist.damage(t, dmg);
+        fx.sparkle(t.x, 1.2, t.z, 6, 0xffffff, 0.3);
+        g.floaters.text(new THREE.Vector3(t.x, 1.7, t.z), label, 'dmg', 0.9, 0.7);
+        g.combat.landed(false, ko);
+        thump();
+      }
+    }
+    if (landed) g.cam.shake(big ? 0.1 : 0.05);
     g.events.emit('guns', undefined);
   }
 

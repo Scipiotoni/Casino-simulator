@@ -68,13 +68,7 @@ export class Input {
   constructor(private canvas: HTMLElement) {
     window.addEventListener('keydown', (e) => this.onKey(e, true));
     window.addEventListener('keyup', (e) => this.onKey(e, false));
-    window.addEventListener('blur', () => {
-      this.keys.clear();
-      this.primaryDown = false;
-      this.rightHeld = false;
-      this.leftHeld = false;
-      this.endJoystick();
-    });
+    window.addEventListener('blur', () => this.releaseAll());
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
     window.addEventListener('pointermove', (e) => this.onMove(e));
     window.addEventListener('pointerup', (e) => this.onUp(e));
@@ -120,6 +114,11 @@ export class Input {
   }
 
   /** True only on the frame the key went down. */
+  /** Forget a key press this frame (it was used up). */
+  consume(code: string): void {
+    this.pressed.delete(code);
+  }
+
   hit(code: string): boolean {
     return this.pressed.has(code);
   }
@@ -211,6 +210,16 @@ export class Input {
     const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
     if (ua && !ua.isActive) return;
     this.requestLock();
+  }
+
+  /** Let go of everything (keys, buttons, the joystick): nothing stays held down. */
+  releaseAll(): void {
+    this.keys.clear();
+    this.pressed.clear();
+    this.primaryDown = false;
+    this.rightHeld = false;
+    this.leftHeld = false;
+    this.endJoystick();
   }
 
   exitLock(): void {

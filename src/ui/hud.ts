@@ -6,8 +6,10 @@ import { itemThumb } from './preview';
 import { MAX_LEVEL, type PlacedItem } from '../items/placedItem';
 import type { Customer } from '../entities/customer';
 import type { Worker } from '../entities/staff';
+import { DEALER_WAGE } from '../entities/staff';
 import { FLOOR_STYLES } from '../render/textures';
-import { WALL_STYLES } from '../world/walls';
+import { DOOR_TYPES, WALL_STYLES } from '../world/walls';
+import { initHeistUi } from './heistUi';
 import { ShopDrawer } from './shop';
 import { Modals } from './modals';
 import { escapeHtml } from './floaters';
@@ -48,11 +50,13 @@ export class Hud {
   private knobEl!: HTMLElement;
   private fpsEl!: HTMLElement;
   private eventChip!: HTMLElement;
+  private missionChip!: HTMLElement;
   private toolbar!: HTMLElement;
   private shownMoney = 0;
   private refreshT = 0;
   readonly shop: ShopDrawer;
   readonly modals: Modals;
+  private heistUi: { update(): void };
   readonly minimap: Minimap;
   private bannerQueue: { title: string; text: string; kind: string }[] = [];
   private bannerBusy = false;
@@ -71,6 +75,8 @@ export class Hud {
     this.root = h('div', { class: 'ui', id: 'ui' });
     parent.appendChild(this.root);
     this.modals = new Modals(this.root, game, this);
+    this.modals.onUnstuck = () => this.unstuck();
+    this.heistUi = initHeistUi(game, this.modals, this.root);
     this.shop = new ShopDrawer(this.root, game, this);
     this.minimap = new Minimap(game);
     this.gunBar = new GunBar(game);
@@ -109,6 +115,7 @@ export class Hud {
     const menuBtn = h('button', { class: 'pill icon-btn', html: icon('menu'), 'aria-label': 'Menu', onClick: () => this.modals.openMenu() });
     const top = h('header', { class: 'topbar' }, brand, bank, h('div', { class: 'top-right' }, clock, menuBtn));
     this.eventChip = h('div', { class: 'event-chip', hidden: true });
+    this.missionChip = h('div', { class: 'mission-chip', hidden: true, role: 'status' });
 
     // Goals
     this.goalsList = h('div', { class: 'goals-list' });
@@ -160,6 +167,7 @@ export class Hud {
     const camBtns = h('div', { class: 'cam-btns' },
       (this.camBtn = h('button', { class: 'cam-btn cam-mode', html: icon('you', 18), 'aria-label': 'Switch camera (V)', title: 'Switch camera: top-down, third person, first person (V)', onClick: () => { g.setCameraMode(g.cam.mode === 'top' ? 'third' : g.cam.mode === 'third' ? 'first' : 'top'); audio.play('click'); } }) as HTMLButtonElement),
       h('button', { class: 'cam-btn travel', text: '🧭', 'aria-label': 'Fast travel (J)', title: 'Fast travel to your casino, hotel or house (J)', onClick: () => { if (!this.modals.isOpen) this.modals.openTravel(); } }),
+      h('button', { class: 'cam-btn unstuck', text: '🆘', 'aria-label': 'Unstuck', title: 'Unstuck: frees you if you’re stuck anywhere (walls, water, a seat, a car, the camera)', onClick: () => this.unstuck() }),
       h('button', { class: 'cam-btn', html: icon('camera', 18), 'aria-label': 'Photo mode (H)', title: 'Photo mode (H)', onClick: () => this.togglePhoto(true) }),
       h('button', { class: 'cam-btn', html: icon('rotate', 18), 'aria-label': 'Rotate camera', onClick: () => g.cam.rotate(1) }),
       h('button', { class: 'cam-btn', html: icon('zoomIn', 18), 'aria-label': 'Zoom in', onClick: () => g.cam.zoomBy(0.8) }),
@@ -175,7 +183,7 @@ export class Hud {
 
     const photoExit = h('button', { class: 'photo-exit', html: `${icon('close', 16)} <span>Exit photo mode${g.input.isTouch ? '' : ' (H)'}</span>`, onClick: () => this.togglePhoto(false) });
 
-    this.root.append(this.combatHud.el, this.chat.el, top, this.eventChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
+    this.root.append(this.combatHud.el, this.chat.el, top, this.eventChip, this.missionChip, this.goalsEl, this.visitBar, this.floorBar, this.floorTag, this.toastsEl, this.bannerEl, this.minimap.el, this.gunBar.el, this.cardEl, this.placeBar, this.paintBar, this.wallBar, this.toolbar, this.actionBtn, this.joyEl, camBtns, hint, this.fpsEl, photoExit);
   }
 
   private bind(): void {
@@ -253,6 +261,7 @@ export class Hud {
       if (!this.modals.isOpen && g.visiting) openTableGame({ game: g, modals: this.modals, item });
     });
     g.events.on('visit', () => this.renderVisit());
+    g.events.on('heist', () => this.renderVisit());
     const luxe = () => (this.luxeEl.textContent = g.cosmetics.on.map((id) => cosmetic(id)?.icon ?? '').join(''));
     g.events.on('cosmetics', luxe);
     luxe();
@@ -447,16 +456,35 @@ export class Hud {
     }, h('span', { class: 'sw-chip', html: icon('close', 26) }), h('span', { class: 'sw-name', text: 'Knock down' }), h('span', { class: 'sw-price', text: '½ back' })));
     WALL_STYLES.forEach((s, i) => {
       row.appendChild(h('button', {
-        class: `floor-sw${!m.erase && i === m.style ? ' on' : ''}`, title: `${s.name} · $${s.price}/tile`, 'aria-label': s.name,
+        class: `floor-sw${!m.erase && m.door < 0 && i === m.style ? ' on' : ''}`, title: `${s.name} · $${s.price}/tile`, 'aria-label': s.name,
         onClick: () => { g.build.setWallStyle(i, false); audio.play('click'); },
       }, h('span', { class: `sw-chip wall-chip${s.glass ? ' glass' : ''}`, style: `background:${s.swatch};${s.neon ? `box-shadow:inset 0 5px 0 #${s.neon.toString(16).padStart(6, '0')}` : ''}` }),
       h('span', { class: 'sw-name', text: s.name }), h('span', { class: 'sw-price', text: `$${s.price}` })));
     });
-    this.wallBar.append(
-      h('div', { class: 'paint-head' }, h('span', { text: '🧱' }), h('b', { text: m.erase ? 'Knock down walls' : 'Build walls' }), this.wallInfo,
-        h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } })),
-      row,
-    );
+    // Doors hang in the walls: from a plain wooden door to a laser door burglars dread.
+    row.appendChild(h('span', { class: 'sw-sep', text: '🚪' }));
+    DOOR_TYPES.forEach((d, i) => {
+      const locks = d.lock ? `${'🔒'.repeat(Math.min(3, Math.ceil(d.lock / 2)))} lock ${d.lock}` : 'no lock';
+      row.appendChild(h('button', {
+        class: `floor-sw door-sw${m.door === i ? ' on' : ''}`, title: `${d.name} · ${formatMoney(d.price)} · ${d.blurb} (Security +${d.security})`, 'aria-label': d.name,
+        onClick: () => { g.build.setDoorType(i); audio.play('click'); },
+      }, h('span', { class: 'sw-chip door-chip', style: `background:${d.swatch}` }, h('i', { text: d.lock ? '🔒' : '' })),
+      h('span', { class: 'sw-name', text: d.name }), h('span', { class: 'sw-price', text: `${formatMoney(d.price)} · ${locks}` })));
+    });
+    const title = m.erase ? 'Knock down walls & doors' : m.door >= 0 ? `Hang a ${m.double ? 'double ' : ''}${DOOR_TYPES[m.door].name}` : 'Build walls';
+    // Doors: one leaf, or a double door (two side by side, swinging open together).
+    const size = m.door >= 0
+      ? h('div', { class: 'door-size', role: 'radiogroup', 'aria-label': 'Door size' },
+        ...([[false, 'Single'], [true, 'Double']] as const).map(([dbl, label]) => h('button', {
+          class: `chip${!!m.double === dbl ? ' on' : ''}`, role: 'radio', 'aria-checked': !!m.double === dbl ? 'true' : 'false',
+          title: dbl ? 'Two doors side by side that open together (twice the price)' : 'One door',
+          onClick: () => { g.build.setDoorType(m.door, dbl); audio.play('click'); },
+        }, dbl ? '🚪🚪 ' : '🚪 ', label)))
+      : null;
+    const head = h('div', { class: 'paint-head' }, h('span', { text: m.door >= 0 ? '🚪' : '🧱' }), h('b', { text: title }), this.wallInfo);
+    if (size) head.append(size);
+    head.append(h('button', { class: 'btn small', text: 'Done', onClick: () => { g.build.cancel(); audio.play('click'); } }));
+    this.wallBar.append(head, row);
     this.updateWallInfo();
   }
 
@@ -465,6 +493,12 @@ export class Hud {
     const m = g.build.mode;
     if (m.kind !== 'wall') return;
     const n = g.build.wallLine.length;
+    if (m.door >= 0) {
+      this.wallInfo.textContent = m.double
+        ? `${g.input.isTouch ? 'Tap' : 'Click'} a wall two tiles wide to hang a double door${n === 2 ? ` · ${formatMoney(g.build.wallCost)}` : ''}`
+        : `${g.input.isTouch ? 'Tap' : 'Click'} a wall (or the gap between two walls) to hang it`;
+      return;
+    }
     const help = g.input.isTouch ? 'Drag a line across the floor' : 'Click and drag a line · right-click cancels';
     this.wallInfo.textContent = n > 1 ? `${n} tiles${m.erase ? '' : ` · ${formatMoney(g.build.wallCost)}`}` : help;
   }
@@ -478,6 +512,15 @@ export class Hud {
       this.shop.close();
       g.build.startWall(0);
     }
+  }
+
+  /** The Unstuck button: close every window, leave photo mode and let the game free you. */
+  unstuck(): void {
+    const g = this.game;
+    this.modals.closeAll();
+    this.shop.close();
+    if (this.photo) this.togglePhoto(false);
+    g.unstuck();
   }
 
   get photo(): boolean {
@@ -535,6 +578,9 @@ export class Hud {
       ),
     );
     this.cardEl.appendChild(head);
+    if (item.needsDealer && !item.dealer && !g.visit) {
+      this.cardEl.appendChild(h('p', { class: 'chip warn', text: 'No dealer: guests can’t play here unless you stand beside it and hold Space to deal.' }));
+    }
     if (def.kind !== 'decor') {
       this.cardEl.appendChild(h('div', { class: 'card-stats', dataset: { live: 'itemstats' } }));
     }
@@ -555,6 +601,11 @@ export class Hud {
     }
     if (item.setup && !g.visit) {
       actions.appendChild(h('button', { class: 'btn gold', html: `${icon('paint', 16)} Decorate`, onClick: () => this.modals.openRoom(item) }));
+    }
+    if (item.needsDealer && !g.visit) {
+      actions.appendChild(item.dealer
+        ? h('button', { class: 'btn', text: `🃏 Let the dealer go`, title: `Saves ${formatMoney(DEALER_WAGE)} a day; the table only runs while you deal it yourself`, onClick: () => { g.fireDealer(item); this.renderCard({ kind: 'item', item }); } })
+        : h('button', { class: 'btn gold', html: `🃏 Hire a dealer <b>${formatMoney(DEALER_WAGE)}/day</b>`, onClick: () => { if (g.hireDealer(item)) this.renderCard({ kind: 'item', item }); } }));
     }
     actions.appendChild(h('button', { class: 'btn', html: `${icon('move', 16)} Move`, onClick: () => { g.build.startMove(item); } }));
     actions.appendChild(h('button', { class: 'btn', html: `${icon('rotate', 16)} Rotate`, onClick: () => this.quickRotate(item) }));
@@ -776,16 +827,20 @@ export class Hud {
     if (v) {
       clear(this.visitBar);
       const home = g.street.get('me');
+      const house = v.lot.kind === 'house';
       this.visitBar.append(
         h('div', { class: 'vb-text' },
-          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
+          h('b', { text: v.lot.kind === 'rival' ? `Rival casino · ${v.lot.info.look.name}` : house ? `🦹 ${v.lot.owner}'s house` : `${v.lot.owner}'s ${v.lot.info.look.name}` }),
           h('span', { class: 'vb-net', dataset: { live: 'vnet' } }),
         ),
-        h('button', {
-          class: 'btn small gold', html: `${icon('casino', 14)} Head home`,
-          onClick: () => { g.returnHome(); audio.play('whoosh'); },
-          title: home ? `Back to ${home.info.look.name}` : 'Back home',
-        }),
+        // Mid-heist there's only one way out: the front door.
+        house && g.heist && !g.heist.over
+          ? h('span', { class: 'chip bad', text: 'Escape through the front door' })
+          : h('button', {
+            class: 'btn small gold', html: `${icon('casino', 14)} Head home`,
+            onClick: () => { g.returnHome(); audio.play('whoosh'); },
+            title: home ? `Back to ${home.info.look.name}` : 'Back home',
+          }),
       );
     }
     this.renderFloors();
@@ -815,8 +870,16 @@ export class Hud {
   update(dt: number): void {
     const g = this.game;
     this.floorBar.hidden = g.floors < 2 || !g.inside;
+    this.heistUi.update();
     this.minimap.update(dt);
     this.gunBar.update();
+    const ms = g.state === 'playing' ? g.missionStatus : null;
+    this.missionChip.hidden = !ms;
+    if (ms) {
+      if (this.missionChip.textContent !== ms.text) this.missionChip.textContent = ms.text;
+      const cls = `mission-chip ${ms.kind}`;
+      if (this.missionChip.className !== cls) this.missionChip.className = cls;
+    }
     this.combatHud.update(dt);
     this.root.classList.toggle('fp', g.cam.mode === 'first' && g.state === 'playing');
     const up = g.inside && g.player.floor > 0;
@@ -868,7 +931,9 @@ export class Hud {
         const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;
         if (vn) {
           const n = g.visit.net;
-          vn.textContent = g.visit.lot.kind === 'hotel' ? 'Just looking around' : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
+          vn.textContent = g.visit.lot.kind === 'house'
+            ? (g.heist ? (g.heist.phase === 'looted' ? 'Get out the front door with the cash!' : 'Crack the vault: Space at locked doors and the vault') : 'Back out on the pavement')
+            : g.visit.lot.kind === 'hotel' ? 'Just looking around' : g.visit.hands ? `Tonight here: ${n >= 0 ? '+' : ''}${formatMoney(n)} over ${g.visit.hands} ${g.visit.hands === 1 ? 'round' : 'rounds'}` : 'Walk up to a game and press Space';
           vn.className = `vb-net ${n > 0 ? 'pos' : n < 0 ? 'neg' : ''}`;
         }
       }

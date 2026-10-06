@@ -85,6 +85,12 @@ export function layoutRect(l: Layout): Rect {
   return { x0: CENTER_X - w / 2, x1: CENTER_X + w / 2 - 1, z0: FACADE_Z - d, z1: FACADE_Z - 1 };
 }
 
+/**
+ * Values of the wall layer: 0 = nothing, 1..DOOR_BASE-1 = a wall (style + 1), DOOR_BASE + n =
+ * a door of type n. Doors sit in wall lines and let people through.
+ */
+export const DOOR_BASE = 200;
+
 const F_OWNED = 1;
 const F_SIDEWALK = 2;
 const F_DOOR = 4;
@@ -103,7 +109,7 @@ export class Grid {
   floorOcc = new Int32Array(0);
   /** Carpet style index per tile. */
   floor = new Uint8Array(0);
-  /** Built wall per tile: style index + 1 (0 = no wall). Walls block walking. */
+  /** Built wall per tile: style index + 1 (0 = no wall), or DOOR_BASE + door type. Walls block walking, doors don't. */
   wall = new Uint8Array(0);
   /** Bumped whenever walkability changes so cached paths can be invalidated. */
   version = 0;
@@ -217,29 +223,110 @@ export class Grid {
     const f = this.flags[i];
     if (f & (F_SIDEWALK | F_DOOR)) return this.occ[i] === 0;
     if (!(f & F_OWNED)) return false;
-    return this.occ[i] === 0 && this.wall[i] === 0;
+    return this.occ[i] === 0 && !this.solidAt(i);
   }
 
-  /** Wall style on a tile (-1 = none). */
+  /** A solid wall (not a door) at this tile index. */
+  solidAt(i: number): boolean {
+    const v = this.wall[i];
+    return v > 0 && v < DOOR_BASE;
+  }
+
+  /** Wall style on a tile (-1 = none, or a door). */
   wallAt(x: number, z: number): number {
-    return this.inBounds(x, z) ? this.wall[this.idx(x, z)] - 1 : -1;
+    if (!this.inBounds(x, z)) return -1;
+    const v = this.wall[this.idx(x, z)];
+    return v > 0 && v < DOOR_BASE ? v - 1 : -1;
   }
 
+  /** A solid wall on this tile (doors don't count). */
   isWall(x: number, z: number): boolean {
     return this.wallAt(x, z) >= 0;
+  }
+
+  /** Door type on a tile (-1 = none). */
+  doorAt(x: number, z: number): number {
+    if (!this.inBounds(x, z)) return -1;
+    const v = this.wall[this.idx(x, z)];
+    return v >= DOOR_BASE ? v - DOOR_BASE : -1;
+  }
+
+  /** A wall or a door: part of a wall line (walls join up to doors). */
+  inWallLine(x: number, z: number): boolean {
+    return this.inBounds(x, z) && this.wall[this.idx(x, z)] > 0;
   }
 
   /** Put up (style ≥ 0) or knock down (-1) a wall on an owned tile. */
   setWall(x: number, z: number, style: number): void {
     if (!this.isOwned(x, z)) return;
-    this.wall[this.idx(x, z)] = style < 0 ? 0 : Math.min(250, style + 1);
+    this.wall[this.idx(x, z)] = style < 0 ? 0 : Math.min(DOOR_BASE - 1, style + 1);
     this.version++;
+  }
+
+  /** Hang a door (type ≥ 0) on an owned tile, or take it out (-1). */
+  setDoor(x: number, z: number, type: number): void {
+    if (!this.isOwned(x, z)) return;
+    this.wall[this.idx(x, z)] = type < 0 ? 0 : Math.min(250, DOOR_BASE + type);
+    this.version++;
+  }
+
+  /**
+   * Which way a door on this tile runs: 'x' when the wall line goes east–west through it,
+   * 'z' north–south, null when it isn't between two walls (or the building's outer wall).
+   */
+  doorRun(x: number, z: number): 'x' | 'z' | null {
+    const side = (tx: number, tz: number) => this.inWallLine(tx, tz) || !this.isOwned(tx, tz);
+    if (side(x - 1, z) && side(x + 1, z) && (this.inWallLine(x - 1, z) || this.inWallLine(x + 1, z))) return 'x';
+    if (side(x, z - 1) && side(x, z + 1) && (this.inWallLine(x, z - 1) || this.inWallLine(x, z + 1))) return 'z';
+    return null;
+  }
+
+  /**
+   * Can a double door hang across these two tiles side by side (`a` west or north of `b`)?
+   * Each may be a wall or a gap: what counts is a wall (or the outer wall) beyond both ends,
+   * so a double door fills a two-tile gap in a wall as well as two tiles of wall.
+   */
+  doorPair(a: [number, number], b: [number, number]): 'x' | 'z' | null {
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    if (Math.abs(dx) + Math.abs(dz) !== 1 || dx < 0 || dz < 0) return null;
+    const side = (tx: number, tz: number) => this.inWallLine(tx, tz) || !this.isOwned(tx, tz);
+    const [ox, oz] = [a[0] - dx, a[1] - dz];
+    const [px, pz] = [b[0] + dx, b[1] + dz];
+    if (!side(ox, oz) || !side(px, pz) || !(this.inWallLine(ox, oz) || this.inWallLine(px, pz))) return null;
+    return dx ? 'x' : 'z';
   }
 
   get wallCount(): number {
     let n = 0;
-    for (let i = 0; i < this.wall.length; i++) if (this.wall[i]) n++;
+    for (let i = 0; i < this.wall.length; i++) if (this.wall[i] > 0 && this.wall[i] < DOOR_BASE) n++;
     return n;
+  }
+
+  /**
+   * Two doors of the same kind side by side in a wall line make a double door: the other half
+   * of the one on this tile, or null. Longer runs pair up from their west (or north) end.
+   */
+  doorPartner(x: number, z: number): [number, number] | null {
+    const t = this.doorAt(x, z);
+    if (t < 0) return null;
+    for (const [dx, dz] of [[1, 0], [0, 1]] as const) {
+      const same = (k: number) => this.doorAt(x + dx * k, z + dz * k) === t;
+      if (!same(1) && !same(-1)) continue;
+      // Where this door sits in its run of same doors.
+      let i = 0;
+      while (same(-(i + 1))) i++;
+      if (i % 2 === 1) return [x - dx, z - dz];
+      return same(1) ? [x + dx, z + dz] : null;
+    }
+    return null;
+  }
+
+  /** Every door on this floor. */
+  doors(): { x: number; z: number; type: number }[] {
+    const out: { x: number; z: number; type: number }[] = [];
+    for (let i = 0; i < this.wall.length; i++) if (this.wall[i] >= DOOR_BASE) out.push({ x: this.tileX(i), z: this.tileZ(i), type: this.wall[i] - DOOR_BASE });
+    return out;
   }
 
   /** Walkability test on continuous world coordinates. */

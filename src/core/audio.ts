@@ -14,7 +14,8 @@ export type SfxName =
   | 'hitmarker' | 'headshot' | 'hurt' | 'knockout' | 'heartbeat' | 'siren' | 'whiz' | 'busted'
   | 'thud' | 'drumhit' | 'cymbal' | 'strum' | 'piano' | 'clack' | 'shutter' | 'blip' | 'splash' | 'sizzle'
   | 'crash' | 'explosion' | 'backfire' | 'turbo' | 'shift' | 'ignition' | 'metalHit' | 'cannon'
-  | 'flame' | 'charge' | 'rail' | 'launch' | 'roll' | 'dodge' | 'multikill' | 'streak';
+  | 'flame' | 'charge' | 'rail' | 'launch' | 'roll' | 'dodge' | 'multikill' | 'streak'
+  | 'zap' | 'bark' | 'drill' | 'pinSet' | 'dialTick' | 'dialClick';
 
 /** How a car's engine sounds: pitch, rumble, rasp, whine. */
 export type EngineProfile = 'four' | 'v8' | 'sport' | 'diesel' | 'electric' | 'buggy' | 'tank';
@@ -159,6 +160,38 @@ interface NoiseOpts {
 
 const midi = (n: number) => 440 * Math.pow(2, (n - 69) / 12);
 
+/** How a gun sounds: the layers of one shot. */
+interface GunVoice {
+  /** Supersonic crack (bright, a few ms). */
+  crack: number;
+  /** Muzzle blast: gain, filter cut-off (Hz) and length (s); how hard it's driven into the clipper. */
+  blast: number;
+  cut: number;
+  len: number;
+  drive: number;
+  /** Low thump (Hz, gain, length). */
+  thump: number;
+  thumpGain: number;
+  thumpLen: number;
+  /** The echo off the buildings: gain, length, band centre, and how much goes to the reverb. */
+  tail: number;
+  tailLen: number;
+  tailFreq: number;
+  verb: number;
+  /** The action cycling after the shot. */
+  mech: 'slide' | 'bolt' | 'pump' | 'none';
+}
+
+const GUN_VOICES: Record<'gunshot' | 'gunHeavy' | 'shotgun' | 'smg', GunVoice> = {
+  gunshot: { crack: 0.55, blast: 0.75, cut: 3200, len: 0.13, drive: 2.2, thump: 150, thumpGain: 0.5, thumpLen: 0.1, tail: 0.09, tailLen: 0.55, tailFreq: 900, verb: 0.55, mech: 'slide' },
+  gunHeavy: { crack: 0.6, blast: 0.95, cut: 2200, len: 0.24, drive: 3, thump: 105, thumpGain: 0.75, thumpLen: 0.22, tail: 0.13, tailLen: 1.1, tailFreq: 650, verb: 0.75, mech: 'none' },
+  shotgun: { crack: 0.4, blast: 1, cut: 1700, len: 0.3, drive: 3.4, thump: 85, thumpGain: 0.8, thumpLen: 0.26, tail: 0.14, tailLen: 1.2, tailFreq: 520, verb: 0.8, mech: 'pump' },
+  smg: { crack: 0.45, blast: 0.55, cut: 4200, len: 0.07, drive: 2, thump: 175, thumpGain: 0.32, thumpLen: 0.055, tail: 0.05, tailLen: 0.3, tailFreq: 1100, verb: 0.35, mech: 'bolt' },
+};
+
+/** Sounds loud enough to be heard far across the street (metres), muffled and echoing with distance. */
+const LOUD: Partial<Record<SfxName, number>> = { gunshot: 70, gunHeavy: 95, shotgun: 85, smg: 70, cannon: 160, rail: 80, launch: 70, explosion: 140 };
+
 export interface AudioSettings {
   master: number;
   sfx: number;
@@ -173,6 +206,12 @@ class AudioEngine {
   private ambBus!: GainNode;
   private compressor!: DynamicsCompressorNode;
   private noiseBuf: AudioBuffer | null = null;
+  /** Gunfire echoes: a reverb (made-up outdoor impulse) and a soft clipper for the blasts. */
+  private verbIn: GainNode | null = null;
+  private clip: Float32Array<ArrayBuffer> | null = null;
+  /** Volume and distance muffling of the sound being made (for its reverb send). */
+  private curVol = 1;
+  private curFar = 0;
   private lastPlayed = new Map<string, number>();
   private settings: AudioSettings = { master: 0.8, sfx: 0.9, music: 0.45 };
   private musicOn = false;
@@ -214,6 +253,7 @@ class AudioEngine {
       this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
       const data = this.noiseBuf.getChannelData(0);
       for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      this.makeReverb(ctx);
       this.applySettings(this.settings);
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
@@ -229,6 +269,120 @@ class AudioEngine {
     this.sfxBus.gain.setTargetAtTime(s.sfx * 0.9, t, 0.05);
     this.musicBus.gain.setTargetAtTime(s.music * 0.55, t, 0.05);
     this.ambBus.gain.setTargetAtTime(s.sfx * 0.5, t, 0.05);
+  }
+
+  /**
+   * An outdoor echo for gunfire: a few slapback reflections off the buildings, then a diffuse
+   * tail that darkens as it dies away (stereo, made once).
+   */
+  private makeReverb(ctx: AudioContext): void {
+    try {
+      const rate = ctx.sampleRate;
+      const len = Math.round(rate * 1.7);
+      const ir = ctx.createBuffer(2, len, rate);
+      for (let ch = 0; ch < 2; ch++) {
+        const d = ir.getChannelData(ch);
+        let lp = 0;
+        for (let i = 0; i < len; i++) {
+          const u = i / len;
+          // Darker the later it is.
+          const k = 0.9 - 0.82 * u;
+          lp += (Math.random() * 2 - 1 - lp) * k;
+          d[i] = lp * Math.pow(1 - u, 2.6) * 0.5;
+        }
+        // Slapback off the facades across the street.
+        for (const [ms, a] of [[23, 0.7], [41, 0.5], [67, 0.42], [96, 0.3], [140, 0.22]]) {
+          const at = Math.round((ms + (ch ? 4 : 0)) * rate / 1000);
+          for (let i = 0; i < 90 && at + i < len; i++) d[at + i] += (Math.random() * 2 - 1) * a * Math.exp(-i / 18);
+        }
+      }
+      const verb = ctx.createConvolver();
+      verb.buffer = ir;
+      const inG = ctx.createGain();
+      const out = ctx.createGain();
+      out.gain.value = 0.55;
+      inG.connect(verb);
+      verb.connect(out);
+      out.connect(this.sfxBus);
+      this.verbIn = inG;
+      // Soft clipping: tanh, so a driven blast gets fat instead of harsh.
+      const n = 1024;
+      const curve = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const x = (i / (n - 1)) * 2 - 1;
+        curve[i] = Math.tanh(2.4 * x) / Math.tanh(2.4);
+      }
+      this.clip = curve;
+    } catch {
+      this.verbIn = null;
+    }
+  }
+
+  /**
+   * One gunshot, in layers: the supersonic crack, the muzzle blast driven into a soft clipper,
+   * a low thump you feel, the action cycling (slide, bolt or pump) and the echo off the street.
+   * Every shot is a little different.
+   */
+  private gun(v: GunVoice, t: number, p: number, dest: AudioNode): void {
+    const ctx = this.ctx!;
+    const j = p * (0.95 + Math.random() * 0.1);
+    const g = (0.92 + Math.random() * 0.16);
+    // The echo: more of it, and duller, the further away the shot.
+    let send: GainNode | null = null;
+    if (this.verbIn) {
+      send = ctx.createGain();
+      send.gain.value = v.verb * this.curVol * (1 + this.curFar * 1.6);
+      send.connect(this.verbIn);
+    }
+    let blast: AudioNode = dest;
+    let pre: GainNode | null = null;
+    if (this.clip) {
+      pre = ctx.createGain();
+      pre.gain.value = v.drive;
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = this.clip;
+      shaper.oversample = '2x';
+      const post = ctx.createGain();
+      post.gain.value = 1 / Math.sqrt(v.drive);
+      pre.connect(shaper);
+      shaper.connect(post);
+      post.connect(dest);
+      if (send) post.connect(send);
+      blast = pre;
+    }
+    // Crack: a few milliseconds of bright noise (gone at a distance).
+    if (this.curFar < 0.7) this.noise(t, 0.014, { type: 'highpass', freq: 2400 * j, gain: v.crack * g * (1 - this.curFar), attack: 0.0006, dest });
+    // Muzzle blast and thump.
+    this.noise(t, v.len, { type: 'lowpass', freq: v.cut * j, freqEnd: Math.max(120, v.cut * 0.1), q: 0.8, gain: v.blast * g, attack: 0.0012, dest: blast });
+    this.tone(v.thump * j, t, v.thumpLen, { type: 'sine', gain: v.thumpGain * g, freqEnd: v.thump * 0.32, attack: 0.0015, dest: blast });
+    // The tail, into the echo as well.
+    this.noise(t + 0.012, v.tailLen, { type: 'bandpass', freq: v.tailFreq * j, freqEnd: v.tailFreq * 0.45, q: 0.55, gain: v.tail * g, attack: 0.025, dest: send ?? dest });
+    if (send && v.tail > 0) this.noise(t + 0.012, v.tailLen * 0.6, { type: 'lowpass', freq: v.tailFreq * 0.8, gain: v.tail * 0.6, attack: 0.02, dest });
+    // The action.
+    const click = (at: number, f: number, q: number, len: number, gain: number) => this.noise(at, len, { type: 'bandpass', freq: f, q, gain, attack: 0.0008, dest });
+    if (v.mech === 'slide') {
+      click(t + 0.028, 3600 * j, 2.5, 0.016, 0.1);
+      this.tone(2700 * j, t + 0.03, 0.025, { type: 'square', gain: 0.012, filter: 6000, dest });
+      click(t + 0.06, 2600 * j, 2, 0.014, 0.07);
+    } else if (v.mech === 'bolt') {
+      click(t + 0.018, 4400 * j, 3, 0.01, 0.06);
+    } else if (v.mech === 'pump') {
+      // Rack it back… and forward.
+      click(t + 0.42, 1900, 1.8, 0.05, 0.2);
+      this.tone(1300, t + 0.42, 0.035, { type: 'square', gain: 0.025, filter: 4500, dest });
+      click(t + 0.56, 2600, 2, 0.045, 0.22);
+      this.tone(1700, t + 0.56, 0.03, { type: 'square', gain: 0.025, filter: 4500, dest });
+    }
+    window.setTimeout(() => {
+      send?.disconnect();
+      pre?.disconnect();
+    }, (v.tailLen + 1.5) * 1000);
+  }
+
+  /** A big bang's echo rolling back off the buildings (cannons, explosions, railguns). */
+  private echo(t: number, freq: number, len: number, gain: number): void {
+    if (!this.verbIn) return;
+    this.noise(t, len, { type: 'lowpass', freq, freqEnd: freq * 0.3, q: 0.6, gain: gain * this.curVol * (1 + this.curFar * 1.6), attack: 0.004, dest: this.verbIn });
   }
 
   // ---------------------------------------------------------------- primitives
@@ -294,7 +448,7 @@ class AudioEngine {
   // ---------------------------------------------------------------- public api
 
   /** Play a sound; `minGap` avoids machine-gun repeats of the same effect. */
-  play(name: SfxName, opts: { volume?: number; pitch?: number; pan?: number } = {}): void {
+  play(name: SfxName, opts: { volume?: number; pitch?: number; pan?: number; far?: number } = {}): void {
     if (!this.ctx || this.ctx.state !== 'running') return;
     const now = this.ctx.currentTime;
     const gap = MIN_GAP[name] ?? 0.03;
@@ -304,23 +458,37 @@ class AudioEngine {
     const vol = opts.volume ?? 1;
     if (vol <= 0.01) return;
     let dest: AudioNode = this.sfxBus;
-    const needsGain = vol !== 1 || (opts.pan ?? 0) !== 0;
+    const far = clamp(opts.far ?? 0, 0, 1);
+    const needsGain = vol !== 1 || (opts.pan ?? 0) !== 0 || far > 0.02;
     if (needsGain) {
       const g = this.ctx.createGain();
       g.gain.value = vol;
+      let out: AudioNode = g;
+      // Far away: the air takes the highs.
+      if (far > 0.02) {
+        const lp = this.ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 900 + 15000 * Math.pow(1 - far, 2.2);
+        g.connect(lp);
+        out = lp;
+      }
       if (opts.pan && this.ctx.createStereoPanner) {
         const p = this.ctx.createStereoPanner();
         p.pan.value = clamp(opts.pan, -1, 1);
-        g.connect(p);
+        out.connect(p);
         p.connect(this.sfxBus);
       } else {
-        g.connect(this.sfxBus);
+        out.connect(this.sfxBus);
       }
       dest = g;
       // Disconnect the temporary chain after the sound is done.
       window.setTimeout(() => g.disconnect(), 4000);
     }
+    this.curVol = vol;
+    this.curFar = far;
     this.synth(name, now + 0.005, opts.pitch ?? 1, dest);
+    this.curVol = 1;
+    this.curFar = 0;
   }
 
   /** Positional play: attenuated by distance to the listener (camera focus). */
@@ -328,11 +496,13 @@ class AudioEngine {
     const dx = x - this.listener.x;
     const dz = z - this.listener.z;
     const d = Math.sqrt(dx * dx + dz * dz);
-    const att = Math.pow(clamp(1 - d / 20, 0, 1), 1.6);
+    // Gunfire and explosions carry a long way (and sound further off the further they are).
+    const range = LOUD[name] ?? 20;
+    const att = Math.pow(clamp(1 - d / range, 0, 1), range > 20 ? 1.2 : 1.6);
     if (att < 0.04) return;
     // Pan relative to camera yaw: camera right vector is (cos yaw, -sin yaw).
     const right = dx * Math.cos(this.listener.yaw) - dz * Math.sin(this.listener.yaw);
-    this.play(name, { volume: volume * att, pan: clamp(right / 10, -0.8, 0.8) });
+    this.play(name, { volume: volume * att, pan: clamp(right / 10, -0.8, 0.8), far: range > 20 ? clamp(d / range, 0, 1) : 0 });
   }
 
   private synth(name: SfxName, t: number, p: number, dest: AudioNode): void {
@@ -467,25 +637,10 @@ class AudioEngine {
         this.tone(220 * p, t, 0.5, { type: 'square', gain: 0.03, freqEnd: 260 * p, filter: 900, dest });
         break;
       case 'gunshot':
-        this.noise(t, 0.18, { type: 'lowpass', freq: 5200 * p, freqEnd: 500, gain: 0.5, dest });
-        this.tone(160 * p, t, 0.12, { type: 'triangle', gain: 0.35, freqEnd: 50, dest });
-        this.noise(t + 0.05, 0.35, { type: 'bandpass', freq: 900, q: 0.4, gain: 0.06, dest });
-        break;
       case 'gunHeavy':
-        this.noise(t, 0.32, { type: 'lowpass', freq: 3600 * p, freqEnd: 260, gain: 0.65, dest });
-        this.tone(95 * p, t, 0.28, { type: 'sine', gain: 0.55, freqEnd: 32, dest });
-        this.noise(t + 0.08, 0.7, { type: 'bandpass', freq: 600, q: 0.4, gain: 0.08, dest });
-        break;
       case 'shotgun':
-        this.noise(t, 0.4, { type: 'lowpass', freq: 3000 * p, freqEnd: 200, gain: 0.7, dest });
-        this.tone(80 * p, t, 0.3, { type: 'sine', gain: 0.5, freqEnd: 30, dest });
-        // Pump: two clacks
-        this.noise(t + 0.42, 0.05, { type: 'highpass', freq: 2500, gain: 0.18, dest });
-        this.noise(t + 0.55, 0.05, { type: 'highpass', freq: 2000, gain: 0.18, dest });
-        break;
       case 'smg':
-        this.noise(t, 0.09, { type: 'lowpass', freq: 6000 * p, freqEnd: 700, gain: 0.36, dest });
-        this.tone(190 * p, t, 0.06, { type: 'triangle', gain: 0.22, freqEnd: 70, dest });
+        this.gun(GUN_VOICES[name], t, p, dest);
         break;
       case 'laser':
         this.tone(1800 * p, t, 0.18, { type: 'sawtooth', gain: 0.07, freqEnd: 300, filter: 4000, dest });
@@ -636,12 +791,15 @@ class AudioEngine {
         this.tone(90 * p, t, 1.3, { type: 'sine', gain: 0.9, freqEnd: 24, attack: 0.01, dest });
         this.tone(55 * p, t, 0.9, { type: 'triangle', gain: 0.5, freqEnd: 20, dest });
         this.noise(t, 1.8, { type: 'lowpass', freq: 2400, freqEnd: 120, q: 0.5, gain: 0.85, attack: 0.008, dest });
+        this.echo(t, 1600, 0.9, 0.5);
         this.noise(t + 0.05, 0.6, { type: 'bandpass', freq: 600, freqEnd: 200, q: 0.8, gain: 0.4, dest });
         for (let i = 0; i < 9; i++) this.noise(t + 0.25 + Math.random() * 1.2, 0.04, { type: 'highpass', freq: 2500 + Math.random() * 3000, gain: 0.08 + Math.random() * 0.1, dest });
         break;
       case 'cannon':
         this.tone(70 * p, t, 0.9, { type: 'sine', gain: 0.9, freqEnd: 22, dest });
         this.noise(t, 0.7, { type: 'lowpass', freq: 3000, freqEnd: 150, gain: 0.8, attack: 0.003, dest });
+        this.noise(t, 0.012, { type: 'highpass', freq: 2000, gain: 0.5, attack: 0.0006, dest });
+        this.echo(t, 1800, 0.8, 0.55);
         break;
       case 'backfire':
         this.noise(t, 0.06, { type: 'lowpass', freq: 1400 * p, gain: 0.5, attack: 0.002, dest });
@@ -676,6 +834,7 @@ class AudioEngine {
         this.noise(t, 0.08, { type: 'highpass', freq: 2500, gain: 0.4, attack: 0.002, dest });
         this.tone(1800 * p, t, 0.45, { type: 'square', gain: 0.08, freqEnd: 120, filter: 5000, dest });
         this.tone(90 * p, t, 0.35, { type: 'sine', gain: 0.6, freqEnd: 40, dest });
+        this.echo(t, 2500, 0.6, 0.3);
         break;
       case 'launch':
         // A hollow thump out of a wide barrel.
@@ -700,6 +859,33 @@ class AudioEngine {
         break;
       case 'alarm':
         for (let i = 0; i < 6; i++) this.tone(i % 2 ? 660 : 880, t + i * 0.25, 0.23, { type: 'sawtooth', gain: 0.06, filter: 2500, dest });
+        break;
+      case 'zap':
+        // Laser burn: a crackle over a falling buzz.
+        this.tone(1900 * p, t, 0.18, { type: 'sawtooth', gain: 0.07, freqEnd: 300, filter: 6000, dest });
+        this.noise(t, 0.2, { type: 'highpass', freq: 3000, gain: 0.25, dest });
+        this.tone(60, t, 0.2, { type: 'square', gain: 0.08, filter: 600, dest });
+        break;
+      case 'bark':
+        for (let i = 0; i < 2; i++) {
+          this.tone(420 * p, t + i * 0.2, 0.11, { type: 'sawtooth', gain: 0.12, freqEnd: 230, filter: 1600, dest });
+          this.noise(t + i * 0.2, 0.09, { type: 'bandpass', freq: 900, q: 1.5, gain: 0.3, dest });
+        }
+        break;
+      case 'drill':
+        this.tone(220 * p, t, 0.35, { type: 'sawtooth', gain: 0.035, freqEnd: 240 * p, filter: 2200, dest });
+        this.noise(t, 0.35, { type: 'bandpass', freq: 2600 * p, q: 3, gain: 0.08, dest });
+        break;
+      case 'pinSet':
+        this.noise(t, 0.04, { type: 'highpass', freq: 4500, gain: 0.3, dest });
+        this.tone(1600 * p, t, 0.05, { type: 'square', gain: 0.04, filter: 6000, dest });
+        break;
+      case 'dialTick':
+        this.noise(t, 0.02, { type: 'highpass', freq: 6000, gain: 0.12, dest });
+        break;
+      case 'dialClick':
+        this.noise(t, 0.05, { type: 'bandpass', freq: 1800, q: 4, gain: 0.45, dest });
+        this.tone(900 * p, t, 0.05, { type: 'square', gain: 0.05, filter: 3000, dest });
         break;
     }
   }
@@ -1071,6 +1257,7 @@ const MIN_GAP: Partial<Record<SfxName, number>> = {
   flame: 0.1, charge: 0.5, explosion: 0.08, crash: 0.12, backfire: 0.07, turbo: 0.4, metalHit: 0.03,
   smg: 0.04, ping: 0.03, glass: 0.06, honk: 1, carAlarm: 1.2, alarm: 1.4, keyBeep: 0.02, siren: 1, whiz: 0.08,
   coin: 0.05, spin: 0.12, tick: 0.05, win: 0.15, chips: 0.1, cards: 0.08, dice: 0.2, paint: 0.06, click: 0.03,
+  zap: 0.2, bark: 0.6, drill: 0.3, dialTick: 0.02,
 };
 
 function pickOf<T>(arr: T[]): T {

@@ -61,6 +61,8 @@ export interface ItemDef {
   vipOnly?: boolean;
   /** Points it adds to your house's security rating. */
   security?: number;
+  /** People walk through it (a laser grid, a metal detector): it sits on the floor layer and nothing can stand on it. */
+  passable?: boolean;
   /** Extra per-item look parameters handed to the model builder. */
   params?: Record<string, string | number>;
 }

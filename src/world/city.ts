@@ -24,18 +24,27 @@ export const ALLEY = 8;
 /** Distance between two streets (centre to centre). */
 export const ROW_GAP = 2 * (ROAD_MID - FACADE_Z) + 2 * MAX_DEPTH + ALLEY;
 /** Streets in the city (rows of lots). */
-export const STREET_ROWS = 4;
+export const STREET_ROWS = 12;
 /** The city is at least this many lots wide. */
-export const MIN_COLS = 20;
+export const MIN_COLS = 64;
 /** Half the road width (curb to centre line). */
 export const ROAD_HALF = ROAD_MID - (SIDEWALK_Z0 + 4);
 
-export const STREET_NAMES = ['Casino Strip', 'Palm Avenue', 'Downtown Boulevard', 'Sunset Drive'];
-export const STREET_BLURBS = ['Casinos & hotels', 'Houses', 'Shops & offices', 'Warehouses & nightlife'];
-const AVENUE_NAMES = ['1st Ave', '2nd Ave', '3rd Ave', '4th Ave', '5th Ave', '6th Ave', '7th Ave', '8th Ave', '9th Ave', '10th Ave', '11th Ave', '12th Ave'];
+export const STREET_NAMES = [
+  'Casino Strip', 'Palm Avenue', 'Downtown Boulevard', 'Sunset Drive', 'University Avenue', 'Park Lane',
+  'Lakeview Road', 'Market Street', 'Industrial Way', 'Hillside Terrace', 'Old Town Road', 'Airport Road',
+];
+export const STREET_BLURBS = [
+  'Casinos & hotels', 'Houses', 'Shops & offices', 'Warehouses & nightlife', 'Campus & student flats', 'Central Park',
+  'Homes by the park', 'Markets & diners', 'Factories & depots', 'Homes on the hill', 'Old town', 'Motels, depots & gas',
+];
+/** Streets lined with homes: lawns and hedges behind them. */
+export const RESIDENTIAL_ROWS = [1, 6, 9, 10];
 
 export function avenueName(k: number): string {
-  return AVENUE_NAMES[k] ?? `${k + 1}th Ave`;
+  const n = k + 1;
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : n % 10 === 1 ? 'st' : n % 10 === 2 ? 'nd' : n % 10 === 3 ? 'rd' : 'th';
+  return `${n}${suffix} Ave`;
 }
 
 /** Global x offset of a lot column (lot-local x → global x on the north side). */
@@ -79,10 +88,35 @@ export function streetBand(r: number): [number, number] {
   return [SIDEWALK_Z0 + rowZ(r), 2 * ROAD_MID - SIDEWALK_Z0 + rowZ(r)];
 }
 
+/**
+ * Central Park: the lots back to back between Park Lane (street 4) and Lakeview Road (street 5),
+ * three blocks wide. Nothing gets built there: it's lawns, a lake, woods and paths, and you can
+ * walk anywhere in it.
+ */
+export const PARK_STREET = 5;
+export const PARK_BLOCKS: [number, number] = [6, 8];
+
+/** Global bounds of Central Park (the avenues still cross it). */
+export function parkRect(): { x0: number; x1: number; z0: number; z1: number } {
+  return {
+    x0: blockX0(PARK_BLOCKS[0]),
+    x1: blockX0(PARK_BLOCKS[1]) + BLOCK_COLS * LOT_STRIDE,
+    z0: streetBand(PARK_STREET)[1] + 1,
+    z1: streetBand(PARK_STREET + 1)[0] - 1,
+  };
+}
+
 export interface SlotRef {
   row: number;
   col: number;
   side: 0 | 1;
+}
+
+/** Is this lot slot part of Central Park? */
+export function inParkSlot(s: SlotRef): boolean {
+  const k = Math.floor(s.col / BLOCK_COLS);
+  if (k < PARK_BLOCKS[0] || k > PARK_BLOCKS[1]) return false;
+  return (s.row === PARK_STREET && s.side === 1) || (s.row === PARK_STREET + 1 && s.side === 0);
 }
 
 export function slotKey(s: SlotRef): number {
@@ -136,7 +170,18 @@ export function cityX(cols: number): [number, number] {
 }
 
 /** Can you walk here (global tile centre)? Sidewalks and roads of every street and avenue. */
+let roadPlan: { cols: number; on: (gx: number, gz: number) => boolean; lot?: (gx: number, gz: number) => boolean } | null = null;
+/**
+ * The street's plan: which streets and avenues exist (`on`) and which lots (`lot`), set when
+ * it knows its lots.
+ */
+export function setRoadPlan(p: { cols: number; on: (gx: number, gz: number) => boolean; lot?: (gx: number, gz: number) => boolean } | null): void {
+  roadPlan = p;
+}
+
+/** Can you walk here (global)? The sidewalks and roads of the city's streets and avenues. */
 export function onRoadNetwork(gx: number, gz: number, cols: number): boolean {
+  if (roadPlan && roadPlan.cols === cols) return roadPlan.on(gx, gz);
   const [x0, x1] = cityX(cols);
   if (gx < x0 || gx > x1) return false;
   for (let r = 0; r < STREET_ROWS; r++) {
@@ -152,11 +197,40 @@ export function onRoadNetwork(gx: number, gz: number, cols: number): boolean {
   return false;
 }
 
-/** How far the open desert reaches past the city edge before the mountains (metres). */
-export const WILDS = 280;
+/** How far the open desert reached past the city edge in the old valley (metres; landmarks still use it). */
+export const WILDS = 560;
 
-/** Out past the city edge, in the open desert (not yet in the mountains). */
+let cityBlock: ((gx: number, gz: number) => boolean) | null = null;
+/**
+ * Buildings, park lakes and the like inside the city (set by the street, which knows every
+ * lot's footprint). Without it only the roads and sidewalks are open.
+ */
+export function setCityObstacles(fn: ((gx: number, gz: number) => boolean) | null): void {
+  cityBlock = fn;
+}
+
+/**
+ * On one of the city's lots but off the roads: backyards, the gaps between buildings, alleys
+ * and parks. Open unless a building (or a lake) stands there.
+ */
+export function inCityOpen(gx: number, gz: number, cols: number, solid = cityBlock): boolean {
+  if (!solid) return false;
+  const [x0, x1] = cityX(cols);
+  const [z0, z1] = cityZ();
+  if (gx < x0 || gx > x1 || gz < z0 || gz > z1) return false;
+  if (roadPlan?.lot && roadPlan.cols === cols && !roadPlan.lot(gx, gz)) return false;
+  return !solid(gx, gz);
+}
+
+let wilds: ((gx: number, gz: number) => boolean) | null = null;
+/** Who knows the land round the city (the outskirts, once it's laid out): can you be at this point? */
+export function setWilds(fn: ((gx: number, gz: number) => boolean) | null): void {
+  wilds = fn;
+}
+
+/** Out of town (off the lots and streets), on land you can walk or drive. */
 export function inWilds(gx: number, gz: number, cols: number): boolean {
+  if (wilds) return wilds(gx, gz);
   const [x0, x1] = cityX(cols);
   const [z0, z1] = cityZ();
   if (gx >= x0 && gx <= x1 && gz >= z0 && gz <= z1) return false;
@@ -171,9 +245,12 @@ export function setWildsObstacles(fn: ((gx: number, gz: number) => boolean) | nu
   wildsBlock = fn;
 }
 
-/** Anywhere you can walk or drive outside: the streets, avenues and the desert around the city. */
+/**
+ * Anywhere you can walk or drive outside: the streets and avenues, behind and between the
+ * buildings, the parks, and the desert around the city.
+ */
 export function openGround(gx: number, gz: number, cols: number): boolean {
-  return onRoadNetwork(gx, gz, cols) || inWilds(gx, gz, cols);
+  return onRoadNetwork(gx, gz, cols) || inCityOpen(gx, gz, cols) || inWilds(gx, gz, cols);
 }
 
 /** Tiny deterministic hash → 0..1 for filler variety. */
@@ -187,13 +264,22 @@ export function hash01(n: number): number {
 
 export type FillerKind =
   | 'apartments' | 'office' | 'tower' | 'diner' | 'shops' | 'warehouse' | 'park' | 'parking' | 'brownstone' | 'hotelOld'
-  | 'villa' | 'cottage' | 'church' | 'cinema' | 'gasstation';
+  | 'villa' | 'cottage' | 'church' | 'cinema' | 'gasstation' | 'factory' | 'hospital' | 'firestation' | 'school'
+  | 'centralpark';
 
 const FILLERS_BY_ROW: FillerKind[][] = [
   ['shops', 'diner', 'apartments', 'parking', 'cinema', 'hotelOld', 'office', 'park'],
   ['villa', 'cottage', 'brownstone', 'apartments', 'park', 'villa', 'cottage', 'church'],
-  ['office', 'tower', 'tower', 'warehouse', 'shops', 'gasstation', 'apartments', 'parking', 'office'],
-  ['warehouse', 'cinema', 'diner', 'warehouse', 'gasstation', 'parking', 'shops', 'hotelOld', 'park'],
+  ['office', 'tower', 'tower', 'warehouse', 'shops', 'gasstation', 'apartments', 'parking', 'office', 'hospital'],
+  ['warehouse', 'cinema', 'diner', 'warehouse', 'gasstation', 'parking', 'shops', 'hotelOld', 'park', 'firestation'],
+  ['school', 'apartments', 'office', 'apartments', 'diner', 'shops', 'brownstone', 'park', 'school', 'cinema'],
+  ['apartments', 'brownstone', 'tower', 'office', 'diner', 'shops', 'villa', 'apartments', 'school'],
+  ['villa', 'cottage', 'villa', 'apartments', 'church', 'cottage', 'brownstone', 'park', 'school'],
+  ['shops', 'diner', 'shops', 'apartments', 'brownstone', 'parking', 'cinema', 'shops', 'hotelOld'],
+  ['warehouse', 'factory', 'factory', 'warehouse', 'gasstation', 'parking', 'diner', 'factory', 'firestation'],
+  ['villa', 'villa', 'cottage', 'park', 'villa', 'cottage', 'church', 'villa'],
+  ['brownstone', 'church', 'shops', 'diner', 'cottage', 'hotelOld', 'cinema', 'shops', 'park', 'hospital'],
+  ['hotelOld', 'gasstation', 'warehouse', 'diner', 'parking', 'warehouse', 'hotelOld', 'factory', 'gasstation'],
 ];
 
 const FILLER_NAMES: Record<FillerKind, string[]> = {
@@ -212,6 +298,11 @@ const FILLER_NAMES: Record<FillerKind, string[]> = {
   church: ['Little Chapel', 'Elvis Wedding Chapel'],
   cinema: ['Grand Cinema', 'Drive-In', 'Rialto'],
   gasstation: ['Gas & Go', 'Fuel Stop'],
+  factory: ['Desert Steel', 'Mojave Bottling', 'Neon Sign Works', 'Atomic Canning'],
+  hospital: ['St. Jude Hospital', 'City General', 'Mercy Medical'],
+  firestation: ['Fire Station 7', 'Fire Station 12', 'Engine Co. 3'],
+  school: ['Jackpot High', 'Desert View School', 'Lincoln Elementary'],
+  centralpark: ['Central Park'],
 };
 
 export interface FillerSpec {
@@ -233,7 +324,7 @@ const FILLER_ACCENTS = [0x2fb8c9, 0xff6fb5, 0xffc53d, 0x39ff88, 0xff8a1f, 0xb77b
 export function fillerFor(s: SlotRef): FillerSpec {
   const seed = slotKey(s) * 7 + 13;
   const list = FILLERS_BY_ROW[Math.min(s.row, FILLERS_BY_ROW.length - 1)];
-  const kind = list[Math.floor(hash01(seed) * list.length)];
+  const kind: FillerKind = inParkSlot(s) ? 'centralpark' : list[Math.floor(hash01(seed) * list.length)];
   const names = FILLER_NAMES[kind];
   const name = names[Math.floor(hash01(seed + 1) * names.length)];
   const r = (k: number) => hash01(seed + k);
@@ -307,6 +398,31 @@ export function fillerFor(s: SlotRef): FillerSpec {
       w = 26;
       d = 30;
       floors = 3;
+      break;
+    case 'factory':
+      w = 30;
+      d = 34 + Math.round(r(4) * 18);
+      floors = 3;
+      break;
+    case 'hospital':
+      w = 28;
+      d = 26 + Math.round(r(4) * 10);
+      floors = 6 + Math.floor(r(5) * 4);
+      break;
+    case 'firestation':
+      w = 22;
+      d = 18;
+      floors = 2;
+      break;
+    case 'school':
+      w = 28;
+      d = 20;
+      floors = 2;
+      break;
+    case 'centralpark':
+      w = 0;
+      d = 0;
+      floors = 0;
       break;
   }
   return {

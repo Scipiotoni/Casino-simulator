@@ -3,9 +3,9 @@ import { MIN_COLS, STREET_ROWS, WILDS, cityX, cityZ, inWilds, onRoadNetwork, ope
 import { sunDirection } from '../src/world/sky';
 
 describe('a bigger city with open desert around it', () => {
-  it('has four streets and at least five blocks', () => {
-    expect(STREET_ROWS).toBe(4);
-    expect(MIN_COLS).toBeGreaterThanOrEqual(20);
+  it('has twelve streets and at least sixteen blocks', () => {
+    expect(STREET_ROWS).toBe(12);
+    expect(MIN_COLS).toBeGreaterThanOrEqual(64);
   });
 
   it('lets you walk past the city edge into the desert, up to the mountains', () => {
@@ -231,7 +231,8 @@ describe('more cars, smaller hitboxes', () => {
     for (const c of CARS) {
       const m = buildCar(c);
       expect(m.wheels.length).toBeGreaterThanOrEqual(4);
-      expect(m.length).toBeGreaterThan(3);
+      // The City Duo two-seater is a real 2.7 m microcar; anything shorter would be a bug.
+      expect(m.length).toBeGreaterThan(2.5);
     }
   });
 
@@ -240,5 +241,23 @@ describe('more cars, smaller hitboxes', () => {
     expect(carsTouch(v, 0, 3, 4.5)).toBe(false); // side by side, one lane over
     expect(carsTouch(v, 3.5, 0, 4.5)).toBe(true); // nose to tail
     expect(carsTouch(v, 4.6, 0, 4.5)).toBe(false); // a car length ahead
+  });
+});
+
+import { PLAYER_VIEW_R, SHOT_REACH, playerViewRadius } from '../src/net/net';
+import { GUNS } from '../src/game/guns';
+import { VIEW_DISTANCES } from '../src/world/viewDistance';
+
+describe('seeing other players from far away', () => {
+  it('draws them well past the old 90 m, further with a longer view distance', () => {
+    expect(playerViewRadius(1)).toBe(PLAYER_VIEW_R);
+    expect(PLAYER_VIEW_R).toBeGreaterThanOrEqual(300);
+    const radii = VIEW_DISTANCES.map((v) => playerViewRadius(v.scale));
+    for (let i = 1; i < radii.length; i++) expect(radii[i]).toBeGreaterThan(radii[i - 1]);
+  });
+
+  it('always draws anyone who can shoot you, whatever the view distance', () => {
+    for (const d of GUNS) expect(SHOT_REACH).toBeGreaterThan(d.range);
+    for (const v of VIEW_DISTANCES) expect(playerViewRadius(v.scale)).toBeGreaterThanOrEqual(SHOT_REACH);
   });
 });

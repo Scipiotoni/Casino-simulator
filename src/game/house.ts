@@ -2,11 +2,12 @@ import type { CasinoLook } from '../world/building';
 import type { CasinoSnapshot } from './save';
 import { sanitizeSnapshot } from './save';
 import type { Appearance } from '../entities/appearance';
+import { type HeistRecord, cleanRecords } from './heistRules';
 
 /**
  * Your house on Palm Avenue doubles as your bank: buy a vault, pick its code, and move
- * money between the vault, the casino and the hotel. House guards and security gadgets
- * raise its security rating (it will matter once heists arrive).
+ * money between the vault, the casino and the hotel. Other players can break in and rob
+ * it (see heist.ts): guards, gadgets and locked doors fight back.
  */
 export interface HouseState {
   /** The house's floor plan (rooms, furniture, the vault, guards). */
@@ -23,9 +24,14 @@ export interface HouseState {
   garage: number;
   /** Cars parked in the garage. */
   parked: ParkedCar[];
+  /** The last time a burglar got into the vault (everyone sees it: the house is off limits for a while). */
+  robbed?: HeistRecord | null;
 }
 
 /** A car in your garage: one you bought (its id) or one you took out of traffic and kept. */
+/** Vehicles your garage won't take (the army would come looking for its tank). */
+export const NO_GARAGE_IDS: readonly string[] = ['tank'];
+
 export interface ParkedCar {
   id?: string;
   /** Kept traffic car: its body type and paint. */
@@ -173,6 +179,7 @@ export function sanitizeHouse(raw: unknown, fonts: string[], sanitizeLook: (a: u
     log,
     garage: Math.round(num(r.garage, 0, GARAGE_TIERS.length, 0)),
     parked: sanitizeParked(r.parked, garageTier(Math.round(num(r.garage, 0, GARAGE_TIERS.length, 0)))?.cap ?? 0),
+    robbed: cleanRecords(r.robbed ? [r.robbed] : [])[0] ?? null,
   };
 }
 
@@ -185,7 +192,7 @@ export function sanitizeParked(raw: unknown, cap: number, known: (id: string) =>
     if (!it || typeof it !== 'object') continue;
     const p = it as Record<string, unknown>;
     if (typeof p.id === 'string') {
-      if (p.id.length > 20 || seen.has(p.id) || !known(p.id)) continue;
+      if (p.id.length > 20 || seen.has(p.id) || !known(p.id) || NO_GARAGE_IDS.includes(p.id)) continue;
       seen.add(p.id);
       out.push({ id: p.id });
     } else if (typeof p.kind === 'number' && typeof p.color === 'number') {

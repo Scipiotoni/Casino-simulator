@@ -26,6 +26,8 @@ export interface LotLook {
   filler?: FillerSpec;
   /** Your own house: its garage is a real one (drawn by the game), so leave the decorative one out. */
   ownGarage?: boolean;
+  /** Your own house: how deep its garage is (0 = none), so its walls are solid. */
+  garage?: number;
 }
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;

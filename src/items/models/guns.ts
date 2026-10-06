@@ -365,7 +365,15 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
       muzzle = new THREE.Vector3(0, 0.045, 0.64);
       break;
     }
-    case 'knuckles': {
+    case 'fists': {
+      // Taped-up knuckles: there's nothing in your hand but your fist.
+      const tape = mat(0xf1ece2, { rough: 0.9 });
+      B(tape, 0.075, 0.05, 0.06, 0, 0.0, 0.03);
+      B(tape, 0.08, 0.018, 0.064, 0, 0.012, 0.03);
+      muzzle = new THREE.Vector3(0, 0.0, 0.08);
+      break;
+    }
+        case 'knuckles': {
       B(body, 0.095, 0.032, 0.03, 0, 0.015, 0.06);
       for (let i = 0; i < 4; i++) {
         const r = new THREE.Mesh(new THREE.TorusGeometry(0.013, 0.006, 6, 12), body);
@@ -446,6 +454,14 @@ export function buildGun(def: GunDef, mods?: GunMods | null, beam = false): Buil
     const m = o as THREE.Mesh;
     if (m.isMesh) m.castShadow = false;
   });
+  // The lab's prototypes: glowing power lines down both sides.
+  if (def.secret && !beam) {
+    const bb = new THREE.Box3().setFromObject(g);
+    const len = (bb.max.z - bb.min.z) * 0.62;
+    const y = bb.min.y + (bb.max.y - bb.min.y) * 0.58;
+    const zc = (bb.max.z + bb.min.z) / 2;
+    for (const sx of [-1, 1]) box(g, 0.006, 0.012, len, glow(def.tracer, 2.4), sx * (bb.max.x + 0.002), y, zc);
+  }
   return { group: g, muzzle, spin, ...optics, blockers: optics.sight ? sightBlockers(g, optics.sight) : [] };
 }
 

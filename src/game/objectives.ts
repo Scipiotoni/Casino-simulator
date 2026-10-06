@@ -78,6 +78,8 @@ export interface LifetimeStats {
   /** Cars taken out of traffic. */
   carsStolen: number;
   carsParked?: number;
+  /** Your best drift score (angle × speed × time). */
+  bestDrift?: number;
   /** Other players you've knocked out. */
   pvpKos?: number;
   /** Cash earned hitting the punching bag. */
@@ -85,6 +87,16 @@ export interface LifetimeStats {
   /** Cars wrecked (blown up) and vehicles driven out of the military base. */
   carsWrecked?: number;
   baseRaids?: number;
+  /** Times you found your way into the secret lab under Fort Mojave; prototypes stolen from it. */
+  bunkerVisits?: number;
+  bunkerGuns?: number;
+  /** House heists pulled off, cash they brought in, and times your own house was robbed. */
+  heists?: number;
+  heistLoot?: number;
+  robbed?: number;
+  /** Gifts sent to and opened from other players. */
+  giftsSent?: number;
+  giftsReceived?: number;
 }
 
 export function emptyStats(): LifetimeStats {

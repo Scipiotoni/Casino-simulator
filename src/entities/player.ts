@@ -11,6 +11,10 @@ export class Player {
   readonly model: CharacterModel;
   x: number;
   z: number;
+  /** Height of the ground under you (0 indoors and all over town; the land outside). */
+  y = 0;
+  /** Where the ground is (world frame); unset, it's flat at 0. */
+  groundFn: ((x: number, z: number) => number) | null = null;
   yaw = Math.PI;
   vx = 0;
   vz = 0;
@@ -94,10 +98,11 @@ export class Player {
         this.emoteT -= dt;
         if (this.emoteT <= 0) this.emote = null;
       }
-      m.root.position.set(this.x, 0, this.z);
+      this.y = this.groundFn ? this.groundFn(this.x, this.z) : 0;
+      m.root.position.set(this.x, this.y, this.z);
       m.root.rotation.y = this.yaw;
       m.update(dt);
-      this.pos.set(this.x, 0, this.z);
+      this.pos.set(this.x, this.y, this.z);
       return;
     }
     const len = Math.hypot(ix, iz);
@@ -150,10 +155,13 @@ export class Player {
     } else {
       m.setPose(this.emote ?? 'idle');
     }
-    m.root.position.set(this.x, 0, this.z);
+    // Out on the land: stand on the ground (a quick ease so curbs and bridge ends don't jolt).
+    const gy = this.groundFn ? this.groundFn(this.x, this.z) : 0;
+    this.y = Math.abs(gy - this.y) > 3 ? gy : this.y + (gy - this.y) * Math.min(1, dt * 18);
+    m.root.position.set(this.x, this.y, this.z);
     m.root.rotation.y = this.yaw;
     m.update(dt);
-    this.pos.set(this.x, 0, this.z);
+    this.pos.set(this.x, this.y, this.z);
   }
 
   /** Shove the player (a dodge roll), sliding along walls the way walking does. */

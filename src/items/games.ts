@@ -525,6 +525,8 @@ export function sicBoLabel(b: SicBoBet): string {
       return `Triple ${b.n}s`;
     case 'anyTriple':
       return 'Any triple';
+    case 'combo':
+      return `${b.n} & ${b.m}`;
   }
 }
 

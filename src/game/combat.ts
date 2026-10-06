@@ -1,6 +1,7 @@
 import type { Game } from './game';
 import { audio } from '../core/audio';
 import { formatMoney } from '../core/math';
+import { Brawl, COST, type Incoming } from './melee';
 
 /** Health you start with (and wake up with). */
 export const MAX_HP = 100;
@@ -87,6 +88,12 @@ export class Combat {
   /** Net hooks: tell the other player they hit you / they get your cash. */
   onLoot: ((pid: string, amount: number) => void) | null = null;
   onHitRemote: ((pid: string, dmg: number) => void) | null = null;
+  /** A melee hit on another player (they get to block or parry it on their side). */
+  onMeleeRemote: ((pid: string, dmg: number, heavy: boolean) => void) | null = null;
+  /** You parried another player's hit (they're stunned on their side). */
+  onParry: ((pid: string) => void) | null = null;
+  /** Your fists and melee weapons: stamina, combos, blocking, parrying. */
+  readonly brawl = new Brawl();
   remoteTargets: () => RemoteTarget[] = () => [];
   /** Dodge roll: seconds left, cooldown, how many so far (others see it), and which way. */
   rollT = 0;
@@ -112,7 +119,11 @@ export class Combat {
 
   /** Dodge roll in a direction (world frame). False if you can't right now. */
   roll(dx: number, dz: number): boolean {
-    if (this.rollT > 0 || this.rollCd > 0 || this.ko > 0) return false;
+    if (this.rollT > 0 || this.rollCd > 0 || this.ko > 0 || this.brawl.stunned) return false;
+    if (!this.brawl.spend(COST.roll)) {
+      this.g.floaters.text(this.g.player.model.root.position.clone().setY(this.g.player.model.height + 0.6), 'Out of breath', 'bad', 0.8, 0.6);
+      return false;
+    }
     const l = Math.hypot(dx, dz) || 1;
     this.rollDir = { x: dx / l, z: dz / l };
     this.rollT = ROLL_TIME;
@@ -143,10 +154,12 @@ export class Combat {
     return Math.max(0, TELEPORT_LOCK_SECONDS - this.sinceHurt);
   }
 
-  /** Out on the street, where fights happen. */
+  /** Out on the street, where fights happen (or inside a house mid-heist, where the guards fight back). */
   get exposed(): boolean {
     const g = this.g;
-    return g.state === 'playing' && !g.inside && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
+    if (g.state !== 'playing') return false;
+    if (g.indoorFight) return true;
+    return !g.inside && !g.underground && g.player.floor === 0 && (!g.player.seat || !!g.drive.driving);
   }
 
   update(dt: number): void {
@@ -183,6 +196,41 @@ export class Combat {
     }
   }
 
+  /**
+   * A punch or a swing is coming at you: parry it (block right as it lands), block it, or
+   * take it. A dodge roll still beats everything. Returns how it went.
+   */
+  meleeHit(dmg: number, heavy: boolean, fromPid: string, fromName: string, fromX?: number, fromZ?: number): Incoming | 'none' | 'dodge' {
+    const g = this.g;
+    if (dmg <= 0 || this.safe || !this.exposed) return 'none';
+    if (this.rollT > ROLL_TIME - ROLL_IFRAMES) {
+      this.damage(dmg, fromPid, fromName, fromX, fromZ);
+      return 'dodge';
+    }
+    const r = this.brawl.incoming(dmg, heavy, performance.now());
+    const at = g.player.model.root.position.clone().setY(g.player.model.height + 0.6);
+    if (r.kind === 'parry') {
+      audio.play('clack', { pitch: 1.4 });
+      audio.play('ping', { volume: 0.7, pitch: 1.6 });
+      g.effects.sparkle(g.player.x, 1.3, g.player.z, 16, 0xffe08a, 0.6);
+      g.floaters.text(at, '⚔ PARRY! Counter now', 'good', 1.2, 1);
+      g.cam.shake(0.06);
+      if (fromPid !== 'world') this.onParry?.(fromPid);
+      return 'parry';
+    }
+    if (r.kind === 'block') {
+      audio.play('thud', { pitch: 0.7, volume: 0.8 });
+      g.effects.sparkle(g.player.x, 1.3, g.player.z, 5, 0xbfe9ff, 0.3);
+      g.floaters.text(at, 'BLOCKED', 'info', 0.7, 0.6);
+    } else if (r.kind === 'guardbreak') {
+      audio.play('metalHit');
+      g.floaters.text(at, '💥 GUARD BROKEN', 'bad', 1.1, 0.9);
+      g.cam.shake(0.12);
+    }
+    if (r.dmg > 0) this.damage(r.dmg, fromPid, fromName, fromX, fromZ);
+    return r.kind;
+  }
+
   /** You got shot by another player (or anything else). */
   damage(dmg: number, fromPid: string, fromName: string, fromX?: number, fromZ?: number): void {
     const g = this.g;
@@ -211,9 +259,13 @@ export class Combat {
   /** Down you go: the shooter takes a share of the cash on you. */
   private knockOut(fromPid: string, fromName: string): void {
     const g = this.g;
+    this.brawl.reset();
     this.ko = KO_SECONDS;
     this.hp = 0;
     this.rollT = 0;
+    // Free the mouse so you can pick where to come round.
+    g.respawnPick = null;
+    g.input.exitLock();
     if (this.streak >= 3) g.notify(`Your ${this.streak}-knockout streak is over.`, 'bad');
     this.streak = 0;
     if (fromPid !== 'world' && fromPid !== 'police') this.addFeed(`${fromName} ➜ you`, false);
@@ -223,6 +275,19 @@ export class Combat {
       g.drive.exit();
     }
     g.player.seat = null;
+    if ((fromPid === 'guard' || fromPid === 'trap') && g.heist) {
+      // Taken down in a house you were robbing: the guards take their cut and drag you out.
+      const fine = g.heist.knockedOut();
+      if (fine > 0) g.spend(fine, 'robbed');
+      this.lastKo = { by: fromName, lost: fine };
+      g.stats.knockedDown++;
+      g.gunplay.drop();
+      audio.play('knockout');
+      g.cam.shake(0.25);
+      g.notify(`${fromName[0].toUpperCase()}${fromName.slice(1)} knocked you out! ${fine > 0 ? `The guards took ${formatMoney(fine)} off you and` : 'The guards'} drop the loot back in the vault.`, 'bad');
+      g.requestSave();
+      return;
+    }
     if (fromPid === 'police') {
       // Busted: the police fine you and the chase is over.
       const police = g.street.police;
@@ -239,6 +304,8 @@ export class Combat {
       g.requestSave();
       return;
     }
+    // Knocked out mid-heist (by the owner, say): the loot goes back and you're thrown out too.
+    if (g.heist) g.heist.knockedOut();
     // Explosions and the army knock you down but don't take your cash.
     const lost = fromPid === 'world' ? 0 : koLoss(g.money);
     if (lost > 0) {
@@ -264,6 +331,8 @@ export class Combat {
     this.g.player.emote = null;
     // Up on your feet (never left sitting in mid-air).
     if (!this.g.drive.driving && !this.g.activity) this.g.player.seat = null;
+    // ...back home: inside your casino, hotel or house.
+    this.g.respawnHome();
     this.g.events.emit('combat', undefined);
   }
 

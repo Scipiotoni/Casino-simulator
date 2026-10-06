@@ -1,3 +1,4 @@
+import { VIEW_DISTANCES } from '../world/viewDistance';
 import { type Game, type DayReport, roman } from '../game/game';
 import { HOTEL_PRICE, HOTEL_START_CASH, buildingCost, buildingName, hotelGuestBoost, hotelName, snapChecklist } from '../game/hotel';
 import { BEDS, ROOM_CLASS_NAMES, ROOM_EXTRAS, ROOM_FLOORS, ROOM_THEMES, ROOM_WALLS, type RoomSetup, changeCost, fitsClass, roomRate, roomStars, sameSetup, setupValue, themeFor } from '../hotel/rooms';
@@ -15,12 +16,13 @@ import { audio } from '../core/audio';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
-import { MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
+import { DEALER_WAGE, MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
 import { HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, vaultTier } from '../game/house';
 import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
 import { CharacterCreator } from './creator';
+import { type SocialApi, openDaily, openGift, openGifts, openLeaderboard, openLoan } from './social';
 
 interface Frame {
   layer: HTMLElement;
@@ -33,10 +35,22 @@ export class Modals {
   onMainMenu: (() => void) | null = null;
   onNewCasino: (() => void) | null = null;
   onSettingsChanged: (() => void) | null = null;
+  /** The HUD's Unstuck (it also leaves photo mode and closes the shop). */
+  onUnstuck: (() => void) | null = null;
   /** The players list with blacklist controls (set by the net layer). */
   openPlayers: (() => void) | null = null;
   /** One line about multiplayer (set by the net layer). */
   netStatus: (() => string) | null = null;
+  /** Gifts and the leaderboard (set by the net layer). */
+  social: SocialApi | null = null;
+
+  openGift(pid: string, name: string): void {
+    openGift(this.game, this, this.social, pid, name);
+  }
+
+  openDaily(): void {
+    openDaily(this.game, this);
+  }
 
   constructor(private parent: HTMLElement, private game: Game, private hud: Hud) {
     window.addEventListener('keydown', (e) => {
@@ -211,6 +225,26 @@ export class Modals {
         ));
       }
       body.appendChild(roles);
+      const tables = g.site === 'casino' ? g.dealerTables : [];
+      if (tables.length) {
+        const missing = tables.filter((t) => !t.dealer).length;
+        body.appendChild(h('div', { class: 'field-label', text: `Dealers · ${tables.length - missing}/${tables.length} tables · ${formatMoney(g.dealerWages)}/day` }));
+        body.appendChild(h('p', { class: 'muted small', text: `Every table game needs a dealer (${formatMoney(DEALER_WAGE)} a day each). A table without one only runs while you stand beside it and hold Space to deal yourself.` }));
+        if (missing) body.appendChild(h('button', { class: 'btn gold small', text: `${missing > 1 ? `Hire dealers for all ${missing} tables` : 'Hire a dealer for it'} · ${formatMoney(missing * DEALER_WAGE)}`, onClick: () => { g.hireAllDealers(); render(); } }));
+        const list = h('div', { class: 'staff-list' });
+        for (const t of tables) {
+          list.appendChild(h('div', { class: 'staff-row' },
+            h('div', {}, h('b', { text: t.def.name }), h('span', { class: `muted${t.dealer ? '' : ' neg'}`, text: t.dealer ? ' · dealer on duty' : ' · no dealer' })),
+            h('div', { class: 'btn-row' },
+              h('button', { class: 'btn small', text: 'Find', onClick: () => { this.close(); g.select({ kind: 'item', item: t }); g.cam.focus.set(t.cx, 0, t.cz); } }),
+              t.dealer
+                ? h('button', { class: 'btn small danger', text: 'Let go', onClick: () => { g.fireDealer(t); render(); } })
+                : h('button', { class: 'btn small gold', text: `Hire · ${formatMoney(DEALER_WAGE)}`, onClick: () => { g.hireDealer(t); render(); } }),
+            ),
+          ));
+        }
+        body.appendChild(list);
+      }
       if (g.workers.length) {
         const list = h('div', { class: 'staff-list' });
         for (const w of g.workers) {
@@ -753,9 +787,14 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
       h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
       h('button', { class: 'btn', text: '🧭 Fast travel', onClick: () => { this.close(); this.openTravel(); } }),
+      h('button', { class: 'btn', text: '🆘 Unstuck', title: 'Frees you if you’re stuck anywhere: in a wall, the water, a seat, a car or a camera angle', onClick: () => { this.closeAll(); this.onUnstuck ? this.onUnstuck() : g.unstuck(); } }),
       h('button', { class: 'btn', text: '🚗 My cars', onClick: () => { this.close(); openDealer(g, this, true); } }),
       h('button', { class: 'btn', text: '📖 Casino school', onClick: () => { this.close(); openSchool(g, this); } }),
       h('button', { class: 'btn', text: '👥 Players & blacklist', onClick: () => (this.openPlayers ? this.openPlayers() : g.notify('Multiplayer isn’t connected here.', 'bad')) }),
+      h('button', { class: 'btn', text: '🎁 Gifts', onClick: () => openGifts(g, this, this.social) }),
+      h('button', { class: 'btn', text: '🏆 Leaderboard', onClick: () => openLeaderboard(g, this, this.social) }),
+      h('button', { class: 'btn', text: `📅 Daily reward${g.dailyInfo().claimable ? ' •' : ''}`, onClick: () => this.openDaily() }),
+      h('button', { class: 'btn', text: `🏦 Bank loan${g.loanOwed > 0 ? ` (${formatMoney(g.loanOwed)})` : ''}`, onClick: () => openLoan(g, this) }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));
     body.appendChild(slider('Sound effects', st.sfx, (v) => { st.sfx = v; this.onSettingsChanged?.(); }));
@@ -765,6 +804,7 @@ export class Modals {
       b.setAttribute('aria-checked', String(get()));
       return h('div', { class: 'field row' }, h('span', { class: 'field-label', text: label }), b);
     };
+    body.appendChild(toggle('Hide tab (looks like an untitled Google Doc)', () => !!st.hideTab, (v) => (st.hideTab = v)));
     body.appendChild(toggle('Lounge music', () => st.musicOn, (v) => (st.musicOn = v)));
     body.appendChild(toggle('Show FPS', () => st.showFps, (v) => (st.showFps = v)));
     const q = h('div', { class: 'seg' });
@@ -775,6 +815,15 @@ export class Modals {
       }));
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'Graphics' }), q));
+    const vd = h('div', { class: 'seg' });
+    for (const v of VIEW_DISTANCES) {
+      vd.appendChild(h('button', {
+        class: `seg-btn${(st.viewDist ?? 'normal') === v.id ? ' on' : ''}`, text: v.label,
+        onClick: () => { g.setViewDistance(v.id); vd.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.textContent === v.label)); this.onSettingsChanged?.(); },
+      }));
+    }
+    body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'View distance' }), vd));
+    body.appendChild(h('p', { class: 'muted small', text: 'How far buildings, trees and street lamps are drawn in full (further out the city is simple blocks). Near is lighter on slow devices; Far looks further but costs more.' }));
     body.appendChild(h('p', { class: 'muted small', text: 'Ult (AFK) is for leaving the game running: up to 600 guests (3× as many arrive, and far more than you have seats), everyone drawn as simple blocks, half resolution and no shadows or glow.' }));
     const cam = h('div', { class: 'seg' });
     for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person'], ['first', 'First person']] as const) {

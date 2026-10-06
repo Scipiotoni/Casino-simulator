@@ -134,6 +134,7 @@ function fakeHost(over: Partial<BaseHost> = {}): FakeHost {
     toWorld: (x: number, z: number) => ({ x, z }),
     shot: () => undefined,
     tracer: () => undefined,
+    blast: () => undefined,
     spawnVehicle: (id: string) => {
       h.spawned.push(id);
       return h.spawned.length;
@@ -143,6 +144,7 @@ function fakeHost(over: Partial<BaseHost> = {}): FakeHost {
       h.alarms++;
     },
     notify: () => undefined,
+    ownsGun: () => false,
     ...over,
   };
   return h;
@@ -152,8 +154,9 @@ describe('Fort Mojave', () => {
   it('sits out in the western desert, clear of the city', () => {
     const s = baseSite(MIN_COLS);
     const [x0] = cityX(MIN_COLS);
-    expect(s.cx + BASE_HW).toBeLessThan(x0 - 70);
-    expect(inWilds(s.cx - BASE_HW + 1, s.cz, MIN_COLS)).toBe(true);
+    // Well past the ring road (it runs ~85-170 m out from the city's edge).
+    expect(s.cx + BASE_HW).toBeLessThan(x0 - 250);
+    expect(inWilds(s.cx + BASE_HW - 1, s.cz, MIN_COLS)).toBe(true);
     expect(inBaseArea(s.cx, s.cz, MIN_COLS)).toBe(true);
     expect(inBaseArea((s.roadX0 + s.roadX1) / 2, s.cz, MIN_COLS)).toBe(true);
     expect(inBaseArea(s.cx, s.cz + BASE_HD + 40, MIN_COLS)).toBe(false);
@@ -166,7 +169,7 @@ describe('Fort Mojave', () => {
     // Far away: vehicles get parked.
     h.pos = { x: s.cx + 400, z: s.cz };
     base.update(0.1, MIN_COLS, true);
-    expect(h.spawned.sort()).toEqual(['apc', 'jeep', 'jeep', 'stealth', 'tank']);
+    expect(h.spawned.sort()).toEqual(['apc', 'apc', 'jeep', 'jeep', 'jeep', 'stealth', 'tank']);
     // The fence blocks, the gate doesn't.
     expect(base.blocked(s.cx + BASE_HW, s.cz - 20)).toBe(true);
     expect(base.blocked(s.cx + BASE_HW, s.cz)).toBe(false);

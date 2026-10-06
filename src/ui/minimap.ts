@@ -1,10 +1,10 @@
 import type { Game } from '../game/game';
 import { h } from './dom';
 import { audio } from '../core/audio';
-import { CENTER_X, DEPTH_STEP, DOOR_TILES, FACADE_Z, ROAD_MID, SIDEWALK_Z0, START_DEPTH, WIDTHS } from '../world/grid';
+import { CENTER_X, DEPTH_STEP, DOOR_TILES, FACADE_Z, LOT_STRIDE, ROAD_MID, SIDEWALK_Z0, START_DEPTH, WIDTHS } from '../world/grid';
 import type { StreetLot } from '../world/street';
-import { AVE_WALK, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, WILDS, avenueX, blocksFor, streetZ } from '../world/city';
-import { RING } from '../world/outskirts';
+import { AVE_WALK, BLOCK_COLS, PARK_BLOCKS, ROAD_HALF, STREET_BLURBS, STREET_NAMES, STREET_ROWS, avenueX, blockX0, colX, parkRect, rowZ, streetZ } from '../world/city';
+import type { Terrain } from '../world/terrain';
 import { BASE_HD, BASE_HW, baseSite } from '../world/militaryBase';
 
 const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
@@ -154,7 +154,7 @@ export class Minimap {
   private zoomAt(f: number, px?: number, py?: number): void {
     const v = this.view;
     const before = px !== undefined && py !== undefined ? { x: v.x0 + px / v.s, z: v.z0 + py / v.s } : null;
-    if (this.big) this.zoomBig = Math.max(0.45, Math.min(14, this.zoomBig * f));
+    if (this.big) this.zoomBig = Math.max(0.3, Math.min(14, this.zoomBig * f));
     else this.zoomSmall = Math.max(0.35, Math.min(5, this.zoomSmall * f));
     if (this.big && before && px !== undefined && py !== undefined) {
       // Work out the new scale and shift the centre so `before` stays under the cursor.
@@ -180,7 +180,74 @@ export class Minimap {
     this.t = 0;
   }
 
+  private rects = new Map<string, { x0: number; z0: number; x1: number; z1: number }>();
+  private rectsFor: StreetLot[] | null = null;
+
+  /** A building's rectangle on the map (cached: the city has over a thousand lots). */
+  /** The land's lines and shapes in metres, made once per layout: river, roads, lots, streets. */
+  private paths: { t: Terrain; river: Path2D; roads: [number, Path2D][]; lots: Path2D; walks: Path2D; streets: Path2D; dashes: Path2D } | null = null;
+  private landPaths(): typeof this.paths {
+    const st = this.game.street;
+    const t = st.outskirts.terrain;
+    if (!t || typeof Path2D === 'undefined') return null;
+    if (this.paths?.t === t) return this.paths;
+    const line = (p: Path2D, pts: { x: number; z: number }[]) => {
+      pts.forEach((q, i) => (i ? p.lineTo(q.x, q.z) : p.moveTo(q.x, q.z)));
+    };
+    const river = new Path2D();
+    line(river, t.river.pts);
+    const byWidth = new Map<number, Path2D>();
+    for (const r of st.outskirts.roads) {
+      const w = r.half * 2;
+      const p = byWidth.get(w) ?? new Path2D();
+      line(p, r.path.pts);
+      byWidth.set(w, p);
+    }
+    const plan = st.plan;
+    const lots = new Path2D();
+    for (let r = 0; r < STREET_ROWS; r++) {
+      for (const side of [0, 1] as const) {
+        const za = side === 0 ? rowZ(r) - 32 : rowZ(r) + 58;
+        const zb = side === 0 ? rowZ(r) + 41 : rowZ(r) + 131;
+        for (let c = 0; c < plan.cols; c++) if (plan.has({ row: r, col: c, side })) lots.rect(colX(c) + 6, za, 36, zb - za);
+      }
+    }
+    const walks = new Path2D();
+    const streets = new Path2D();
+    const dashes = new Path2D();
+    plan.streets.forEach((sp, r) => {
+      if (!sp) return;
+      const z = streetZ(r);
+      const side = ROAD_MID - FACADE_Z;
+      walks.rect(sp.xa, z - side, sp.xb - sp.xa, side * 2);
+      streets.rect(sp.xa, z - ROAD_HALF, sp.xb - sp.xa, ROAD_HALF * 2);
+      dashes.moveTo(sp.xa, z);
+      dashes.lineTo(sp.xb, z);
+    });
+    plan.avenues.forEach((av, k) => {
+      if (!av) return;
+      const [a, b] = avenueX(k);
+      walks.rect(a, av.za, b - a, av.zb - av.za);
+      streets.rect(a + AVE_WALK, av.za, b - a - AVE_WALK * 2, av.zb - av.za);
+    });
+    this.paths = { t, river, roads: [...byWidth.entries()].sort((a, b) => a[0] - b[0]), lots, walks, streets, dashes };
+    return this.paths;
+  }
+
   private lotRect(lot: StreetLot): { x0: number; z0: number; x1: number; z1: number } {
+    const st = this.game.street;
+    if (this.rectsFor !== st.lots) {
+      this.rectsFor = st.lots;
+      this.rects.clear();
+    }
+    const hit = this.rects.get(lot.id);
+    if (hit) return hit;
+    const r = this.computeRect(lot);
+    this.rects.set(lot.id, r);
+    return r;
+  }
+
+  private computeRect(lot: StreetLot): { x0: number; z0: number; x1: number; z1: number } {
     const st = this.game.street;
     let w = WIDTHS[Math.max(0, Math.min(WIDTHS.length - 1, lot.info.width))].w;
     let d = START_DEPTH + Math.max(0, lot.info.depth) * DEPTH_STEP;
@@ -293,7 +360,8 @@ export class Minimap {
     const X = (x: number) => (x - x0) * s;
     const Z = (z: number) => (z - z0) * s;
 
-    // Mountains, the open desert around town (rounded at the corners), then the city.
+    // The land: the whole map in shaded relief (mountains, mesas, dunes), the river and the
+    // roads out in the country; then the lake, the forest, the base and the city on top.
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.fillStyle = '#3b2a22';
     c.fillRect(0, 0, W, H);
@@ -310,36 +378,90 @@ export class Minimap {
       c.fillText(t, 0, dy);
       c.restore();
     };
-    c.fillStyle = '#7a5e3c';
-    c.beginPath();
-    c.roundRect(X(bd.x0 - WILDS), Z(bd.z0 - WILDS), (bd.x1 - bd.x0 + WILDS * 2) * s, (bd.z1 - bd.z0 + WILDS * 2) * s, WILDS * s);
-    c.fill();
-    // Ring road, the roads out of town and the highway to the overlook
-    c.fillStyle = '#34313d';
-    const RW = 11;
-    const rx0 = bd.x0 - RING;
-    const rx1 = bd.x1 + RING;
-    const rz0 = bd.z0 - RING;
-    const rz1 = bd.z1 + RING;
-    c.fillRect(X(rx0 - RW / 2), Z(rz0 - RW / 2), (rx1 - rx0 + RW) * s, RW * s);
-    c.fillRect(X(rx0 - RW / 2), Z(rz1 - RW / 2), (rx1 - rx0 + RW) * s, RW * s);
-    c.fillRect(X(rx0 - RW / 2), Z(rz0), RW * s, (rz1 - rz0) * s);
-    c.fillRect(X(rx1 - RW / 2), Z(rz0), RW * s, (rz1 - rz0) * s);
-    for (let r = 0; r < STREET_ROWS; r++) c.fillRect(X(rx0), Z(streetZ(r) - ROAD_HALF), (rx1 - rx0) * s, ROAD_HALF * 2 * s);
-    for (let k = 0; k <= blocksFor(st.cols); k++) {
-      const [a, b] = avenueX(k);
-      c.fillRect(X((a + b) / 2 - 4.5), Z(rz0), 9 * s, (rz1 - rz0) * s);
+    const okm = st.outskirts;
+    const land = okm.mapImage();
+    const tr = okm.terrain;
+    if (land && tr) {
+      c.imageSmoothingEnabled = true;
+      c.drawImage(land, X(tr.x0 - tr.step / 2), Z(tr.z0 - tr.step / 2), tr.nx * tr.step * s, tr.nz * tr.step * s);
     }
-    const mz = (bd.z0 + bd.z1) / 2;
-    c.fillRect(X(rx1), Z(mz - RW / 2), (bd.x1 + WILDS - 32 - rx1) * s, RW * s);
-    c.beginPath();
-    c.arc(X(bd.x1 + WILDS - 32), Z(mz), 28 * s, 0, Math.PI * 2);
-    c.fill();
-    // The oasis
-    c.fillStyle = '#2aa6c4';
-    c.beginPath();
-    c.arc(X((bd.x0 + bd.x1) / 2 - 60), Z(bd.z0 - RING - 120), 22 * s, 0, Math.PI * 2);
-    c.fill();
+    const paths = this.landPaths();
+    // Paths are cached in metres (global frame): draw them through the map's transform.
+    const world = (fn: () => void) => {
+      c.save();
+      c.translate(-x0 * s, -z0 * s);
+      c.scale(s, s);
+      c.lineCap = 'round';
+      c.lineJoin = 'round';
+      fn();
+      c.restore();
+    };
+    if (paths) {
+      world(() => {
+        c.strokeStyle = '#2a8fc4';
+        c.lineWidth = 24;
+        c.stroke(paths.river);
+        c.strokeStyle = '#34313d';
+        for (const [w, p] of paths.roads) {
+          c.lineWidth = w;
+          c.stroke(p);
+        }
+      });
+    }
+    // Lake Mojave with its beach, Pinewood Forest and its pond.
+    const ok = okm;
+    const labelFont = `800 ${Math.max(9, Math.min(13, s * 3))}px system-ui, sans-serif`;
+    if (ok.lake) {
+      const l = ok.lake;
+      c.fillStyle = '#e8d39c';
+      c.beginPath();
+      c.ellipse(X(l.x), Z(l.z), (l.rx + 24) * s, (l.rz + 24) * s, 0, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = '#2a8fc4';
+      c.beginPath();
+      c.ellipse(X(l.x), Z(l.z), l.rx * s, l.rz * s, 0, 0, Math.PI * 2);
+      c.fill();
+    }
+    if (ok.forest) {
+      const f = ok.forest;
+      c.fillStyle = '#2f5a2e';
+      c.beginPath();
+      c.roundRect(X(f.x0), Z(f.z0), (f.x1 - f.x0) * s, (f.z1 - f.z0) * s, 30 * s);
+      c.fill();
+      if (ok.pond) {
+        c.fillStyle = '#2a6f7a';
+        c.beginPath();
+        c.ellipse(X(ok.pond.x), Z(ok.pond.z), ok.pond.rx * s, ok.pond.rz * s, 0, 0, Math.PI * 2);
+        c.fill();
+      }
+    }
+    c.font = labelFont;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillStyle = '#ffffff';
+    if (ok.lake) txt('🏖 LAKE MOJAVE', X(ok.lake.x), Z(ok.lake.z));
+    if (ok.forest) txt('🌲 PINEWOOD FOREST', X((ok.forest.x0 + ok.forest.x1) / 2), Z((ok.forest.z0 + ok.forest.z1) / 2));
+    // The oasis, the overlook up on the mesas, and the roads' names.
+    if (ok.oasis) {
+      c.fillStyle = '#2aa6c4';
+      c.beginPath();
+      c.arc(X(ok.oasis.x), Z(ok.oasis.z), 22 * s, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.fillStyle = '#ffffff';
+    if (ok.overlook) {
+      c.beginPath();
+      c.arc(X(ok.overlook.x), Z(ok.overlook.z), Math.max(3, 28 * s), 0, Math.PI * 2);
+      c.fillStyle = '#34313d';
+      c.fill();
+      c.fillStyle = '#ffffff';
+      txt('🔭 OVERLOOK', X(ok.overlook.x), Z(ok.overlook.z), -Math.max(10, 30 * s));
+    }
+    for (const hw of ok.highways) {
+      if (hw.road.path.length < 400) continue;
+      const p = hw.road.path.pointAt(hw.road.path.length * 0.55);
+      txt(hw.name.toUpperCase(), X(p.x), Z(p.z), -10);
+    }
     // Fort Mojave, the military base out west, and its road to the ring.
     {
       const b = baseSite(st.cols);
@@ -364,34 +486,46 @@ export class Minimap {
         }
       }
     }
-    c.fillStyle = '#1b1726';
-    c.fillRect(X(bd.x0), Z(bd.z0), (bd.x1 - bd.x0) * s, (bd.z1 - bd.z0) * s);
-    // Sidewalks, then roads, of every street and avenue.
-    const blocks = blocksFor(st.cols);
-    for (const pass of [0, 1]) {
-      c.fillStyle = pass ? '#34313d' : '#6d6878';
-      for (let r = 0; r < STREET_ROWS; r++) {
-        const zc = streetZ(r);
-        const half = pass ? ROAD_HALF : ROAD_MID - FACADE_Z;
-        c.fillRect(X(bd.x0), Z(zc - half), (bd.x1 - bd.x0) * s, half * 2 * s);
-      }
-      for (let k = 0; k <= blocks; k++) {
-        const [a, b] = avenueX(k);
-        const pad = pass ? AVE_WALK : 0;
-        c.fillRect(X(a + pad), Z(bd.z0), (b - a - pad * 2) * s, (bd.z1 - bd.z0) * s);
-      }
+    // The city: the ground of every lot, then the sidewalks and roads of the streets and
+    // avenues as far as they really run.
+    if (paths) {
+      world(() => {
+        c.fillStyle = '#1b1726';
+        c.fill(paths.lots);
+        c.fillStyle = '#6d6878';
+        c.fill(paths.walks);
+        c.fillStyle = '#34313d';
+        c.fill(paths.streets);
+        c.strokeStyle = '#ffd23f';
+        c.lineWidth = 0.15;
+        c.lineCap = 'butt';
+        c.setLineDash([1.4, 1.6]);
+        c.stroke(paths.dashes);
+        c.setLineDash([]);
+      });
     }
-    c.strokeStyle = '#ffd23f';
-    c.lineWidth = Math.max(1, s * 0.15);
-    c.setLineDash([s * 1.4, s * 1.6]);
-    c.beginPath();
-    for (let r = 0; r < STREET_ROWS; r++) {
-      c.moveTo(X(bd.x0), Z(streetZ(r)));
-      c.lineTo(X(bd.x1), Z(streetZ(r)));
-    }
-    c.stroke();
-    c.setLineDash([]);
 
+    // Central Park: lawns, the lake (the avenues still cross it).
+    {
+      const pr = parkRect();
+      c.fillStyle = '#3f7f3a';
+      for (let k = PARK_BLOCKS[0]; k <= PARK_BLOCKS[1]; k++) {
+        const x0 = blockX0(k);
+        c.fillRect(X(x0), Z(pr.z0), BLOCK_COLS * LOT_STRIDE * s, (pr.z1 - pr.z0) * s);
+      }
+      const lk = st.park.lake;
+      if (lk) {
+        c.fillStyle = '#2a8fc4';
+        c.beginPath();
+        c.ellipse(X(lk.x), Z(lk.z), lk.rx * s, lk.rz * s, 0, 0, Math.PI * 2);
+        c.fill();
+      }
+      c.font = labelFont;
+      c.fillStyle = '#ffffff';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      txt('🌳 CENTRAL PARK', X((pr.x0 + pr.x1) / 2), Z(pr.z0 + 14));
+    }
     // Buildings
     const font = this.big ? 10 : Math.max(9, Math.min(13, s * 1.6));
     c.font = `800 ${font}px system-ui, sans-serif`;
@@ -402,7 +536,9 @@ export class Minimap {
       if (out((X(b.x0) + X(b.x1)) / 2, (Z(b.z0) + Z(b.z1)) / 2, Math.hypot(X(b.x1) - X(b.x0), Z(b.z1) - Z(b.z0)) / 2)) continue;
       const filler = lot.kind === 'filler';
       const mine = lot.id === 'me' || lot.id === 'house' || lot.hotelOf === 'me';
-      c.fillStyle = filler ? (lot.info.filler?.kind === 'park' ? '#2c5a33' : '#3b3747') : lot.kind === 'shop' ? '#7a2a2a' : hex(lot.info.look.wallColor ?? 0x6a2cc2);
+      const fk = lot.info.filler?.kind;
+      if (fk === 'centralpark') continue;
+      c.fillStyle = filler ? (fk === 'park' ? '#2c5a33' : '#3b3747') : lot.kind === 'shop' ? '#7a2a2a' : hex(lot.info.look.wallColor ?? 0x6a2cc2);
       c.fillRect(X(b.x0), Z(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
       if (filler) continue;
       c.strokeStyle = mine ? '#ffc53d' : lot.kind === 'rival' ? '#ff4d6d' : lot.kind === 'shop' ? '#ff8a8a' : 'rgba(255,255,255,0.5)';
@@ -432,13 +568,16 @@ export class Minimap {
       }
       c.shadowBlur = 0;
     }
-    // Street names on the big map
-    if (this.big) {
+    // Street names on the big map (unless zoomed so far out they'd pile up)
+    if (this.big && s * 163 > 32) {
       c.font = '800 11px system-ui, sans-serif';
       c.fillStyle = '#ffe9b0';
       c.shadowColor = 'rgba(0,0,0,0.9)';
       c.shadowBlur = 3;
-      for (let r = 0; r < STREET_ROWS; r++) txt(`${STREET_NAMES[r]} · ${STREET_BLURBS[r]}`, X(bd.x0) + 110, Z(streetZ(r)));
+      for (let r = 0; r < STREET_ROWS; r++) {
+        const sp = st.plan.streets[r];
+        if (sp) txt(`${STREET_NAMES[r]} · ${STREET_BLURBS[r]}`, X(sp.xa) + 110, Z(streetZ(r)));
+      }
       c.shadowBlur = 0;
     }
 
@@ -530,6 +669,42 @@ export class Minimap {
       c.fill();
       c.restore();
     }
+    // Your car(s) out on the street: a gold car badge. On the small map one that's off the edge
+    // sits on the rim, pointing the way, so you can always find it.
+    const rr = Math.max(7, Math.min(12, s * 0.9));
+    const pinR = Math.min(W, H) / 2 - rr - 10 * Math.min(2, window.devicePixelRatio || 1);
+    for (const v of g.drive.myCars()) {
+      let px = X(v.x);
+      let pz = Z(v.z);
+      const dx = px - W / 2;
+      const dz = pz - H / 2;
+      const dist = Math.hypot(dx, dz);
+      const pinned = !this.big && dist > pinR;
+      if (pinned) {
+        px = W / 2 + (dx / dist) * pinR;
+        pz = H / 2 + (dz / dist) * pinR;
+      } else if (out(px, pz, 30)) continue;
+      c.fillStyle = '#ffc53d';
+      c.strokeStyle = '#17151f';
+      c.lineWidth = 2.5;
+      c.beginPath();
+      c.arc(px, pz, rr, 0, Math.PI * 2);
+      c.fill();
+      c.stroke();
+      c.font = `${Math.round(rr * 1.25)}px system-ui, sans-serif`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      txt('🚗', px, pz, 1);
+      if (labels || pinned) {
+        c.font = `800 ${Math.max(10, Math.min(14, font))}px system-ui, sans-serif`;
+        c.shadowColor = 'rgba(0,0,0,0.95)';
+        c.shadowBlur = 4;
+        c.fillStyle = '#ffd877';
+        const m = Math.hypot(v.x - me.x, v.z - me.z);
+        txt(pinned ? `Your car · ${m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`}` : `Your ${v.name}`, px, pz, -rr - 8);
+        c.shadowBlur = 0;
+      }
+    }
     // You: an arrow showing which way you face
     const yaw = g.player.yaw + (st.placeOf(st.activeId).side ? Math.PI : 0);
     const r = Math.max(6, s * 1.1);
@@ -572,12 +747,28 @@ export class Minimap {
   private renderList(): void {
     const g = this.game;
     const players = this.big ? g.mapPlayers : [];
-    const key = players.map((p) => `${p.pid}|${p.name}|${p.inside}|${p.where}|${p.wanted}|${p.driving}`).join(';') + `|${this.follow}`;
+    const cars = this.big ? g.drive.myCars() : [];
+    const key = players.map((p) => `${p.pid}|${p.name}|${p.inside}|${p.where}|${p.wanted}|${p.driving}`).join(';') + `|${cars.map((v) => v.uid).join(',')}|${this.follow}`;
     if (key === this.listKey) return;
     this.listKey = key;
     this.list.replaceChildren();
     this.list.hidden = !this.big;
     if (!this.big) return;
+    // Your car: find it on the map.
+    for (const v of cars) {
+      this.list.appendChild(h('button', {
+        class: 'mm-pbtn mm-car', text: `🚗 Your ${v.name}`, title: 'Show where you left it',
+        onClick: (e: Event) => {
+          e.stopPropagation();
+          this.follow = '';
+          this.center = { x: v.x, z: v.z };
+          this.zoomBig = Math.max(this.zoomBig, 5);
+          this.listKey = '';
+          this.t = 0;
+          audio.play('click');
+        },
+      }));
+    }
     this.list.appendChild(h('span', { class: 'mm-ptitle', text: players.length ? `Players online (${players.length}):` : 'No other players online right now.' }));
     for (const p of players) {
       this.list.appendChild(h('button', {

@@ -7,6 +7,7 @@ import { buildGun } from '../items/models/guns';
 import { gunDef } from '../game/guns';
 import { audio } from '../core/audio';
 import { softDotTexture } from '../render/textures';
+import { groundAt } from './terrain';
 
 /** How many officers come for you at each wanted level (0–5 stars). */
 const OFFICERS = [0, 2, 3, 5, 6, 8];
@@ -138,6 +139,8 @@ export class Police {
   private flash: THREE.Sprite | null = null;
   private flashT = 0;
   cols = 12;
+  /** Which streets and avenues exist (cruisers come in along real roads). */
+  plan: import('./plan').CityPlan | null = null;
 
   /** Muzzle flash (made on the first shot: textures need a browser). */
   private flashSprite(): THREE.Sprite {
@@ -224,7 +227,7 @@ export class Police {
     const gun = buildGun(gunDef(swat ? 'rifle' : 'pistol')!);
     model.hand.add(gun.group);
     model.aim = swat ? 2 : 1;
-    model.root.position.set(x, 0, z);
+    model.root.position.set(x, groundAt(x, z), z);
     this.group.add(model.root);
     this.officers.push({ model, x, z, hp: swat ? 150 : 90, ko: 0, swat, cool: 1 + Math.random(), side: 1, sideT: 0, leaving: 0, fade: 0 });
   }
@@ -234,10 +237,14 @@ export class Police {
     // Nearest road: a street (east–west) or an avenue (north–south).
     let best: { axis: 'x' | 'z'; line: number; d: number } | null = null;
     for (let r = 0; r < STREET_ROWS; r++) {
+      const st = this.plan?.streets[r];
+      if (this.plan && (!st || px < st.xa || px > st.xb)) continue;
       const d = Math.abs(streetZ(r) - pz);
       if (!best || d < best.d) best = { axis: 'x', line: streetZ(r), d };
     }
     for (let k = 0; k <= blocksFor(this.cols); k++) {
+      const av = this.plan?.avenues[k];
+      if (this.plan && (!av || pz < av.za || pz > av.zb)) continue;
       const [a, b] = avenueX(k);
       const mid = (a + b) / 2;
       const d = Math.abs(mid - px);
@@ -267,7 +274,7 @@ export class Police {
     car.root.add(door, bar);
     const x = best.axis === 'x' ? start : best.line + lane;
     const z = best.axis === 'x' ? best.line + lane : start;
-    car.root.position.set(x, 0, z);
+    car.root.position.set(x, groundAt(x, z), z);
     car.root.rotation.y = best.axis === 'x' ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : dir > 0 ? 0 : Math.PI;
     this.group.add(car.root);
     this.cruisers.push({
@@ -315,7 +322,7 @@ export class Police {
     if (!at) return false;
     const m = this.cruiserModel();
     const yaw = Math.atan2(car.x - at.x, car.z - at.z);
-    m.car.root.position.set(at.x, 0, at.z);
+    m.car.root.position.set(at.x, groundAt(at.x, at.z), at.z);
     m.car.root.rotation.y = yaw;
     this.group.add(m.car.root);
     this.cruisers.push({
@@ -585,7 +592,7 @@ export class Police {
             continue;
           }
           this.chaseCar(c, dt, v, v.car, stars);
-          c.car.root.position.set(c.x, 0, c.z);
+          c.car.root.position.set(c.x, groundAt(c.x, c.z), c.z);
           c.sirenT -= dt;
           if (c.sirenT <= 0) {
             c.sirenT = 1.1;
@@ -617,7 +624,7 @@ export class Police {
       const step = c.speed * dt * c.dir;
       if (c.axis === 'x') c.x += step;
       else c.z += step;
-      c.car.root.position.set(c.x, 0, c.z);
+      c.car.root.position.set(c.x, groundAt(c.x, c.z), c.z);
       c.sirenT -= dt;
       if (c.sirenT <= 0 && !c.leaving && (!c.parked || c.t < 12)) {
         c.sirenT = 1.1;
@@ -678,7 +685,7 @@ export class Police {
         moving = this.walk(o, dx / dist, dz / dist, sp);
       }
       m.root.rotation.y = Math.atan2(dx, dz);
-      m.root.position.set(o.x, 0, o.z);
+      m.root.position.set(o.x, groundAt(o.x, o.z), o.z);
       m.setPose(moving ? 'run' : 'idle');
       m.moveSpeed = 2.4;
       m.aim = o.swat ? 2 : 1;
@@ -717,7 +724,7 @@ export class Police {
     const chance = Math.max(0.08, Math.min(0.45, 0.5 - dist * 0.018 - v.speed * 0.05));
     const hit = Math.random() < chance;
     const dmg = o.swat ? 4 : 3;
-    const ay = 1.25;
+    const ay = groundAt(o.x, o.z) + 1.25;
     const fx = o.x + Math.sin(o.model.root.rotation.y) * 0.7;
     const fz = o.z + Math.cos(o.model.root.rotation.y) * 0.7;
     const miss = hit ? 0 : 0.6 + Math.random() * 1.2;
@@ -726,7 +733,7 @@ export class Police {
     const tz = v.pz + (dist > 0 ? ((v.px - o.x) / dist) * miss * side : 0);
     this.flashSprite().position.set(fx, ay, fz);
     this.flashT = 0.05;
-    v.onTracer(fx, ay, fz, tx, hit ? v.height * 0.7 : 0.4 + Math.random() * 1.4, tz);
+    v.onTracer(fx, ay, fz, tx, groundAt(tx, tz) + (hit ? v.height * 0.7 : 0.4 + Math.random() * 1.4), tz);
     const w = v.toWorld(o.x, o.z);
     audio.playAt(o.swat ? 'smg' : 'gunshot', w.x, w.z, 0.8);
     v.onShot(hit, hit ? dmg : 0, o.x, o.z);

@@ -41,3 +41,13 @@ describe('rival', () => {
     expect(snap.items.some((i) => i.id === 'blackjack')).toBe(true);
   });
 });
+
+describe('table dealers in saves', () => {
+  it('keeps whether a table has a dealer, and leaves old tables unmarked', async () => {
+    const { sanitizeSnapshot } = await import('../src/game/save');
+    const look = { name: 'X', signFont: 'bungee', signColor: 0, wallColor: 0, trimColor: 0 };
+    const item = (dl?: unknown) => ({ id: 'blackjack', tx: 20, tz: 30, rot: 0, level: 1, color: 0, dl });
+    const snap = sanitizeSnapshot({ look, layout: { width: 0, depth: 0 }, floors: 1, items: [item(true), item(false), item(), item('yes')], staff: [] }, ['bungee'], () => ({}) as never)!;
+    expect(snap.items.map((i) => i.dl)).toEqual([true, false, undefined, undefined]);
+  });
+});

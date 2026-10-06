@@ -142,7 +142,12 @@ export class ItemManager {
       const i = g.idx(x, z);
       const occ = floorLayer ? g.floorOcc[i] : g.occ[i];
       if (occ && occ !== ignore?.uid) return { ok: false, reason: 'That spot is taken' };
-      if (!floorLayer && g.wall[i]) return { ok: false, reason: 'There’s a wall there' };
+      // Walk-through gadgets (laser grids, metal detectors) need the floor clear, and nothing goes on top of them.
+      if (def.passable && g.occ[i] && g.occ[i] !== ignore?.uid) return { ok: false, reason: 'That spot is taken' };
+      if (def.passable && g.wall[i]) return { ok: false, reason: 'There’s a wall there' };
+      const under = g.floorOcc[i] ? this.byUid.get(g.floorOcc[i]) : undefined;
+      if (!floorLayer && under?.def.passable && under !== ignore) return { ok: false, reason: `The ${under.def.name} is in the way` };
+      if (!floorLayer && g.wall[i]) return { ok: false, reason: g.solidAt(i) ? 'There’s a wall there' : 'Keep the doorway clear' };
       if (!floorLayer && this.isReserved(floor, x, z)) {
         return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
       }
@@ -153,7 +158,7 @@ export class ItemManager {
     const walk = (x: number, z: number): boolean => {
       if (!g.inBounds(x, z)) return false;
       const i = g.idx(x, z);
-      if (newSet.has(i) || g.wall[i]) return false;
+      if (newSet.has(i) || g.solidAt(i)) return false;
       if (!g.isSidewalk(x, z) && !g.isDoor(x, z) && !g.isOwned(x, z)) return false;
       const o = g.occ[i];
       return o === 0 || o === ignoreUid;
@@ -198,13 +203,13 @@ export class ItemManager {
     const g = this.grid(floor);
     if (!g.isOwned(x, z)) return { ok: false, reason: 'Walls go inside your building' };
     const i = g.idx(x, z);
-    if (g.wall[i]) return { ok: false, reason: 'There’s already a wall there' };
+    if (g.wall[i]) return { ok: false, reason: g.solidAt(i) ? 'There’s already a wall there' : 'There’s a door there' };
     if (g.occ[i]) return { ok: false, reason: 'Something is standing there' };
     if (this.isReserved(floor, x, z)) return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
     const walk = (tx: number, tz: number): boolean => {
       if (!g.inBounds(tx, tz)) return false;
       const k = g.idx(tx, tz);
-      if (k === i || g.wall[k]) return false;
+      if (k === i || g.solidAt(k)) return false;
       if (!g.isSidewalk(tx, tz) && !g.isDoor(tx, tz) && !g.isOwned(tx, tz)) return false;
       return g.occ[k] === 0;
     };
@@ -226,6 +231,37 @@ export class ItemManager {
       });
       if (!ok) return { ok: false, reason: `That would wall off the ${it.def.name}` };
     }
+    return { ok: true };
+  }
+
+  /**
+   * Can a door hang on this tile? It must sit in a wall line (walls, or the building's outer
+   * wall, on both sides) and nothing may stand in the doorway. A wall already there is swapped out.
+   */
+  canDoor(floor: number, x: number, z: number): PlaceCheck {
+    const g = this.grid(floor);
+    if (!g.isOwned(x, z)) return { ok: false, reason: 'Doors go inside your building' };
+    const i = g.idx(x, z);
+    if (g.doorAt(x, z) >= 0) return { ok: false, reason: 'There’s already a door there' };
+    if (g.occ[i]) return { ok: false, reason: 'Something is standing there' };
+    if (this.isReserved(floor, x, z)) return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
+    if (!g.doorRun(x, z)) {
+      const two = g.doorPair([x - 1, z], [x, z]) || g.doorPair([x, z], [x + 1, z]) || g.doorPair([x, z - 1], [x, z]) || g.doorPair([x, z], [x, z + 1]);
+      return { ok: false, reason: two ? 'That gap is two tiles wide: switch the door to Double to fill it' : 'A door goes in a wall: put it between two walls' };
+    }
+    return { ok: true };
+  }
+
+  /** Can a double door hang across these two tiles (`a` west or north of `b`): in a wall, or a two-tile gap in one? */
+  canDoubleDoor(floor: number, a: [number, number], b: [number, number]): PlaceCheck {
+    const g = this.grid(floor);
+    for (const [x, z] of [a, b]) {
+      if (!g.isOwned(x, z)) return { ok: false, reason: 'Doors go inside your building' };
+      if (g.doorAt(x, z) >= 0) return { ok: false, reason: 'There’s already a door there' };
+      if (g.occ[g.idx(x, z)]) return { ok: false, reason: 'Something is standing there' };
+      if (this.isReserved(floor, x, z)) return { ok: false, reason: floor === 0 && z === DOOR_TILES[0][1] - 1 ? 'Keep the entrance clear' : 'Keep the elevator door clear' };
+    }
+    if (!g.doorPair(a, b)) return { ok: false, reason: 'A double door goes in a wall, or in a two-tile gap between walls' };
     return { ok: true };
   }
 
@@ -311,7 +347,7 @@ export class ItemManager {
     const reach = g0.flood((x, z) => {
       if (!g0.inBounds(x, z)) return false;
       const i = g0.idx(x, z);
-      if (block.has(i) || g0.wall[i]) return false;
+      if (block.has(i) || g0.solidAt(i)) return false;
       if (!g0.isSidewalk(x, z) && !g0.isDoor(x, z) && !g0.isOwned(x, z)) return false;
       const o = g0.occ[i];
       return o === 0 || o === own0;
@@ -521,6 +557,8 @@ export class ItemManager {
       it.pendingXp = Math.max(0, Math.min(5000, Number(s.pxp) || 0));
       loadSetup(it, s.setup);
       it.dirty = s.dirty === true;
+      // Tables from before dealers were hired come with one.
+      if (it.needsDealer) it.dealer = s.dl !== false;
       if (it.level > 1 || it.label || s.setup) it.rebuildModel();
       it.stats = Object.assign({ plays: 0, wagered: 0, paid: 0, income: 0, bigWins: 0 }, s.stats);
       if (s.broken) it.broken = true;

@@ -11,16 +11,17 @@ import {
 } from '../world/grid';
 import { FloorRenderer } from '../world/floor';
 import { Building, SIGN_FONTS, STORY_DROP, type CasinoLook } from '../world/building';
-import { Street, type StreetLot } from '../world/street';
-import { MAX_DEPTH_STEPS, openGround } from '../world/city';
-import { MilitaryBase } from '../world/militaryBase';
+import { NPC_OWNER, Street, type StreetLot } from '../world/street';
+import { MAX_DEPTH_STEPS, avenueMid, openGround, streetZ } from '../world/city';
+import { MilitaryBase, armoryPayroll, armoryRefillLeft } from '../world/militaryBase';
+import { VIEW, type ViewDist, viewScale } from '../world/viewDistance';
 import { buildCar, carDef } from '../world/vehicles';
 import { HEAT as POLICE_HEAT } from '../world/police';
 import { Sky } from '../world/sky';
 import { CharacterModel } from '../entities/characterModel';
 import { WaypointBeacon } from '../world/waypoint';
 import { type ReticleOpts, sanitizeReticle } from '../ui/reticle';
-import { WALL_CUT, syncWallCut } from '../world/walls';
+import { DOOR_TYPES, WALL_CUT, doorType, doorsInEncoded, syncWallCut } from '../world/walls';
 import { type CosmeticState, cosmetic, emptyCosmetics, equipped, sanitizeCosmetics } from '../cosmetics/catalog';
 import { PlayerFx } from '../cosmetics/playerFx';
 import {
@@ -36,11 +37,12 @@ import { ITEMS, ITEM_BY_ID, type ItemDef, type Site, itemDef, soldAt, zoneBlock 
 import type { PlacedItem, ItemHost, SeatUser } from '../items/placedItem';
 import type { Outcome } from '../items/types';
 import { Customer, type CustomerType, spawnPoint } from '../entities/customer';
-import { Worker, roleFor, DOOR_POSTS, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
+import { Worker, roleFor, DOOR_POSTS, DEALER_WAGE, MAX_DOOR_GUARDS, type WorkerRole } from '../entities/staff';
 import { Player } from '../entities/player';
 import { type Appearance, defaultAppearance, sanitizeAppearance } from '../entities/appearance';
 import { Floaters } from '../ui/floaters';
 import type { MoneyReason, World } from './world';
+import { LOAN_CALL, LOAN_RATE, accrue, canBorrow, cleanLoan, dailyReward, dailyStatus, dayKey, loanLimit } from './social';
 import { BuildController } from './build';
 import { ACTIVE_OBJECTIVES, HOTEL_OBJECTIVES, OBJECTIVES, type LifetimeStats, type Objective, type ObjectiveView, emptyStats, xpForLevel } from './objectives';
 import { type RoomSetup, changeCost, sameSetup } from '../hotel/rooms';
@@ -53,9 +55,14 @@ import {
   garageTier,
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
+import { BUNKER_Y } from '../world/bunker';
 import { GunPlay } from './gunplay';
-import { SLOTS, autoSlot } from './guns';
+import { FISTS, SLOTS, autoSlot, hasWeapon } from './guns';
 import { Combat, ROLL_SPEED, ROLL_TIME } from './combat';
+import { Heist, type HouseTarget, heistReachable, npcHouseSnapshot } from './heist';
+import {
+  type HeistRecord, OFFLINE_SHARE, ONLINE_SHARE, RECORD_TTL_MS, applyRobbery, cleanRecords, houseCooldown, npcRefillLeft, npcStash, shareTake, waitText,
+} from './heistRules';
 import { Driving, type GarageState, emptyGarage, sanitizeGarage, shotDamage } from './driving';
 import { type Activity, activityFor, PRACTICE_LABEL, punchPay } from './activities';
 
@@ -146,6 +153,12 @@ export interface GameEvents {
   perfHint: { fps: number };
   /** You started or stopped doing something (sitting, punching the bag…). */
   activity: void;
+  /** A heist started, ended or changed (alarm, vault, loot). */
+  heist: void;
+  /** Open a heist minigame: the vault, or a locked door. */
+  heistGame: { kind: 'vault' } | { kind: 'door'; floor: number; x: number; z: number; type: number };
+  /** At another player's front door: ask before breaking in. */
+  heistAsk: StreetLot;
 }
 
 export interface Settings {
@@ -160,6 +173,10 @@ export interface Settings {
   lookSens?: number;
   /** Your crosshair (screen, scope glass and full-screen scope). */
   reticle?: ReticleOpts;
+  /** How far the world is drawn in detail. */
+  viewDist?: ViewDist;
+  /** Hide tab: the browser tab looks like an untitled document. */
+  hideTab?: boolean;
 }
 
 const DAY_SECONDS = 300;
@@ -309,6 +326,17 @@ export class Game implements World, ItemHost {
   playerHotel: ((pid: string, bid: string) => CasinoSnapshot | null) | null = null;
   /** Is this player keeping you out right now? (set by the net layer) */
   bannedBy: ((pid: string) => number) | null = null;
+  /** Another player's house as a heist target: floor plan, vault, online (set by the net layer). */
+  houseTarget: ((pid: string) => HouseTarget | null) | null = null;
+  /** Every heist record the street knows of (set by the net layer), for the shared cooldown. */
+  heistRecords: (() => HeistRecord[]) | null = null;
+  /** The break-in you're in the middle of. */
+  heist: Heist | null = null;
+  /** Where the burglar last stood legitimately (a locked door can't be skipped by any route). */
+  private heistSafe: { floor: number; x: number; z: number; tx: number; tz: number } | null = null;
+  private heistBlockT = 0;
+  /** Players breaking into your house right now (set by the net layer). */
+  intruders: string[] = [];
   /** Other players standing in the loaded casino / on the street (set by the net layer). */
   remotes: RemoteView[] = [];
   /** Everyone online, for the city map. */
@@ -320,7 +348,17 @@ export class Game implements World, ItemHost {
   private buzz = 0;
   private autosaveT = 30;
   private objectiveT = 0;
-  private interactTarget: { kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void } | null = null;
+  /** Riding in another player's car (set by the multiplayer layer): is it open-topped, and how to get out. */
+  riding: { open: boolean; leave: () => void } | null = null;
+  /** Another player's car you could hop into right now (set by the multiplayer layer). */
+  rideTarget: (() => { label: string; d: number; act: () => void } | null) | null = null;
+  private interactTarget: {
+    kind: string; label: string; anchor: () => THREE.Vector3; hold: boolean; act: () => void;
+    /** The key that does it, if not Space (getting out of a car is E: Space is the handbrake). */
+    key?: 'KeyE';
+    /** Runs every frame Space is held (instead of a hold-to-finish ring). */
+    whileHeld?: (dt: number) => void;
+  } | null = null;
   private holdT = 0;
   private lastInteractKey = '';
   private moneyHistoryT = 0;
@@ -346,6 +384,8 @@ export class Game implements World, ItemHost {
   private hoverT = 0;
   private hoverUid = -1;
   private indoorT = 1;
+  /** Blends the lighting to the bunker's (0 up top, 1 underground). */
+  private underT = 0;
   /** The sky (and the light it casts), driven by the clock. */
   readonly sky = new Sky();
   /** Is the player inside the loaded casino (not out on the street)? */
@@ -370,7 +410,7 @@ export class Game implements World, ItemHost {
     this.renderer = new Renderer(container, settings.quality);
     this.input = new Input(this.renderer.renderer.domElement);
     const scene = this.renderer.scene;
-    this.levels = [new Level(0, this.layout)];
+    this.levels = [this.makeLevel(0)];
     this.building = new Building(this.levels[0].grid, {
       name: 'Lucky Star Casino', signFont: 'bungee', signColor: 0xff3fa4, wallColor: 0x3a1d4d, trimColor: 0x2fe6ff,
     });
@@ -382,12 +422,28 @@ export class Game implements World, ItemHost {
     this.build = new BuildController(this);
     this.gunplay = new GunPlay(this);
     this.combat = new Combat(this);
+    this.street.crowd.onPunch = (p, dmg) => {
+      const w = this.street.globalToWorld(p.x, p.z);
+      audio.playAt('whoosh', w.x, w.z, 0.6);
+      return this.combat.meleeHit(dmg, false, 'world', 'a street brawler', w.x, w.z);
+    };
+    this.street.crowd.onTell = (p, text) => {
+      const w = this.street.globalToWorld(p.x, p.z);
+      this.floaters.text(new THREE.Vector3(w.x, p.model.height + 0.5, w.z), text, text === '!' ? 'bad' : '', text === '!' ? 0.55 : 1.6, 0.3);
+    };
     this.drive = new Driving(this);
     this.street.city.group.add(this.drive.group, this.beacon.group);
     this.base = this.makeBase();
     this.street.city.group.add(this.base.group);
     this.street.outskirts.extraBlock = (x, z) => this.base.blocked(x, z);
+    // Out on the land you stand on the ground (and so does the camera, the dust and the smoke).
+    // Down in the bunker under Fort Mojave the floor is far below the desert.
+    const ground = (x: number, z: number) => (this.underground ? BUNKER_Y : this.street.groundY(x, z));
+    this.player.groundFn = ground;
+    this.cam.groundFn = (x, z) => ground(x, z) + this.streetDrop;
+    this.effects.ground = ground;
     CharacterModel.crude = settings.quality === 'ult';
+    this.setViewDistance(settings.viewDist ?? 'normal');
     this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : settings.quality === 'low' ? 14 : 8;
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
@@ -411,6 +467,9 @@ export class Game implements World, ItemHost {
         return {
           x: pg.x, z: pg.z, exposed: this.combat.exposed && this.combat.ko <= 0, height: this.player.model.height,
           car: car ? { x: car.x, z: car.z, uid: car.uid, armor: car.armor } : null,
+          speed: car ? Math.abs(car.speed) : this.player.speed,
+          under: this.underground,
+          ko: this.combat.ko > 0,
         };
       },
       lineOfSight: (ax, az, bx, bz) => st().police.lineOfSight(ax, az, bx, bz),
@@ -430,6 +489,14 @@ export class Game implements World, ItemHost {
         const b = st().globalToWorld(bx, bz);
         this.gunplay.enemyTracer(new THREE.Vector3(a.x, ay, a.z), new THREE.Vector3(b.x, by, b.z));
       },
+      blast: (x, z, radius, power, size) => {
+        const w = st().globalToWorld(x, z);
+        this.effects.explosion(w.x, 0.8, w.z, size);
+        audio.playAt('explosion', w.x, w.z, 1.4);
+        const pg = this.drive.driving ?? st().worldToGlobal(this.player.x, this.player.z);
+        this.cam.shake(Math.max(0.04, 0.4 - Math.hypot(pg.x - x, pg.z - z) / 50));
+        this.drive.blast(x, z, radius, power, false);
+      },
       spawnVehicle: (id, x, z, yaw) => {
         const def = carDef(id);
         if (!def || this.drive.vehicles.some((v) => Math.hypot(v.x - x, v.z - z) < 4)) return null;
@@ -441,10 +508,34 @@ export class Game implements World, ItemHost {
       alarm: (first) => st().police.crime(first ? POLICE_HEAT.base : 0.04),
       notify: (text, kind) => this.notify(text, kind),
       allies: () => this.mapPlayers.filter((m) => !m.inside && !m.ko),
+      ownsGun: (id) => hasWeapon(this.guns.owned, id),
     });
   }
 
   // ------------------------------------------------------------------ floors
+
+  /** A floor, with its doors wired to open for whoever walks up to them. */
+  private makeLevel(index: number): Level {
+    const l = new Level(index, this.layout);
+    l.floor.walls.doorOpen = (x, z) => this.doorOpenAt(index, x, z);
+    return l;
+  }
+
+  /**
+   * Does the door on this tile swing open? For anyone close to it: you, guests, staff, other
+   * players. A burglar has to crack a locked door first (guards always have the keys).
+   */
+  private doorOpenAt(floor: number, x: number, z: number): boolean {
+    const cx = x + 0.5;
+    const cz = z + 0.5;
+    const near = (px: number, pz: number) => Math.abs(px - cx) < 1.45 && Math.abs(pz - cz) < 1.45;
+    const p = this.player;
+    if (p.floor === floor && near(p.x, p.z) && (!this.heist || this.heist.doorOpenFor(floor, x, z))) return true;
+    for (const w of this.workers) if (w.floor === floor && near(w.x, w.z)) return true;
+    for (const c of this.customers) if (c.floor === floor && !c.gone && near(c.x, c.z)) return true;
+    if (floor === this.viewFloor) for (const r of this.remotes) if (near(r.x, r.z)) return true;
+    return !!this.heist?.guardNear(floor, cx, cz);
+  }
 
   get grid(): Grid {
     return this.levels[0].grid;
@@ -475,7 +566,7 @@ export class Game implements World, ItemHost {
       l.floor.group.removeFromParent();
     }
     while (this.levels.length < n) {
-      const l = new Level(this.levels.length, this.layout);
+      const l = this.makeLevel(this.levels.length);
       this.levels.push(l);
       this.floorGroup.add(l.floor.group);
       l.floor.rebuild();
@@ -508,6 +599,7 @@ export class Game implements World, ItemHost {
   }
 
   newGame(opts: { name: string; look: CasinoLook; player: Appearance; playerName: string }): void {
+    this.endHeist(false);
     this.state = 'playing';
     this.visit = null;
     this.money = START_MONEY;
@@ -579,6 +671,7 @@ export class Game implements World, ItemHost {
 
   /** Decorated showroom for the title screen. */
   loadDemo(): void {
+    this.endHeist(false);
     this.state = 'title';
     this.visit = null;
     this.layout = { width: 2, depth: 2 };
@@ -691,6 +784,192 @@ export class Game implements World, ItemHost {
     this.events.emit('rebirth', n);
     this.saveNow();
     return true;
+  }
+
+  // ------------------------------------------------------------------ bank loan, daily reward, gifts
+
+  /** What you owe the bank right now. */
+  get loanOwed(): number {
+    return cleanLoan(this.net.loan);
+  }
+
+  /** The bank's credit line: grows with your casino's level and your rebirths. */
+  get loanLine(): number {
+    return loanLimit(this.homeLevel, this.rebirths);
+  }
+
+  /** Why you can't use the bank right now (null = go ahead). */
+  loanBlock(): string | null {
+    if (this.site === 'hotel') return 'Loans go to and from your casino’s bank. Leave the hotel first.';
+    return null;
+  }
+
+  /** Borrow from the bank: the cash lands in your casino's bank, interest runs while you play. */
+  borrow(amount: number): boolean {
+    const a = Math.floor(Math.min(amount, canBorrow(this.loanOwed, this.homeLevel, this.rebirths), Math.max(0, MAX_BANK - this.money)));
+    if (this.loanBlock() || a < 100) {
+      audio.play('error');
+      this.notify(this.loanBlock() ?? 'The bank won’t lend you that much more.', 'bad');
+      return false;
+    }
+    this.net.loan = this.loanOwed + a;
+    this.money += a;
+    this.events.emit('money', { money: this.money, delta: a });
+    audio.play('cash');
+    this.notify(`🏦 The bank lent you ${formatMoney(a)}. Interest runs at ${Math.round(LOAN_RATE * 100)}% a day while you play.`, 'money');
+    this.saveNow();
+    return true;
+  }
+
+  /** Pay back some (or all) of the loan from your casino's bank. */
+  repayLoan(amount: number): boolean {
+    const owed = this.loanOwed;
+    const a = Math.min(Math.ceil(owed), Math.floor(amount), Math.floor(Math.max(0, this.money)));
+    if (this.loanBlock() || a <= 0) {
+      audio.play('error');
+      this.notify(this.loanBlock() ?? (owed > 0 ? 'Nothing in the bank to pay with.' : 'You don’t owe the bank anything.'), 'bad');
+      return false;
+    }
+    this.spend(a, 'loan');
+    const left = owed - a;
+    this.net.loan = left >= 1 ? left : 0;
+    audio.play(left >= 1 ? 'cash' : 'jackpot');
+    if (left < 1) this.effects.confetti(this.player.x, 2, this.player.z, 80);
+    this.notify(left >= 1 ? `🏦 Paid back ${formatMoney(a)}. You still owe ${formatMoney(left)}.` : '🏦 Loan paid off. You’re debt free!', 'good');
+    this.saveNow();
+    return true;
+  }
+
+  private loanWarned = 0;
+  /** Seconds spent dealing tables yourself (a little XP every few seconds). */
+  private dealXp = 0;
+
+  /** Interest while you play; owe too much and the bank takes it back out of your casino. */
+  private tickLoan(sim: number): void {
+    const owed = this.loanOwed;
+    if (!owed) return;
+    const now = accrue(owed, sim * 1000);
+    this.net.loan = now;
+    const line = this.loanLine;
+    if (now > line * LOAN_CALL && this.site !== 'hotel') {
+      this.money -= Math.ceil(now);
+      this.net.loan = 0;
+      this.loanWarned = 0;
+      audio.play('bust');
+      this.notify(`🏦 The bank called in your loan and took ${formatMoney(now)} from your casino.${this.money < 0 ? ' You’re in the red!' : ''}`, 'bad');
+      this.events.emit('money', { money: this.money, delta: -Math.ceil(now) });
+      this.saveNow();
+      return;
+    }
+    // Warn once at the credit line and once close to the call.
+    const level = now > line * (LOAN_CALL - 0.15) ? 2 : now > line ? 1 : 0;
+    if (level > this.loanWarned) {
+      this.loanWarned = level;
+      this.notify(level === 2 ? `🏦 Final warning: pay the bank back now or they call in the loan at ${formatMoney(line * LOAN_CALL)}.` : '🏦 Interest has pushed your loan past your credit line. Pay some back soon.', 'bad');
+    } else if (level < this.loanWarned) this.loanWarned = level;
+  }
+
+  /** Today's login reward: can you claim it, which day of the streak, and how much. */
+  dailyInfo(now = new Date()): { claimable: boolean; streak: number; reward: number } {
+    const st = dailyStatus(this.net.daily, now);
+    return { ...st, reward: dailyReward(st.streak, this.homeLevel) };
+  }
+
+  /** Claim today's login reward into your casino's bank (held for later if you're at the hotel). */
+  claimDaily(now = new Date()): number {
+    const d = this.dailyInfo(now);
+    if (!d.claimable) return 0;
+    this.net.daily = { day: dayKey(now), streak: d.streak };
+    const where = this.creditCasino(d.reward, 'reward');
+    if (where && typeof window !== 'undefined') window.setTimeout(() => this.notify(where, 'info'), 1200);
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2, this.player.z, d.streak % 7 === 0 ? 200 : 90, d.streak % 7 === 0 ? 1.3 : 1);
+    this.saveNow();
+    return d.reward;
+  }
+
+  /** Your casino's bank, wherever you are (at the hotel the hotel's own bank is the live one). */
+  get casinoCash(): number {
+    return this.site === 'hotel' ? this.parked?.home.money ?? 0 : this.money;
+  }
+
+  /** Pay out of your casino's bank, wherever you are. */
+  spendCasino(amount: number, reason: MoneyReason): void {
+    if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money - amount);
+    else this.spend(amount, reason);
+  }
+
+  /**
+   * Money for your casino's bank from anywhere (gifts, rewards). None of it is lost to the bank
+   * limit: what doesn't fit goes into your house vault, and what doesn't fit there waits and
+   * goes in as the bank has room. Says where it went ('' = all in the bank).
+   */
+  creditCasino(amount: number, reason: MoneyReason): string {
+    amount = Math.round(amount);
+    if (amount <= 0) return '';
+    const now = Math.min(amount, Math.max(0, MAX_BANK - this.casinoCash));
+    if (now > 0) {
+      if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money + now);
+      else this.addMoney(now, reason, this.player.model.root.position.clone().setY(2.2));
+    }
+    let rest = amount - now;
+    const notes: string[] = [];
+    const h = this.house;
+    if (rest > 0 && h) {
+      const fit = Math.max(0, Math.min(rest, (vaultTier(h.tier)?.cap ?? 0) - h.vault));
+      if (fit > 0) {
+        h.vault += fit;
+        addLog(h, this.day, reason === 'gift' ? 'Gift (casino bank full)' : 'Reward (casino bank full)', fit);
+        rest -= fit;
+        notes.push(`${formatMoney(fit)} went into your house vault`);
+      }
+    }
+    if (rest > 0) {
+      this.net.giftHeld = (this.net.giftHeld ?? 0) + rest;
+      notes.push(`${formatMoney(rest)} waits until your casino’s bank has room`);
+    }
+    return notes.length ? `Your casino’s bank is full: ${notes.join(', and ')}.` : '';
+  }
+
+  /** Gift and reward cash that waited for room in your casino's bank. */
+  releaseHeld(): void {
+    const held = this.net.giftHeld ?? 0;
+    if (held <= 0 || this.state !== 'playing') return;
+    const now = Math.min(held, Math.max(0, MAX_BANK - this.casinoCash));
+    if (now < 1) return;
+    this.net.giftHeld = Math.max(0, Math.round(held - now));
+    if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money + now);
+    else this.addMoney(Math.round(now), 'gift');
+    this.notify(`🎁 ${formatMoney(now)} from gifts and rewards went into your casino’s bank.`, 'money');
+  }
+
+  /** Open a gift: cash into the bank, a luxury item into your collection (or its price, if you have it). */
+  openGift(from: string, cash: number, item: string | undefined, note: string): void {
+    let total = cash;
+    let got = '';
+    const c = item ? cosmetic(item) : undefined;
+    if (c) {
+      if (this.cosmetics.owned.includes(c.id)) total += c.price;
+      else {
+        this.cosmetics = { owned: [...this.cosmetics.owned, c.id], on: [...this.cosmetics.on, c.id] };
+        this.applyCosmetics();
+        got = `${c.icon} ${c.name}`;
+      }
+    }
+    const where = total > 0 ? this.creditCasino(total, 'gift') : '';
+    this.stats.giftsReceived = (this.stats.giftsReceived ?? 0) + 1;
+    audio.play('jackpot');
+    this.effects.confetti(this.player.x, 2.2, this.player.z, 120);
+    const what = [total > 0 ? formatMoney(total) : '', got].filter(Boolean).join(' and ');
+    const bank = total > 0 && this.site === 'hotel' && !where ? ' It’s in your casino’s bank.' : '';
+    this.notify(`🎁 ${from} sent you ${what}!${note ? ` “${note}”` : ''}${bank}${where ? ` ${where}` : ''}`, 'money');
+    this.saveNow();
+  }
+
+  /** Everything you're worth: both banks and the vault, minus what you owe. */
+  get netWorth(): number {
+    const casino = this.site === 'hotel' ? this.parked?.home.money ?? 0 : this.money;
+    return Math.round(casino + this.hotelMoney + (this.house?.vault ?? 0) - this.loanOwed);
   }
 
   // ------------------------------------------------------------------ hotel
@@ -1060,8 +1339,11 @@ export class Game implements World, ItemHost {
     return true;
   }
 
-  /** The house as it looks from the street. */
-  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number } | null {
+  /**
+   * The house as it looks from the street, plus what a burglar sizes up: the vault's tier and
+   * contents, and the last robbery (so everyone shares the cooldown).
+   */
+  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number; vt: number; vm: number; rb: HeistRecord | null } | null {
     const h = this.house;
     if (!h) return null;
     const live = this.site === 'house';
@@ -1070,6 +1352,9 @@ export class Game implements World, ItemHost {
       width: live ? this.layout.width : h.snap.layout.width,
       depth: live ? this.layout.depth : h.snap.layout.depth,
       floors: live ? this.floors : h.snap.floors,
+      vt: h.tier,
+      vm: Math.round(h.vault),
+      rb: h.robbed ?? null,
     };
   }
 
@@ -1172,9 +1457,12 @@ export class Game implements World, ItemHost {
     if (!h) return 0;
     const live = this.inHouse;
     const staff = live ? this.workers.map((w) => w.role) : h.snap.staff.map((s) => s.role);
-    const gadgets = live
+    const doors = live
+      ? this.levels.reduce((a, l) => a + l.grid.doors().reduce((b, d) => b + (DOOR_TYPES[d.type]?.security ?? 0), 0), 0)
+      : (h.snap.walls ?? []).reduce((a, w) => a + doorsInEncoded(w).reduce((b, t) => b + (DOOR_TYPES[t]?.security ?? 0), 0), 0);
+    const gadgets = doors + (live
       ? this.items.items.reduce((a, i) => a + (i.def.security ?? 0), 0)
-      : h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.security ?? 0), 0);
+      : h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.security ?? 0), 0));
     return securityRating(h.tier, staff.filter((r) => r === 'security').length, staff.filter((r) => r === 'doorman').length, gadgets);
   }
 
@@ -1310,6 +1598,159 @@ export class Game implements World, ItemHost {
     return moved;
   }
 
+  // ------------------------------------------------------------------ heists
+
+  /** Fighting indoors: in the middle of a heist, or defending your house from one. */
+  get indoorFight(): boolean {
+    if (this.heist && !this.heist.over && this.inside) return true;
+    return this.inHouse && this.intruders.length > 0;
+  }
+
+  /** The latest robbery of a house and when it can be robbed again (shared by everyone). */
+  houseCooldownOf(pid: string): { last: HeistRecord | null; until: number } {
+    return houseCooldown(pid, [...(this.heistRecords?.() ?? []), ...cleanRecords(this.net.heists ?? [])]);
+  }
+
+  /** Uncle Sal's floor plan (made once a session). */
+  private npcSnap: CasinoSnapshot | null = null;
+
+  /** Uncle Sal's house as a heist target: his stash when it's full, nothing while it refills. */
+  private npcTarget(): HouseTarget {
+    this.npcSnap ??= npcHouseSnapshot(Math.max(0, FLOOR_STYLES.findIndex((f) => f.id === 'parquet')));
+    const full = npcStash(this.homeLevel);
+    const ready = npcRefillLeft(this.net.npcRobbed) <= 0;
+    return {
+      pid: NPC_OWNER, owner: 'Uncle Sal', snap: this.npcSnap, vault: ready ? full : 0, tier: 1, online: false, npc: true, share: 1,
+      fineCap: Math.round(full * 0.2),
+    };
+  }
+
+  /** Another player's house, or Uncle Sal's, as a heist target. */
+  heistTarget(pid: string): HouseTarget | null {
+    return pid === NPC_OWNER ? this.npcTarget() : this.houseTarget?.(pid) ?? null;
+  }
+
+  /** Why you can't break into this house right now (null = go ahead). */
+  heistBlock(lot: StreetLot): string | null {
+    const pid = lot.houseOf;
+    if (!pid || pid === 'me') return null;
+    const now = Date.now();
+    const ban = this.bannedBy?.(pid) ?? 0;
+    if (ban > now) return `${lot.owner} blacklisted you: their bodyguards won’t let you near the house for ${waitText(ban - now)}.`;
+    const lock = this.net.heistLock?.[pid] ?? 0;
+    if (lock > now) return `${lot.owner}’s guards remember your face. Try this house again in ${waitText(lock - now)}.`;
+    const refill = pid === NPC_OWNER ? npcRefillLeft(this.net.npcRobbed) : 0;
+    if (refill > 0) return `🕒 Uncle Sal is still restocking after your last visit. Come back in ${waitText(refill)}.`;
+    const t = this.heistTarget(pid);
+    if (!t) return `${lot.owner}’s house is locked up tight right now.`;
+    // No vault, or an empty one: you can still break in (there's just nothing to take).
+    const cd = this.houseCooldownOf(pid);
+    if (cd.until > now && cd.last) {
+      const who = cd.last.by === this.player.name ? 'You' : cd.last.by;
+      return `🚨 ${who} robbed this house ${waitText(now - cd.last.t)} ago. It’s on high alert for another ${waitText(cd.until - now)}.`;
+    }
+    if (this.drive.driving) return 'Get out of the car first.';
+    return null;
+  }
+
+  /** What breaking into this house could be worth: the target and the most a perfect run takes. */
+  heistPreview(lot: StreetLot): { target: HouseTarget; max: number; safes: number } | null {
+    const t = lot.houseOf && lot.houseOf !== 'me' ? this.heistTarget(lot.houseOf) : null;
+    if (!t) return null;
+    const safes = t.snap.items.filter((i) => i.id === 'safe').length;
+    return { target: t, max: shareTake(t.vault, t.share ?? (t.online ? ONLINE_SHARE : OFFLINE_SHARE), 1, safes), safes };
+  }
+
+  /**
+   * During a break-in, a locked door is a wall until you crack it, however you move: walking,
+   * rolling, getting up from a sofa on the far side of it, or being nudged out of something.
+   * If you turn up somewhere you couldn't have walked to, you're put back where you were.
+   */
+  private guardHeistDoors(dt: number): void {
+    const h = this.heist;
+    const p = this.player;
+    this.heistBlockT = Math.max(0, this.heistBlockT - dt);
+    if (!h || h.over || !this.inside || this.combat.ko > 0) {
+      this.heistSafe = null;
+      return;
+    }
+    // Sitting: the seat can be on furniture; check where you end up once you stand.
+    if (p.seat || this.activity) return;
+    const tx = Math.floor(p.x);
+    const tz = Math.floor(p.z);
+    const s = this.heistSafe;
+    if (!s || s.floor !== p.floor) {
+      this.heistSafe = { floor: p.floor, x: p.x, z: p.z, tx, tz };
+      return;
+    }
+    // Out on the front step or the sidewalk there's nothing locked; coming in from there,
+    // you come in through the front door.
+    const g = this.gridAt(p.floor);
+    const [ex, ez] = g.entries[0] ?? [s.tx, s.tz];
+    const from: [number, number] = g.isOwned(s.tx, s.tz) || p.floor > 0 ? [s.tx, s.tz] : [ex, ez - 1];
+    if (!g.isOwned(tx, tz) || (s.tx === tx && s.tz === tz) || heistReachable(g, from[0], from[1], tx, tz, (x, z) => h.doorOpenFor(p.floor, x, z))) {
+      s.x = p.x;
+      s.z = p.z;
+      s.tx = tx;
+      s.tz = tz;
+      return;
+    }
+    p.x = s.x;
+    p.z = s.z;
+    p.halt();
+    if (this.heistBlockT <= 0) {
+      this.heistBlockT = 3;
+      audio.play('error');
+      this.notify('🔒 That door is locked: crack it first (stand at it and press Space).', 'bad');
+    }
+  }
+
+  /** The heist is over: clean up, and if you were thrown out, land on the pavement outside. */
+  endHeist(kick: boolean): void {
+    const h = this.heist;
+    if (!h) return;
+    h.over = true;
+    this.heist = null;
+    h.dispose();
+    this.events.emit('heist', undefined);
+    if (kick && this.visit) this.returnHome(true);
+  }
+
+  /**
+   * Robberies of your house that burglars published: each comes out of your vault once (never
+   * more than half of it, never two in quick succession).
+   */
+  applyRobberies(recs: HeistRecord[]): void {
+    const h = this.house;
+    if (!h || !recs.length) return;
+    const seen = (this.net.heistSeen ??= {});
+    let changed = false;
+    for (const rec of [...recs].sort((a, b) => a.t - b.t)) {
+      if (seen[rec.i]) continue;
+      seen[rec.i] = rec.t;
+      changed = true;
+      const take = applyRobbery(h.vault, rec, h.robbed?.t ?? 0);
+      if (take <= 0) continue;
+      h.vault -= take;
+      h.robbed = { ...rec, a: take };
+      addLog(h, this.day, `Robbed by ${rec.by}`, -take);
+      this.stats.robbed = (this.stats.robbed ?? 0) + 1;
+      audio.play('alarm');
+      this.notify(`💸 ${rec.by} broke into your house and robbed ${formatMoney(take)} from your vault! Guards, lasers, cameras and locked doors make the next one harder.`, 'bad');
+      this.events.emit('house', undefined);
+    }
+    // Remember applied robberies longer than anyone publishes them, so none is taken twice.
+    const old = Date.now() - RECORD_TTL_MS - 2 * 86400_000;
+    for (const [k, t] of Object.entries(seen)) if (t < old) delete seen[k];
+    if (changed) this.requestSave();
+  }
+
+  /** Your house's floor plan for burglars (published with your lot). */
+  houseSnapshot(): CasinoSnapshot | null {
+    this.captureHouse();
+    return this.house ? (JSON.parse(JSON.stringify(this.house.snap)) as CasinoSnapshot) : null;
+  }
+
   // ------------------------------------------------------------------ guns
 
   /** Buy a gun at the gun shop (from the cash you have on you). It goes straight into your hand. */
@@ -1366,13 +1807,25 @@ export class Game implements World, ItemHost {
     this.equipGun(this.guns.equipped === id ? null : id);
   }
 
+  private meleeHinted = false;
+
+  /** Step into a punch or a swing (a little lunge the way you face). */
+  lunge(yaw: number, dist: number): void {
+    if (this.drive.driving || this.player.seat || this.combat.rolling) return;
+    this.player.shove(Math.sin(yaw) * dist, Math.cos(yaw) * dist, this.playerWalk);
+  }
+
   /** Draw a gun you own, or holster (null). */
   equipGun(id: string | null): void {
-    if (id && !this.guns.owned.includes(id)) return;
+    if (id && !hasWeapon(this.guns.owned, id)) return;
     // Switching weapons drops whatever the last one was doing (a reload, a burst, a charge).
     if (id !== this.guns.equipped) this.gunplay.switched();
     this.guns = { ...this.guns, equipped: id };
     audio.play(id ? 'reload' : 'click');
+    if (id && gunDef(id)?.melee && !this.meleeHinted) {
+      this.meleeHinted = true;
+      this.notify('👊 Tap to jab (3-hit combos), hold to wind up a heavy blow, hold right-click (AIM on touch) to block. Block just as a hit lands to PARRY: they’re stunned and your next hit counts double.', 'info');
+    }
     this.events.emit('guns', undefined);
     this.requestSave();
   }
@@ -1450,7 +1903,7 @@ export class Game implements World, ItemHost {
     if (hi) {
       lots.push({
         id: 'house', kind: 'house', houseOf: 'me', owner: this.player.name, order: 0, online: true,
-        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '', ownGarage: true },
+        info: { look: hi.look, width: hi.width, depth: hi.depth, floors: hi.floors, style: 'house', tagline: '', ownGarage: true, garage: garageTier(this.house?.garage ?? 0)?.depth ?? 0 },
       });
     }
     this.street.setLots(lots);
@@ -1487,6 +1940,7 @@ export class Game implements World, ItemHost {
     if (lot.kind === 'rival') return generateRival(this.rival);
     if (lot.kind === 'player') return this.playerLot?.(lot.id) ?? null;
     if (lot.kind === 'hotel' && lot.hotelOf) return this.playerHotel?.(lot.hotelOf, lot.id.split('hotel:')[1] ?? '') ?? null;
+    if (lot.kind === 'house' && lot.houseOf && lot.houseOf !== 'me') return this.heistTarget(lot.houseOf)?.snap ?? null;
     return null;
   }
 
@@ -1500,7 +1954,7 @@ export class Game implements World, ItemHost {
       if (until > Date.now()) return `${lot.owner} blacklisted you. Try again in ${Math.ceil((until - Date.now()) / 60000)} min.`;
       if (!this.playerLot?.(lot.id)) return `${lot.info.look.name} is closed right now.`;
     }
-    if (lot.kind === 'house' && lot.houseOf !== 'me') return `${lot.owner}'s bodyguards won’t let you in: it’s a private home.`;
+    if (lot.kind === 'house' && lot.houseOf !== 'me') return this.heistBlock(lot);
     if (lot.kind === 'filler' || lot.kind === 'shop') return 'You can’t go in there.';
     if (lot.kind === 'hotel' && lot.hotelOf && lot.hotelOf !== 'me') {
       const until = this.bannedBy?.(lot.hotelOf) ?? 0;
@@ -1510,13 +1964,17 @@ export class Game implements World, ItemHost {
     return null;
   }
 
-  /** Walk through another casino's door (or back through your own). */
-  enterLot(lot: StreetLot): boolean {
+  /**
+   * Walk through another casino's door (or back through your own). Another player's house
+   * only opens for a break-in (`heist`): that's a choice you make at the door.
+   */
+  enterLot(lot: StreetLot, heist = false): boolean {
     if (this.state !== 'playing' || lot.id === this.street.activeId) return false;
-    // Somebody else's home is never open to you, whatever the route in.
-    if (lot.kind === 'house' && (lot.houseOf !== 'me' || lot.id !== 'house')) {
+    const robbing = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
+    if (robbing && !heist) {
+      const block = this.entryBlock(lot);
       audio.play('error');
-      this.notify(`${lot.owner}'s bodyguards won’t let you in: it’s a private home.`, 'bad');
+      this.notify(block ?? `🦹 It’s ${lot.owner}’s private home. Stand at the door and press Space to break in.`, 'bad');
       return false;
     }
     if (lot.hotelOf === 'me' && this.hotel) {
@@ -1558,14 +2016,30 @@ export class Game implements World, ItemHost {
     this.visit = { lot, home, away, rate, net: 0, hands: 0 };
     this.build.cancel(false);
     this.select(null);
-    this.loadCasino(snap, true);
+    this.loadCasino(snap, true, !robbing);
     this.street.activeId = lot.id;
     this.shiftPlayer(at.x, FACADE_Z - 1.5);
-    audio.play('doorbell');
-    this.events.emit('toast', {
-      text: lot.id === 'hotel' ? `Welcome to your hotel! Walk up to the front desk and press Space to run it.` : lot.kind === 'hotel' ? `Welcome to ${snap.name}!` : `Welcome to ${snap.name}! Walk up to any game and press Space to play.`,
-      kind: 'event',
-    });
+    if (robbing) {
+      const target = this.heistTarget(lot.houseOf!);
+      if (target) this.heist = new Heist(this, target);
+      audio.play('vaultClunk', { pitch: 1.6 });
+      const h = this.heist;
+      this.events.emit('toast', {
+        text: h
+          ? h.vault
+            ? `🦹 You’re in ${lot.owner}’s house. Find the ${h.vaultTierName} and crack it${h.guards.length ? `, and watch out for ${h.guards.length} guard${h.guards.length === 1 ? '' : 's'}` : ''}. Guns work in here.`
+            : `🦹 You’re in ${lot.owner}’s house. There’s no vault here, so nothing to steal${h.guards.length ? `, and ${h.guards.length} guard${h.guards.length === 1 ? '' : 's'} on watch` : ''}. Guns work in here.`
+          : `You’re in ${lot.owner}’s house.`,
+        kind: 'event',
+      });
+      this.events.emit('heist', undefined);
+    } else {
+      audio.play('doorbell');
+      this.events.emit('toast', {
+        text: lot.id === 'hotel' ? `Welcome to your hotel! Walk up to the front desk and press Space to run it.` : lot.kind === 'hotel' ? `Welcome to ${snap.name}!` : `Welcome to ${snap.name}! Walk up to any game and press Space to play.`,
+        kind: 'event',
+      });
+    }
     this.events.emit('visit', undefined);
     this.refreshStreet();
     return true;
@@ -1575,6 +2049,14 @@ export class Game implements World, ItemHost {
   returnHome(kicked = false): void {
     const v = this.visit;
     if (!v) return;
+    if (this.heist) {
+      // Walking away from a break-in: whatever you were carrying stays behind.
+      const h = this.heist;
+      this.heist = null;
+      h.over = true;
+      h.dispose();
+      this.events.emit('heist', undefined);
+    }
     this.standUp();
     const from = this.street.activeId;
     // Where you are (or the door you're thrown out of), seen from your own casino.
@@ -1758,6 +2240,10 @@ export class Game implements World, ItemHost {
   notify(text: string, kind: ToastKind = 'info'): void {
     if (this.state !== 'playing') return;
     this.events.emit('toast', { text, kind });
+  }
+
+  dealersRequired(): boolean {
+    return this.state === 'playing' && !this.visit && this.site === 'casino';
   }
 
   statueLook(): Appearance {
@@ -2322,6 +2808,9 @@ export class Game implements World, ItemHost {
     this.effects.sparkle(item.cx, 1, item.cz, 10);
     this.floaters.money(new THREE.Vector3(item.cx, 1.5, item.cz), -def.price);
     item.pendingXp = Math.round(def.price / 60);
+    if (item.needsDealer) {
+      this.notify(`${def.name} needs a dealer: click it to hire one (${formatMoney(DEALER_WAGE)} a day), or stand beside it and hold Space to deal yourself.`, 'info');
+    }
     if (def.kind === 'vault' && this.house) {
       // A brand-new vault: tier 1, and it wants a code before it'll hold anything.
       if (!this.house.tier) this.house.tier = 1;
@@ -2445,6 +2934,56 @@ export class Game implements World, ItemHost {
     this.events.emit('staff', undefined);
     this.requestSave();
     return true;
+  }
+
+  /** Tables here that need a dealer, and how many have one. */
+  get dealerTables(): PlacedItem[] {
+    return this.items.items.filter((i) => i.needsDealer);
+  }
+
+  /** What the dealers cost a day. */
+  get dealerWages(): number {
+    return this.site === 'casino' ? this.dealerTables.filter((i) => i.dealer).length * DEALER_WAGE : 0;
+  }
+
+  /** Hire a dealer for a table (a small signing bonus, then a daily wage). */
+  hireDealer(item: PlacedItem, quiet = false): boolean {
+    if (this.visit || !item.needsDealer || item.dealer) return false;
+    if (this.money < DEALER_WAGE) {
+      audio.play('error');
+      this.notify(`Hiring a dealer costs a ${formatMoney(DEALER_WAGE)} signing bonus.`, 'bad');
+      return false;
+    }
+    this.spend(DEALER_WAGE, 'wages');
+    item.dealer = true;
+    if (!quiet) {
+      audio.play('purchase');
+      this.notify(`A dealer took their place at the ${item.def.name} (${formatMoney(DEALER_WAGE)} a day).`, 'good');
+    }
+    this.events.emit('staff', undefined);
+    this.requestSave();
+    return true;
+  }
+
+  /** Let a table's dealer go: the table only runs while you deal it yourself. */
+  fireDealer(item: PlacedItem): void {
+    if (this.visit || !item.dealer) return;
+    item.dealer = false;
+    audio.play('click');
+    this.notify(`The ${item.def.name}'s dealer went home. Hold Space beside it to deal yourself.`, 'info');
+    this.events.emit('staff', undefined);
+    this.requestSave();
+  }
+
+  /** A dealer for every table that hasn't got one (as many as you can afford). */
+  hireAllDealers(): number {
+    let n = 0;
+    for (const it of this.dealerTables) if (!it.dealer && this.money >= DEALER_WAGE && this.hireDealer(it, true)) n++;
+    if (n) {
+      audio.play('purchase');
+      this.notify(`${n} dealer${n > 1 ? 's' : ''} hired (${formatMoney(DEALER_WAGE)} a day each).`, 'good');
+    } else this.notify(this.dealerTables.some((i) => !i.dealer) ? `Hiring a dealer costs a ${formatMoney(DEALER_WAGE)} signing bonus.` : 'Every table already has a dealer.', 'info');
+    return n;
   }
 
   fire(w: Worker): void {
@@ -2745,10 +3284,16 @@ export class Game implements World, ItemHost {
       return false;
     };
     if (!lot) return fail(dest === 'hotel' ? 'You don’t have a hotel yet: buy one from the Hotel tab.' : 'You don’t have a house yet: buy one from the Home tab.');
+    if (this.heist && !this.heist.over) return fail('You’re in the middle of a heist: get out the front door first.');
     if (this.travelHere === dest) return fail('You’re already here.');
     const lock = this.combat.teleportLock;
     if (lock > 0) return fail(`You were just hurt: no teleporting for ${Math.ceil(lock)} more seconds.`);
     if (this.combat.ko > 0) return false;
+    return this.goInside(lot);
+  }
+
+  /** Straight inside one of your own buildings (fast travel, or coming round after a knockout). */
+  private goInside(lot: StreetLot): boolean {
     // Your car stays parked where you left it.
     if (this.drive.driving) {
       this.drive.driving.speed = 0;
@@ -2779,6 +3324,54 @@ export class Game implements World, ItemHost {
     return ok;
   }
 
+  /** Where you'd rather come round after a knockout (null: the nearest of your buildings). */
+  respawnPick: 'casino' | 'hotel' | 'house' | null = null;
+
+  /** Your buildings you can wake up in after a knockout: your casino, then your hotel and house if you have them. */
+  respawnSpots(): ('casino' | 'hotel' | 'house')[] {
+    return (['casino', 'hotel', 'house'] as const).filter((d) => !!this.travelLot(d));
+  }
+
+  /** The one of your buildings closest to where you are. */
+  nearestSpot(): 'casino' | 'hotel' | 'house' | null {
+    const p = this.street.worldToGlobal(this.player.x, this.player.z);
+    let best: 'casino' | 'hotel' | 'house' | null = null;
+    let bd = Infinity;
+    for (const d of this.respawnSpots()) {
+      const door = this.street.toGlobal(this.travelLot(d)!.id, CENTER_X, SIDEWALK_Z0 + 1.6);
+      const dist = Math.hypot(door.x - p.x, door.z - p.z);
+      if (dist < bd) {
+        bd = dist;
+        best = d;
+      }
+    }
+    return best;
+  }
+
+  /** Where you'll wake up: the one you picked, or else the nearest. */
+  get respawnDest(): 'casino' | 'hotel' | 'house' | null {
+    return this.respawnPick && this.respawnSpots().includes(this.respawnPick) ? this.respawnPick : this.nearestSpot();
+  }
+
+  /**
+   * Knocked out and coming round: you wake up inside your casino, your hotel or your house
+   * (whichever you picked, or the nearest), safe behind your own doors.
+   */
+  respawnHome(): void {
+    if (this.state !== 'playing') return;
+    // Out cold in a house you were robbing: the guards drag you out first (you're on the
+    // pavement now, whatever the last frame thought).
+    const robbing = !!this.heist && !this.heist.over;
+    if (robbing) this.heist!.update(0);
+    const dest = this.respawnDest;
+    this.respawnPick = null;
+    if (!dest || (!robbing && this.travelHere === dest)) return;
+    const lot = this.travelLot(dest);
+    if (!lot || !this.goInside(lot)) return;
+    const name = dest === 'casino' ? 'your casino' : dest === 'hotel' ? 'your hotel' : 'your house';
+    this.notify(`You came round in ${name}.`, 'info');
+  }
+
   /** Fast travel to the sidewalk outside one of your own buildings (from another one). */
   teleportToLot(lot: StreetLot): boolean {
     const block = this.travelBlock(lot);
@@ -2798,6 +3391,11 @@ export class Game implements World, ItemHost {
    */
   teleportTo(gx: number, gz: number): boolean {
     if (this.state !== 'playing' || this.photoMode) return false;
+    if (this.heist && !this.heist.over) {
+      audio.play('error');
+      this.notify('You’re in the middle of a heist: get out the front door first.', 'bad');
+      return false;
+    }
     if (this.drive.driving) {
       audio.play('error');
       this.notify('Get out of the car first.', 'bad');
@@ -2818,6 +3416,7 @@ export class Game implements World, ItemHost {
     this.standUp();
     if (this.build.active) this.build.cancel();
     this.select(null);
+    this.underground = false;
     const wasUp = this.player.floor;
     this.player.floor = 0;
     this.player.x = w.x;
@@ -3000,9 +3599,22 @@ export class Game implements World, ItemHost {
 
   /** Walkability for the manager: the floor they're on, plus the whole sidewalk outside. */
   private playerWalk = (tx: number, tz: number): boolean => {
+    if (this.underground) {
+      const gl = this.street.worldToGlobal(tx + 0.5, tz + 0.5);
+      return this.base.bunker.walkable(gl.x, gl.z);
+    }
     const g = this.gridAt(this.player.floor);
-    if (this.player.floor > 0 || g.isOwned(tx, tz)) return g.isWalkable(tx, tz);
+    // A burglar can't walk through a locked door they haven't cracked.
+    if (this.heist && !this.heist.doorOpenFor(this.player.floor, tx, tz)) return false;
+    if (this.player.floor > 0) return g.isWalkable(tx, tz);
+    // The building's outer walls: in and out only through the front door. The yards round it
+    // are open ground, so without this you'd step straight through a wall onto the floor.
+    const p = this.player;
+    const r = g.rect;
+    const within = p.x > r.x0 && p.x < r.x1 + 1 && p.z > r.z0 && p.z < r.z1 + 1;
+    if (g.isOwned(tx, tz)) return (within || g.isDoor(tx, tz + 1)) && g.isWalkable(tx, tz);
     if (tz === FACADE_Z && g.isDoor(tx, tz)) return true;
+    if (within) return false;
     // Decorations in the yard out front are solid.
     if (g.inBounds(tx, tz) && tz > FACADE_Z && g.occupant(tx, tz)) return false;
     return this.street.isStreetWalkable(tx, tz);
@@ -3036,13 +3648,20 @@ export class Game implements World, ItemHost {
     // Context action
     let target: typeof this.interactTarget = null;
     let bestD = Infinity;
+    const ride = this.riding;
+    if (ride) {
+      const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
+      this.interactTarget = { kind: 'rideout', label: 'Get out (you’re a passenger)', hold: false, anchor, act: () => ride.leave(), key: 'KeyE' };
+      this.handleTarget(dt, this.interactTarget);
+      return;
+    }
     const car = this.drive.driving;
     if (car) {
       const anchor = () => new THREE.Vector3(this.player.x, 2.4, this.player.z);
       // On your driveway: drive into the garage instead of getting out.
       this.interactTarget = this.house?.garage && this.drive.atGarage(car.x, car.z)
-        ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park() }
-        : { kind: `carout${car.uid}`, label: `Get out · W/S drive · A/D steer · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit() };
+        ? { kind: `carpark${car.uid}`, label: '🅿 Park in your garage', hold: false, anchor, act: () => this.drive.park(), key: 'KeyE' }
+        : { kind: `carout${car.uid}`, label: car.def?.kind === 'tank' ? 'Get out · W/S drive · A/D turn · mouse or Q/R aim · click/F cannon · right-click MG' : `Get out · W/S drive · A/D steer · Space drift · Shift boost · C ${car.def?.id === 'police' ? 'siren' : 'horn'}`, hold: false, anchor, act: () => this.drive.exit(), key: 'KeyE' };
       this.handleTarget(dt, this.interactTarget);
       return;
     }
@@ -3056,6 +3675,12 @@ export class Game implements World, ItemHost {
         const label = v ? (v.owned ? `🚗 Drive your ${v.name}` : '🚗 Get in') : cr ? '🚓 Steal the police car' : '🚗 Steal this car';
         bestD = near.d;
         target = { kind: `car${v ? v.uid : cr ? 'p' : 't'}`, label, hold: false, anchor, act: () => (v ? this.drive.enter(v) : cr ? this.drive.stealCruiser(cr) : tc && this.drive.steal(tc)) };
+      }
+      // Another player's car with a free seat: ride along.
+      const ride = this.rideTarget?.();
+      if (ride && ride.d < bestD) {
+        bestD = ride.d;
+        target = { kind: 'ride', label: ride.label, hold: false, anchor: () => new THREE.Vector3(this.player.x, 2.4, this.player.z), act: ride.act };
       }
       // Your garage door
       if (!target && this.house && this.drive.playerAtGarage) {
@@ -3187,6 +3812,62 @@ export class Game implements World, ItemHost {
         };
       }
     }
+    // A break-in: locked doors to crack, the vault to open, the cash to grab.
+    const hs = this.heist;
+    if (!target && hs && !hs.over && this.combat.ko <= 0) {
+      const d = hs.lockedDoorNear(pf, p.x, p.z);
+      if (d) {
+        const dt = doorType(d.type);
+        target = {
+          kind: `hdoor${d.x},${d.z}`, label: `🔓 Crack the ${dt.name}`, hold: false,
+          anchor: () => new THREE.Vector3(d.x + 0.5, 2.6, d.z + 0.5),
+          act: () => this.events.emit('heistGame', { kind: 'door', floor: pf, x: d.x, z: d.z, type: d.type }),
+        };
+      }
+      const v = hs.vault;
+      if (!target && v && v.floor === pf) {
+        const bb = v.bounds;
+        if (distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1) < 1.5) {
+          const label = hs.phase === 'locked' ? `🧨 Crack the ${hs.vaultTierName}`
+            : hs.phase === 'timelock' ? `⏳ Time lock: ${Math.ceil(hs.timelock)} s` : hs.phase === 'open' ? '💰 Grab the cash' : '🏃 Out the front door!';
+          target = {
+            kind: `hvault${hs.phase}`, label, hold: false,
+            anchor: () => new THREE.Vector3(v.cx, v.model.height + 0.5, v.cz),
+            act: () => {
+              if (hs.phase === 'locked') this.events.emit('heistGame', { kind: 'vault' });
+              else if (hs.phase === 'open') hs.grab();
+            },
+          };
+        }
+      }
+    }
+    // A table with no dealer: stand beside it and hold Space to deal yourself.
+    if (!target && this.dealersRequired() && !this.tableFocus) {
+      let bestDeal = 1.6;
+      for (const it of this.items.items) {
+        if (!it.needsDealer || it.dealer || it.broken || it.floor !== pf) continue;
+        const b = it.bounds;
+        const d = distToRect(p.x, p.z, b.x0, b.z0, b.x1, b.z1);
+        if (d >= bestDeal) continue;
+        bestDeal = d;
+        const dealing = it.manualDeal > 0;
+        target = {
+          kind: `deal${it.uid}`, label: dealing ? `Dealing ${it.def.name}… keep holding` : `Hold to deal ${it.def.name} · no dealer (click it to hire one)`, hold: true,
+          anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.7, it.cz),
+          act: () => undefined,
+          whileHeld: (dt) => {
+            it.manualDeal = 0.75;
+            this.player.playEmote('deal', 0.3);
+            // A little XP for the time you put in behind the table.
+            this.dealXp += dt;
+            if (this.dealXp >= 6) {
+              this.dealXp = 0;
+              this.gainXp(3);
+            }
+          },
+        };
+      }
+    }
     // Your vault
     if (!target && this.inHouse && this.house) {
       for (const it of this.items.items) {
@@ -3202,7 +3883,7 @@ export class Game implements World, ItemHost {
       }
     }
     // Things to do: sit, nap, punch the bag, play the drums… and practice play at your own games.
-    if (!target && !this.tableFocus) {
+    if (!target && !this.tableFocus && !this.heist) {
       let bestUse = 1.25;
       for (const it of this.items.items) {
         if (it.floor !== pf || it.broken) continue;
@@ -3233,12 +3914,75 @@ export class Game implements World, ItemHost {
         act: () => this.goToFloor(to),
       };
     }
+    // The secret lab under Fort Mojave: the hatch, the ladder and the glass cases.
+    if (!target && !this.inside && !this.drive.driving) {
+      const b = this.base.bunker;
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      const anchor = () => new THREE.Vector3(this.player.x, this.player.y + 2.4, this.player.z);
+      if (this.underground) {
+        if (b.atLadder(pg.x, pg.z)) {
+          target = { kind: 'ladder', label: '🪜 Climb back up the ladder', hold: false, anchor, act: () => this.setUnderground(false) };
+        } else {
+          const c = b.caseAt(pg.x, pg.z);
+          const d = c ? gunDef(c.id) : null;
+          if (c && d) {
+            const mine = hasWeapon(this.guns.owned, c.id);
+            target = {
+              kind: `case${c.id}`, label: mine ? `✅ ${d.name}: already yours` : c.taken ? `${d.name}: the case is empty` : `🧪 Smash the case: take the ${d.name}`,
+              hold: !mine && !c.taken, anchor, act: () => this.takeBunkerGun(c.id),
+            };
+          }
+        }
+      } else if (b.atHatch(pg.x, pg.z)) {
+        target = { kind: 'hatch', label: '🕳 Lift the rusty hatch and climb down', hold: false, anchor, act: () => this.setUnderground(true) };
+      }
+    }
+    // Fort Mojave's armory: crack it for the army payroll (and the whole base comes after you).
+    if (!target && !this.inside && !this.drive.driving) {
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      if (this.base.atArmory(pg.x, pg.z)) {
+        const left = armoryRefillLeft(this.net.armoryRaided);
+        const door = this.base.armoryDoor;
+        const aw = this.street.globalToWorld(door.x, door.z);
+        target = {
+          kind: 'armory', label: left > 0 ? `🔒 Armory cleaned out · restocked in ${waitText(left)}` : `💰 Raid the armory (${formatMoney(armoryPayroll(this.homeLevel))})`, hold: left <= 0,
+          anchor: () => new THREE.Vector3(aw.x, 3.2, aw.z),
+          act: () => this.raidArmory(),
+        };
+      }
+    }
+    // Fort Mojave's prototype vault: swipe the commander's keycard and survive the time lock.
+    if (!target && !this.inside && !this.drive.driving) {
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      if (this.base.atVault(pg.x, pg.z)) {
+        const b = this.base;
+        const v = b.vault;
+        const door = b.vaultDoor;
+        const aw = this.street.globalToWorld(door.x, door.z);
+        const ready = v.state === 'locked' && b.keycard === 'player';
+        target = {
+          kind: 'vault',
+          label: v.state === 'open' ? '🔓 The vault is open: get the Prototype X-1 out'
+            : v.state === 'unlocking' ? `⏳ Time lock running: ${Math.ceil(v.left)} s`
+            : ready ? '🪪 Swipe the keycard (starts a 30 s time lock)' : '🔒 Prototype vault · needs the base commander’s Level 5 keycard',
+          hold: ready,
+          anchor: () => new THREE.Vector3(aw.x, 2.4, aw.z),
+          act: () => {
+            if (b.swipeKeycard()) return;
+            if (v.state === 'locked') {
+              audio.play('error');
+              this.notify('🔒 The vault needs a Level 5 keycard. The base commander carries one: he walks the front of HQ with two bodyguards.', 'bad');
+            }
+          },
+        };
+      }
+    }
     // Out on the street: the doors of the other casinos
     if (!target && !this.inside) {
       const lot = this.street.lotAt(p.x, p.z);
       if (lot && lot.id !== this.street.activeId && lot.kind !== 'filler') {
         const l = this.street.map(this.street.activeId, lot.id, p.x, p.z);
-        if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2) {
+        if (Math.abs(l.x - CENTER_X) < 3 && l.z < FACADE_Z + 3.2 && l.z > FACADE_Z - 0.5) {
           const a = this.street.toActive(lot.id, CENTER_X, FACADE_Z + 0.8);
           if (lot.kind === 'shop') {
             const cars = lot.info.style === 'dealer';
@@ -3249,12 +3993,19 @@ export class Game implements World, ItemHost {
             };
           } else {
             const block = this.entryBlock(lot);
-            const label = block ? `🚫 ${lot.kind === 'house' ? `${lot.owner}'s house` : lot.info.look.name}`
+            const robbable = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
+            const robbedBy = robbable && block ? this.houseCooldownOf(lot.houseOf!) : null;
+            const salLeft = lot.houseOf === NPC_OWNER ? npcRefillLeft(this.net.npcRobbed) : 0;
+            const label = salLeft > 0 ? `🕒 ${lot.owner}'s house · restocked in ${waitText(salLeft)}`
+              : robbedBy?.last && robbedBy.until > Date.now()
+              ? `🚨 ${lot.owner}'s house · robbed by ${robbedBy.last.by} · safe for ${waitText(robbedBy.until - Date.now())}`
+              : block ? `🚫 ${lot.kind === 'house' ? `${lot.owner}'s house` : lot.info.look.name}`
+              : robbable ? `🦹 Break into ${lot.owner}'s house`
               : lot.kind === 'me' ? `Back to ${lot.info.look.name}` : lot.id === 'house' ? 'Go into your house' : `Enter ${lot.info.look.name}`;
             target = {
               kind: `door${lot.id}`, label, hold: false,
               anchor: () => new THREE.Vector3(a.x, 3.6, a.z),
-              act: () => this.enterLot(lot),
+              act: () => (robbable && !block ? this.events.emit('heistAsk', lot) : this.enterLot(lot)),
             };
           }
         }
@@ -3265,6 +4016,301 @@ export class Game implements World, ItemHost {
     this.handleTarget(dt, target);
   }
 
+  private pushOutT = 0;
+  private pushNoteT = 0;
+  private unstuckAt = 0;
+
+  /**
+   * Can you walk away from this tile? Floods out from it the way you walk: inside, you have to
+   * be able to reach the way out (the front door, or the stairs upstairs); outside, there has to
+   * be more open ground round you than a little pocket between walls.
+   */
+  private canWalkAway(tx: number, tz: number): boolean {
+    if (!this.playerWalk(tx, tz)) return false;
+    const goal = this.inside ? this.gridAt(this.player.floor).entries : null;
+    const seen = new Set<number>();
+    const key = (x: number, z: number) => (x + 2048) * 4096 + (z + 2048);
+    const queue: [number, number][] = [[tx, tz]];
+    seen.add(key(tx, tz));
+    for (let i = 0; i < queue.length && queue.length < 2500; i++) {
+      const [x, z] = queue[i];
+      if (goal) {
+        if (goal.some(([gx, gz]) => Math.abs(gx - x) <= 1 && Math.abs(gz - z) <= 1)) return true;
+      } else if (queue.length >= 600) return true;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = x + dx;
+        const nz = z + dz;
+        const k = key(nx, nz);
+        if (seen.has(k) || Math.abs(nx - tx) > 60 || Math.abs(nz - tz) > 60) continue;
+        seen.add(k);
+        if (this.playerWalk(nx, nz)) queue.push([nx, nz]);
+      }
+    }
+    return !goal && queue.length >= 600;
+  }
+
+  /**
+   * The Unstuck button: frees you from whatever has you stuck. Lets go of every key and button,
+   * leaves seats, activities, the build tools and photo mode, resets the camera, puts a car
+   * wedged in a wall back on the road, and if you're shut in (inside walls, in the water, up a
+   * cliff, boxed in by furniture) moves you to the nearest spot you can walk away from: inside,
+   * the way out; outside, the nearest street or road. As a last resort you go back to your casino.
+   */
+  unstuck(): void {
+    if (this.state !== 'playing') return;
+    const now = performance.now();
+    if (now - this.unstuckAt < 2000) return;
+    this.unstuckAt = now;
+    const fixed: string[] = [];
+    this.input.releaseAll();
+    this.input.exitLock();
+    this.actionHeld = false;
+    this.actionPressed = false;
+    this.holdT = 0;
+    this.floaters.ring(null, 0);
+    if (this.build.active) this.build.cancel();
+    this.select(null);
+    if (this.riding) {
+      this.riding.leave();
+      fixed.push('got out of the car');
+    }
+    if (this.activity || this.player.seat || this.tableFocus) {
+      if (!this.drive.driving) {
+        this.stopActivity(false);
+        this.standUp();
+        this.player.seat = null;
+        fixed.push('got up');
+      }
+    }
+    this.player.emote = null;
+    this.player.halt();
+    this.combat.rollT = 0;
+    this.camFocus = null;
+    this.cam.orbit = false;
+    this.doorCooldown = 0.5;
+    if (this.combat.ko > 0) {
+      this.notify('You’re knocked out: you’ll come round at home in a moment.', 'info');
+      return;
+    }
+    const p = this.player;
+    // In a car: back on the road if it's wedged somewhere.
+    if (this.drive.driving) {
+      if (this.drive.unstick()) fixed.push('your car is back on the road');
+    } else if (!this.canWalkAway(Math.floor(p.x), Math.floor(p.z))) {
+      if (this.inside) {
+        // Shut in: back to the way out of this floor (the front door, or the stairs).
+        const g = this.gridAt(p.floor);
+        const [ex, ez] = g.entries[0];
+        const spot = g.nearestWalkable(ex, p.floor === 0 ? ez - 1 : ez, true) ?? [ex, ez];
+        p.x = spot[0] + 0.5;
+        p.z = spot[1] + 0.5;
+        fixed.push(p.floor === 0 ? 'moved you to the front door' : 'moved you to the stairs');
+      } else {
+        const spot = this.nearestOpenSpot(p.x, p.z);
+        if (spot) {
+          p.x = spot.x;
+          p.z = spot.z;
+          fixed.push('moved you to the nearest street');
+        } else if (this.combat.teleportLock > 0) {
+          this.notify(`Still stuck? You were just hurt: try again in ${Math.ceil(this.combat.teleportLock)} s and you’ll go back to your casino.`, 'bad');
+        } else {
+          const lot = this.travelLot('casino');
+          if (lot && this.goInside(lot)) fixed.push('took you back to your casino');
+        }
+      }
+      p.halt();
+      this.cam.snap(p.x, p.z);
+    }
+    audio.play('whoosh', { volume: 0.6 });
+    this.notify(fixed.length ? `🆘 Unstuck: ${fixed.join(', ')}.` : '🆘 Everything’s reset. If you still can’t move, press it again.', 'good');
+  }
+
+  /**
+   * The nearest point you can walk away from, outside (world frame): on a street or an avenue
+   * of the city, or a road out in the country, close to where you are.
+   */
+  private nearestOpenSpot(wx: number, wz: number): { x: number; z: number } | null {
+    const st = this.street;
+    const gp = st.worldToGlobal(wx, wz);
+    const cands: { x: number; z: number; d: number }[] = [];
+    const push = (x: number, z: number) => cands.push({ x, z, d: Math.hypot(x - gp.x, z - gp.z) });
+    const plan = st.plan;
+    plan.streets.forEach((sp, r) => {
+      if (!sp) return;
+      const z = streetZ(r);
+      // The sidewalk on your side of the road, level with you.
+      const side = gp.z < z ? -6 : 6;
+      push(Math.max(sp.xa + 2, Math.min(sp.xb - 2, gp.x)), z + side);
+    });
+    plan.avenues.forEach((av, k) => {
+      if (!av) return;
+      push(avenueMid(k), Math.max(av.za + 2, Math.min(av.zb - 2, gp.z)));
+    });
+    for (const road of st.outskirts.roads) {
+      const pts = road.path.pts;
+      let best = 0;
+      let bd = Infinity;
+      for (let i = 0; i < pts.length; i += 2) {
+        const d = (pts[i].x - gp.x) ** 2 + (pts[i].z - gp.z) ** 2;
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      if (pts.length) push(pts[best].x, pts[best].z);
+    }
+    cands.sort((a, b) => a.d - b.d);
+    for (const c of cands.slice(0, 12)) {
+      const w = st.globalToWorld(c.x, c.z);
+      if (this.canWalkAway(Math.floor(w.x), Math.floor(w.z))) return { x: w.x, z: w.z };
+    }
+    return null;
+  }
+
+  /**
+   * A building grew (or appeared) where you stand outside, or your car got wedged in one: you
+   * get moved to the nearest open ground instead of being stuck in its walls.
+   */
+  private pushOutOfBuildings(): void {
+    this.pushNoteT = Math.max(0, this.pushNoteT - 0.2);
+    if (this.state !== 'playing' || this.inside || this.player.floor > 0 || this.photoMode) return;
+    const st = this.street;
+    const v = this.drive.driving;
+    if (v) {
+      if (st.isOpen(v.x, v.z)) return;
+      for (let r = 2; r < 60; r += 1.5) {
+        for (let k = 0; k < 24; k++) {
+          const a = (k / 24) * Math.PI * 2;
+          const x = v.x + Math.cos(a) * r;
+          const z = v.z + Math.sin(a) * r;
+          if (!st.isOpen(x, z) || !st.isOpen(x + Math.sin(v.yaw) * v.length * 0.5, z + Math.cos(v.yaw) * v.length * 0.5) || !st.isOpen(x - Math.sin(v.yaw) * v.length * 0.5, z - Math.cos(v.yaw) * v.length * 0.5)) continue;
+          v.x = x;
+          v.z = z;
+          v.speed = 0;
+          this.notePushed();
+          return;
+        }
+      }
+      return;
+    }
+    const p = this.player;
+    const tx = Math.floor(p.x);
+    const tz = Math.floor(p.z);
+    if (this.playerWalk(tx, tz)) return;
+    const g = this.gridAt(0);
+    const ok = (x: number, z: number) => st.isStreetWalkable(x, z) && !st.doorAt(x, z) && !g.isOwned(x, z) && this.playerWalk(x, z);
+    for (let r = 1; r <= 60; r++) {
+      let best: [number, number] | null = null;
+      let bd = Infinity;
+      const consider = (x: number, z: number) => {
+        const d = Math.hypot(x + 0.5 - p.x, z + 0.5 - p.z);
+        if (d < bd && ok(x, z)) {
+          bd = d;
+          best = [x, z];
+        }
+      };
+      for (let dx = -r; dx <= r; dx++) {
+        consider(tx + dx, tz - r);
+        consider(tx + dx, tz + r);
+      }
+      for (let dz = -r + 1; dz <= r - 1; dz++) {
+        consider(tx - r, tz + dz);
+        consider(tx + r, tz + dz);
+      }
+      const found = best as [number, number] | null;
+      if (found) {
+        const [bx, bz] = found;
+        p.x = bx + 0.5;
+        p.z = bz + 0.5;
+        p.halt();
+        this.notePushed();
+        return;
+      }
+    }
+  }
+
+  private notePushed(): void {
+    audio.play('whoosh', { volume: 0.5 });
+    if (this.pushNoteT > 0) return;
+    this.pushNoteT = 8;
+    this.notify('A building grew where you were standing: you were pushed outside.', 'info');
+  }
+
+  /** The bunker's line for the HUD. */
+  get bunkerStatus(): { text: string; kind: 'alert' | 'info' } | null {
+    return this.base.bunker.status(this.underground);
+  }
+
+  /** Climb down the hatch into the secret lab (or back up the ladder). */
+  private setUnderground(down: boolean): void {
+    const b = this.base.bunker;
+    const at = down ? b.ladder : { x: b.hatch.x + 1.4, z: b.hatch.z };
+    const w = this.street.globalToWorld(at.x, at.z);
+    this.underground = down;
+    this.standUp();
+    this.player.floor = 0;
+    this.player.x = w.x;
+    this.player.z = w.z;
+    this.player.halt();
+    this.player.y = down ? BUNKER_Y : this.street.groundY(w.x, w.z);
+    this.cam.distCap = down ? 22 : Infinity;
+    this.cam.snap(w.x, w.z);
+    this.doorCooldown = 1;
+    this.transitionT = 0.4;
+    audio.play('whoosh');
+    if (down) {
+      this.gunplay.drop();
+      this.stats.bunkerVisits = (this.stats.bunkerVisits ?? 0) + 1;
+      if (this.stats.bunkerVisits === 1) this.notify('🕳 A shaft under the minefield… a secret weapons lab. Mind the lasers.', 'good');
+    } else this.notify('You climb back out of the hatch.', 'info');
+  }
+
+  /** Smash a case in the lab and take the prototype inside: the lab locks down. */
+  private takeBunkerGun(id: string): void {
+    const d = gunDef(id);
+    if (!d || hasWeapon(this.guns.owned, id) || !this.base.bunker.take(id)) return;
+    const next = { owned: [...this.guns.owned, id], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } };
+    autoSlot(next, id);
+    this.guns = next;
+    this.stats.bunkerGuns = (this.stats.bunkerGuns ?? 0) + 1;
+    const key = next.slots.indexOf(id);
+    this.notify(`🧪 You stole the ${d.name}${key >= 0 ? ` (key ${key + 1})` : ''}! It only fires out on the street. Now get out alive.`, 'good');
+    this.events.emit('guns', undefined);
+    this.saveNow();
+  }
+
+  /** A live objective line for the HUD (the vault's time lock, the keycard, the bunker), or null. */
+  get missionStatus(): { text: string; kind: 'alert' | 'info' } | null {
+    const v = this.base.vault;
+    if (v.state === 'unlocking') {
+      return v.paused
+        ? { text: `⏸ VAULT TIME LOCK PAUSED · ${Math.ceil(v.left)}s · get back to the door!`, kind: 'alert' }
+        : { text: `⏳ VAULT TIME LOCK ${Math.ceil(v.left)}s · hold the door`, kind: 'alert' };
+    }
+    const bunker = this.bunkerStatus;
+    if (bunker) return bunker;
+    if (this.base.keycard === 'player' && v.state === 'locked') return { text: '🪪 Level 5 keycard · swipe it at the Hangar 3 vault', kind: 'info' };
+    return null;
+  }
+
+  /** Crack the Fort Mojave armory: the army payroll is yours, and the whole base comes after you. */
+  private raidArmory(): void {
+    const left = armoryRefillLeft(this.net.armoryRaided);
+    if (left > 0) {
+      audio.play('error');
+      this.notify(`The armory was cleaned out. The next payroll arrives in ${waitText(left)}.`, 'bad');
+      return;
+    }
+    const cash = armoryPayroll(this.homeLevel);
+    this.net.armoryRaided = Date.now();
+    audio.play('vaultClunk');
+    this.addMoney(cash, 'loot', this.player.model.root.position.clone().setY(2.2));
+    this.stats.baseRaids = (this.stats.baseRaids ?? 0) + 1;
+    this.notify(`💰 You cracked the armory and grabbed the army payroll: ${formatMoney(cash)}!`, 'good');
+    this.base.armoryRaided();
+    this.requestSave();
+  }
+
   /** Show the prompt for the nearest thing to do and run it on Space (or hold Space). */
   private handleTarget(dt: number, target: typeof this.interactTarget): void {
     const key = target ? `${target.kind}:${target.label}` : '';
@@ -3272,16 +4318,28 @@ export class Game implements World, ItemHost {
       this.lastInteractKey = key;
       this.holdT = 0;
       this.events.emit('interact', target ? { label: target.label, hold: target.hold } : null);
-      this.floaters.prompt(target ? target.anchor : null, target ? `<b>${this.input.isTouch ? '●' : 'Space'}</b> ${target.label}` : '');
+      this.floaters.prompt(target ? target.anchor : null, target ? `<b>${this.input.isTouch ? '●' : target.key === 'KeyE' ? 'E' : 'Space'}</b> ${target.label}` : '');
     }
     const blocked = this.modalOpen;
-    // In a tank, F fires the main gun instead.
-    const fKey = !this.drive.driving?.def?.cannon;
-    const pressing = !blocked && (this.input.down('Space') || (fKey && this.input.down('KeyF')) || this.actionHeld);
-    const pressed = !blocked && (this.input.hit('Space') || (fKey && this.input.hit('KeyF')) || this.actionPressed);
+    const input = this.input;
+    let pressing: boolean;
+    let pressed: boolean;
+    if (target?.key) {
+      // Behind the wheel Space is the handbrake: E gets you out (and the E press is used up).
+      pressing = !blocked && (input.down(target.key) || this.actionHeld);
+      pressed = !blocked && (input.hit(target.key) || this.actionPressed);
+      if (pressed) input.consume(target.key);
+    } else {
+      // In a tank, F fires the main gun instead.
+      const fKey = !this.drive.driving?.def?.cannon;
+      pressing = !blocked && (input.down('Space') || (fKey && input.down('KeyF')) || this.actionHeld);
+      pressed = !blocked && (input.hit('Space') || (fKey && input.hit('KeyF')) || this.actionPressed);
+    }
     this.actionPressed = false;
     if (target) {
-      if (target.hold) {
+      if (target.whileHeld) {
+        if (pressing) target.whileHeld(dt);
+      } else if (target.hold) {
         if (pressing) {
           this.holdT += dt;
           if (Math.random() < dt * 6) audio.play('repair', { volume: 0.6 });
@@ -3309,12 +4367,21 @@ export class Game implements World, ItemHost {
   /** Walking into a doorway on the street takes you inside that casino. */
   private checkDoors(dt: number): void {
     this.doorCooldown = Math.max(0, this.doorCooldown - dt);
-    if (this.doorCooldown > 0 || this.player.floor !== 0 || this.drive.driving) return;
+    if (this.doorCooldown > 0 || this.player.floor !== 0 || this.drive.driving || this.riding) return;
     const tx = Math.floor(this.player.x);
     const tz = Math.floor(this.player.z);
     const lot = this.street.doorAt(tx, tz);
     if (lot) {
-      if (!this.enterLot(lot)) {
+      // Walking into someone's front door asks whether you want to break in (or says why you can't).
+      const robbable = lot.kind === 'house' && !!lot.houseOf && lot.houseOf !== 'me';
+      if (robbable) {
+        const block = this.entryBlock(lot);
+        if (block) {
+          audio.play('error');
+          this.notify(block, 'bad');
+        } else if (!this.modalOpen) this.events.emit('heistAsk', lot);
+      }
+      if (robbable || !this.enterLot(lot)) {
         // Bounced: step back onto the sidewalk in front of that door.
         const l = this.street.map(this.street.activeId, lot.id, this.player.x, this.player.z);
         const back = this.street.toActive(lot.id, l.x, FACADE_Z + 1.3);
@@ -3651,7 +4718,7 @@ export class Game implements World, ItemHost {
   // ------------------------------------------------------------------ loop
 
   private endOfDay(): void {
-    const wages = this.workers.reduce((a, w) => a + w.info.wage, 0);
+    const wages = this.workers.reduce((a, w) => a + w.info.wage, 0) + this.dealerWages;
     let upkeep = this.items.items.reduce((a, i) => a + i.def.upkeep, 0);
     // In the hotel, the buildings you're not standing in still pay their staff and upkeep.
     if (this.hotel && this.site === 'hotel') upkeep += hotelDailyCosts(this.hotel.buildings.filter((b) => b.id !== this.hotelBid).map((b) => b.snap));
@@ -3748,6 +4815,8 @@ export class Game implements World, ItemHost {
   }
 
   private bankFullT = 0;
+  /** Seconds to the next look for room for waiting gift cash. */
+  private releaseT = 0;
 
   /** Tell the player (now and then) that the bank is full. */
   private bankFull(): void {
@@ -3808,6 +4877,9 @@ export class Game implements World, ItemHost {
     if (playing) {
       if (this.parked) this.parked.away += sim;
       this.tickHotel(sim);
+      if (!this.catchingUp) {
+        this.tickLoan(sim);
+      }
       if (this.visit) {
         this.visit.away += sim;
         if (tickRival(this.rival, sim)) this.refreshStreet();
@@ -3862,6 +4934,11 @@ export class Game implements World, ItemHost {
     this.bankFullT = Math.max(0, this.bankFullT - dt);
     this.capBanks();
     const sim = this.paused && !this.visit ? 0 : dt * (this.visit ? 1 : this.speed);
+    // Gift cash waiting for room in the bank goes in (in real time: even while the game is paused).
+    if (this.net.giftHeld && this.state === 'playing' && !this.catchingUp && (this.releaseT -= dt) <= 0) {
+      this.releaseT = 2;
+      this.releaseHeld();
+    }
     this.time += sim;
     const input = this.input;
     const playing = this.state === 'playing';
@@ -3933,9 +5010,15 @@ export class Game implements World, ItemHost {
         if (this.build.active) this.build.cancel();
         else if (this.selection) this.select(null);
       }
-      if (!this.build.active) {
+      if (this.combat.ko > 0) {
+        // Knocked out: 1–3 pick where you come round.
+        const spots = this.respawnSpots();
+        for (let k = 0; k < spots.length; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.respawnPick = spots[k];
+      } else if (!this.build.active) {
         // 1–5: weapon slots. 6–9: emotes.
         for (let k = 0; k < SLOTS; k++) if (input.hit(`Digit${k + 1}`) || input.hit(`Numpad${k + 1}`)) this.useSlot(k);
+        // X (or 0): fists up, or put them down.
+        if (input.hit('KeyX') || input.hit('Digit0') || input.hit('Numpad0')) this.equipGun(this.guns.equipped === FISTS ? null : FISTS);
         if (input.hit('Digit6')) this.player.playEmote('wave', 2);
         if (input.hit('Digit7')) this.player.playEmote('dance', 4);
         if (input.hit('Digit8')) this.player.playEmote('cheer', 2);
@@ -3946,6 +5029,13 @@ export class Game implements World, ItemHost {
     // Driving (before the player, who sits in the car)
     if (playing && sim > 0) {
       this.drive.update(sim);
+      // Never left "underground" anywhere but in the lab (taken home, driving, teleported).
+      if (this.underground) {
+        const pg = this.street.worldToGlobal(this.player.x, this.player.z);
+        const h = this.base.bunker.hatch;
+        if (this.inside || this.drive.driving || Math.hypot(pg.x - h.x - 24, pg.z - h.z) > 60) this.underground = false;
+      }
+      this.cam.distCap = this.underground ? 22 : Infinity;
       this.base.update(sim, this.street.cols, !this.inside);
     } else audio.engine(null);
     // Waypoint: the beacon out in the world, cleared once you get there.
@@ -3962,7 +5052,7 @@ export class Game implements World, ItemHost {
     }
 
     // Player movement
-    const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0;
+    const canMove = playing && sim > 0 && this.transitionT <= 0 && this.combat.ko <= 0 && !this.heist?.busy;
     this.transitionT = Math.max(0, this.transitionT - dt);
     if (canMove) {
       let ix = 0;
@@ -4001,6 +5091,17 @@ export class Game implements World, ItemHost {
       }
       const c = this.combat;
       if (c.rolling) ix = iz = 0;
+      // Fist fights: blocking slows you to a shuffle, being stunned nearly roots you.
+      const br = c.brawl;
+      if (br.stunned) {
+        ix *= 0.2;
+        iz *= 0.2;
+        if (Math.random() < dt * 3) this.floaters.text(this.player.model.root.position.clone().setY(this.player.model.height + 0.5), '💫', '', 0.6, 0.4);
+      } else if (br.blocking && this.gunplay.drawn) {
+        ix *= 0.5;
+        iz *= 0.5;
+        this.player.playEmote('handsUp', 0.12);
+      }
       this.player.model.roll = c.rolling ? 1 - c.rollT / ROLL_TIME : 0;
       const rp = this.gunplay.reloadProgress;
       this.player.model.reloadK = rp >= 0 ? rp : 0;
@@ -4009,6 +5110,7 @@ export class Game implements World, ItemHost {
     } else {
       this.player.update(dt, 0, 0, false, this.cam.basis(), this.playerWalk, third, first && !this.player.seat && this.combat.ko <= 0 ? this.cam.lookYaw : null);
     }
+    if (playing) this.guardHeistDoors(dt);
     if (playing) this.combat.update(dt);
     if (playing) this.updateActivity(dt);
     if (playing && sim > 0) this.updatePolice(sim);
@@ -4017,20 +5119,29 @@ export class Game implements World, ItemHost {
     this.cam.followYaw = this.player.yaw;
     // In first person you don't see your own head (you'd be looking out through it).
     const ownBody = playing && (!first || !!this.tableFocus);
-    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving && !this.drive.driving.open);
+    this.player.model.root.visible = (ownBody || (first && this.combat.ko > 0)) && !(this.drive.driving?.def?.kind === 'tank') && !(this.riding && !this.riding.open);
     if (first) {
       const ko = this.combat.ko > 0;
       const st = this.player.seat;
       const rollDip = this.combat.rolling ? Math.sin((1 - this.combat.rollT / ROLL_TIME) * Math.PI) * 0.95 : 0;
       const eyeY = ko ? 0.35 : st && this.activity?.act.spot === 'lie' ? st.height + 0.35 : st?.sit ? st.height + 0.8 : this.player.model.height + 0.04 - rollDip;
-      this.cam.eye.set(this.player.x, eyeY, this.player.z);
+      this.cam.eye.set(this.player.x, this.player.y + eyeY, this.player.z);
       this.cam.bobSpeed = this.player.seat || ko ? 0 : this.player.speed;
       if (ko) this.player.model.root.visible = false;
     }
     this.playerFx?.update(dt, playing && !this.player.seat && ownBody);
-    this.playerPos.set(this.player.x, 0, this.player.z);
+    this.playerPos.set(this.player.x, this.player.y, this.player.z);
     const wasInside = this.inside;
-    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > this.grid.rect.z0 - 1 && Math.abs(this.player.x - CENTER_X) < 16);
+    // Inside = within the building's own walls (the yards round the back and sides are outside).
+    const rect = this.grid.rect;
+    this.inside = this.player.floor > 0 || (this.player.z < FACADE_Z + 0.15 && this.player.z > rect.z0 - 0.05 && this.player.x > rect.x0 - 0.05 && this.player.x < rect.x1 + 1.05);
+    this.pushOutT -= dt;
+    if (this.pushOutT <= 0) {
+      this.pushOutT = 0.2;
+      this.pushOutOfBuildings();
+    }
+    // Out through the front door of a house you're robbing: the cash is yours.
+    if (this.heist && !this.heist.over && !this.inside && wasInside) this.heist.leave();
     if (this.inside !== wasInside) {
       if (!this.inside && this.build.active && !this.onHomeFront) this.build.cancel();
       if (!this.inside && this.selection?.kind === 'item' && !this.selection.item.outdoor) this.select(null);
@@ -4071,6 +5182,7 @@ export class Game implements World, ItemHost {
     // Simulation
     if (sim > 0) {
       this.simulateWorld(sim);
+      if (playing && this.heist) this.heist.update(sim);
       if (playing) {
         this.updateInteraction(sim);
         if (!this.visit && this.site !== 'house') {
@@ -4107,14 +5219,14 @@ export class Game implements World, ItemHost {
 
     const fx = this.tableFocus ? this.tableFocus.item.cx : this.camFocus?.x ?? this.player.x;
     const fz = this.tableFocus ? this.tableFocus.item.cz + 0.6 : this.camFocus?.z ?? this.player.z;
-    this.cam.update(dt, fx, fz);
+    const fy = this.tableFocus ? 0 : this.drive.driving ? this.drive.driving.y ?? 0 : this.camFocus ? 0 : this.player.y;
+    this.cam.update(dt, fx, fz, fy);
     this.building.update(dt, this.cam.yaw, this.cam.low, this.cam.mode === 'first' && !this.tableFocus);
     // Built walls stand to the ceiling; the ones between the camera and what you're looking
     // at drop down (never through your own eyes). Building mode cuts them all down.
     const wallH = this.build.active ? 0.42 : 1;
     const camP = this.renderer.camera.position;
     WALL_CUT.on = this.cam.mode === 'first' && !this.tableFocus ? 0 : this.build.active ? 0 : 1;
-    WALL_CUT.face = this.cam.mode === 'top' ? 1 : 0;
     WALL_CUT.focus.set(fx, fz);
     WALL_CUT.toCam.set(camP.x - fx, camP.z - fz);
     if (WALL_CUT.toCam.lengthSq() < 1e-4) WALL_CUT.toCam.set(Math.sin(this.cam.yaw), Math.cos(this.cam.yaw));
@@ -4127,6 +5239,10 @@ export class Game implements World, ItemHost {
     const pg = this.street.worldToGlobal(this.player.x, this.player.z);
     this.street.city.player.x = this.inside ? -9999 : pg.x;
     this.street.city.player.z = pg.z;
+    // Street brawlers come after you while you're out there and on your feet.
+    const crowd = this.street.crowd;
+    crowd.foe = this.state === 'playing' && this.combat.exposed && this.combat.ko <= 0 && !this.drive.driving ? this.street.worldToGlobal(this.player.x, this.player.z) : null;
+    this.street.camPos = this.cam.mode === 'first' ? null : { x: camP.x, y: camP.y, z: camP.z };
     this.street.update(dt, this.player.x, this.player.z, this.inside, sim);
     // Neon pops a little more after dark
     // The sky follows the clock; indoors the casino keeps its own lighting.
@@ -4135,7 +5251,8 @@ export class Game implements World, ItemHost {
     this.street.outskirts.update(dt, this.sky.light.night);
     const indoor = this.inside && this.cam.mode !== 'top' ? 1 : this.inside ? 0.7 : 0;
     this.indoorT = damp(this.indoorT, indoor, 3, dt);
-    this.renderer.applySky(this.sky.light, this.indoorT);
+    this.underT = this.underground ? Math.min(1, this.underT + dt * 3) : Math.max(0, this.underT - dt * 3);
+    this.renderer.applySky(this.sky.light, this.indoorT, this.underT);
     if (!render) return;
     const { w, h } = this.renderer.size;
     this.floaters.update(dt, this.renderer.camera, w, h);
@@ -4146,6 +5263,8 @@ export class Game implements World, ItemHost {
   private itemsInside = true;
   /** How far the street is drawn below you (you're upstairs). */
   streetDrop = 0;
+  /** Down in the secret lab under Fort Mojave (its own floor height; nothing up top can see you). */
+  underground = false;
 
   /** Only the floor you're on is drawn, and the inside of the building only while you're in it. */
   private updateVisibility(): void {
@@ -4303,6 +5422,7 @@ export class Game implements World, ItemHost {
   }
 
   load(s: SaveData): void {
+    this.endHeist(false);
     this.state = 'playing';
     this.visit = null;
     this.street.activeId = 'me';
@@ -4393,6 +5513,15 @@ export class Game implements World, ItemHost {
   /** Your crosshair settings (checked). */
   get reticle(): ReticleOpts {
     return (this.settings.reticle = sanitizeReticle(this.settings.reticle));
+  }
+
+  /** Near / Normal / Far: how far buildings, trees and street furniture are drawn in full. */
+  setViewDistance(v: ViewDist): void {
+    this.settings.viewDist = v;
+    VIEW.scale = viewScale(v);
+    const cam = this.renderer.camera;
+    cam.far = 2600 * Math.max(1, VIEW.scale);
+    cam.updateProjectionMatrix();
   }
 
   setQuality(q: Quality): void {

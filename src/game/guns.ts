@@ -5,7 +5,7 @@
  */
 export type GunKind = 'pistol' | 'revolver' | 'smg' | 'shotgun' | 'rifle' | 'sniper' | 'minigun' | 'laser' | 'paint' | 'confetti' | 'cannon'
   | 'launcher' | 'rocket' | 'railgun' | 'flamer'
-  | 'knuckles' | 'bat' | 'golf' | 'katana' | 'hammer';
+  | 'fists' | 'knuckles' | 'bat' | 'golf' | 'katana' | 'hammer';
 
 export interface GunDef {
   id: string;
@@ -53,6 +53,10 @@ export interface GunDef {
   headMul?: number;
   /** How hard it kicks the view up per shot (radians; default by type). */
   kick?: number;
+  /** Not sold anywhere: everyone has it (your fists). */
+  builtin?: boolean;
+  /** Not sold anywhere: stolen from the secret lab under Fort Mojave. */
+  secret?: boolean;
   blurb: string;
 }
 
@@ -79,8 +83,23 @@ export const GUNS: GunDef[] = [
   { id: 'minigun', name: 'Minigun', kind: 'minigun', price: 250000, unlock: 13, rate: 20, auto: true, mag: 200, reload: 3.2, pellets: 1, spread: 0.07, range: 60, color: 0x3a3c44, tracer: 0xffb45a, twoHand: true, dmg: 10, adsFov: 55, blurb: 'Six spinning barrels and two hundred rounds.' },
 ];
 
+/**
+ * The black-site prototypes in the lab under Fort Mojave. Nobody sells these: you have to
+ * steal them, one glass case at a time.
+ */
+GUNS.push(
+  { id: 'gauss', secret: true, name: 'Gauss Cannon', kind: 'railgun', price: 0, unlock: 1, rate: 1.1, auto: false, mag: 6, reload: 2.2, pellets: 1, spread: 0, range: 230, color: 0x1b2748, tracer: 0x2fe6ff, twoHand: true, dmg: 260, pierce: 8, headMul: 2, kick: 0.1, adsFov: 26, blurb: 'A magnetic slug through eight people in a row. No charging, no mercy.' },
+  { id: 'plasma', secret: true, name: 'Plasma Repeater', kind: 'laser', price: 0, unlock: 1, rate: 12, auto: true, mag: 90, reload: 1.3, pellets: 1, spread: 0.008, range: 120, color: 0x17151f, tracer: 0x39ff88, twoHand: true, dmg: 36, pierce: 2, kick: 0.004, adsFov: 42, blurb: 'Green plasma bolts, twelve a second, through two targets at once.' },
+  { id: 'thunder', secret: true, name: 'Thunderbolt Minigun', kind: 'minigun', price: 0, unlock: 1, rate: 32, auto: true, mag: 600, reload: 2.8, pellets: 1, spread: 0.04, range: 95, color: 0x2a2c30, tracer: 0xff3fa4, twoHand: true, dmg: 24, kick: 0.004, adsFov: 52, blurb: 'Six hundred rounds at thirty-two a second. The air turns pink.' },
+  { id: 'dragon', secret: true, name: 'Dragon Auto-Shotgun', kind: 'shotgun', price: 0, unlock: 1, rate: 5, auto: true, mag: 32, reload: 2, pellets: 12, spread: 0.15, range: 34, color: 0x7a0717, tracer: 0xff8a1f, twoHand: true, dmg: 34, kick: 0.035, adsFov: 56, blurb: 'Full-auto, twelve heavy pellets a shot, a drum of thirty-two.' },
+  { id: 'swarm', secret: true, name: 'Swarm Launcher', kind: 'launcher', price: 0, unlock: 1, rate: 4, auto: true, mag: 16, reload: 2.6, pellets: 1, spread: 0.02, range: 110, color: 0x3a4a5a, tracer: 0xffc53d, twoHand: true, dmg: 0, projectile: { speed: 44, gravity: 2 }, explosive: { radius: 6, power: 170 }, kick: 0.03, adsFov: 50, blurb: 'Hold the trigger: sixteen mini-rockets, four a second.' },
+  { id: 'nuke', secret: true, name: 'Micro-Nuke Launcher', kind: 'rocket', price: 0, unlock: 1, rate: 0.35, auto: false, mag: 1, reload: 4.5, pellets: 1, spread: 0.002, range: 200, color: 0xffd23f, tracer: 0xffe46b, twoHand: true, dmg: 0, projectile: { speed: 32, gravity: 3 }, explosive: { radius: 20, power: 900 }, kick: 0.16, adsFov: 45, blurb: 'One tiny warhead, a twenty-metre fireball. Do not fire it at your feet.' },
+  { id: 'goldgun', secret: true, name: 'The Golden Gun', kind: 'cannon', price: 0, unlock: 1, rate: 0.9, auto: false, mag: 1, reload: 1.4, pellets: 1, spread: 0, range: 140, color: 0xf2b632, tracer: 0xffd23f, twoHand: false, dmg: 999, headMul: 1, kick: 0.09, adsFov: 40, blurb: 'One golden bullet. One knockout. Every time.' },
+);
+
 /** Melee weapons (also sold at Bullseye Guns). Swing rate, reach in metres. */
 GUNS.push(
+  { id: 'fists', name: 'Fists', kind: 'fists', price: 0, unlock: 1, rate: 3.2, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.55, range: 1.5, color: 0xd8a47a, tracer: 0xffffff, twoHand: false, dmg: 9, adsFov: 60, melee: true, builtin: true, blurb: 'Put ’em up. Everyone has a pair (X or 0).' },
   { id: 'knuckles', name: 'Gold Knuckles', kind: 'knuckles', price: 400, unlock: 1, rate: 3, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.5, range: 1.7, color: 0xf2b632, tracer: 0xffffff, twoHand: false, dmg: 18, adsFov: 60, melee: true, blurb: 'Quick jabs. Fits in a pocket.' },
   { id: 'bat', name: 'Baseball Bat', kind: 'bat', price: 900, unlock: 1, rate: 1.6, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.6, range: 2.3, color: 0xc89b5a, tracer: 0xffffff, twoHand: true, dmg: 34, adsFov: 60, melee: true, blurb: 'A home run every time.' },
   { id: 'golf', name: 'Golf Club', kind: 'golf', price: 2500, unlock: 2, rate: 1.4, auto: false, mag: 0, reload: 0, pellets: 1, spread: 0.6, range: 2.5, color: 0xd8dde3, tracer: 0xffffff, twoHand: true, dmg: 30, adsFov: 60, melee: true, blurb: 'Fore! For the high rollers.' },
@@ -172,6 +191,13 @@ export function reloadPress(progress: number): 'perfect' | 'fumble' {
 
 /** Number of weapon slots (keys 1–5). */
 export const SLOTS = 5;
+/** Your bare fists: always yours, raised with X (or 0). */
+export const FISTS = 'fists';
+
+/** Do you have this weapon (bought, or your fists)? */
+export function hasWeapon(owned: readonly string[], id: string): boolean {
+  return id === FISTS || owned.includes(id);
+}
 
 export function gunDef(id: string | null | undefined): GunDef | null {
   return GUNS.find((g) => g.id === id) ?? null;
@@ -370,7 +396,7 @@ export function autoSlot(st: GunState, id: string): void {
 export function sanitizeGuns(raw: unknown): GunState {
   const r = (raw ?? {}) as Record<string, unknown>;
   const owned = Array.isArray(r.owned) ? [...new Set(r.owned.filter((x): x is string => typeof x === 'string' && !!gunDef(x)))] : [];
-  const eq = typeof r.equipped === 'string' && owned.includes(r.equipped) ? r.equipped : null;
+  const eq = typeof r.equipped === 'string' && (owned.includes(r.equipped) || r.equipped === FISTS) ? r.equipped : null;
   const given = Array.isArray(r.slots) ? (r.slots as unknown[]) : null;
   const slots: (string | null)[] = Array(SLOTS).fill(null);
   if (given) {

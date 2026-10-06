@@ -1447,6 +1447,7 @@ const R: Record<string, Recipe> = {
   cctv: (k) => {
     cyl(k.root, 0.04, 0.05, 2.2, M(0x9aa0ab, 0.4, 0.6), 0, 1.1, 0, 8);
     const cam = new THREE.Group();
+    cam.name = 'camHead';
     cam.position.y = 2.2;
     box(cam, 0.15, 0.15, 0.4, M(0xf4f1ea, 0.4), 0, 0, 0.15);
     cyl(cam, 0.06, 0.06, 0.03, M(0x17151f), 0, 0, 0.36, 12).rotation.x = Math.PI / 2;
@@ -1462,6 +1463,7 @@ const R: Record<string, Recipe> = {
       for (let i = 0; i < 4; i++) sph(k.root, 0.03, glow(0xff2a2a, 3), s * 0.78, 0.25 + i * 0.32, 0, 6, 4);
     }
     const beams = new THREE.Group();
+    beams.name = 'laserBeams';
     for (let i = 0; i < 4; i++) {
       const b = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.015, 0.015), new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
       b.position.y = 0.25 + i * 0.32;
@@ -1494,6 +1496,7 @@ const R: Record<string, Recipe> = {
     box(k.root, 0.45, 0.55, 0.02, M(0x17151f), -0.3, 0.28, 0.31);
     // A sleepy guard dog
     const dog = new THREE.Group();
+    dog.name = 'guardDog';
     dog.position.set(0.45, 0, 0.5);
     const fur = M(0x6b4422, 0.9);
     sph(dog, 0.22, fur, 0, 0.25, 0, 12, 8).scale.set(0.8, 0.8, 1.4);
@@ -1534,6 +1537,7 @@ const R: Record<string, Recipe> = {
       l.rotation.set(Math.cos(a) * 0.3, 0, -Math.sin(a) * 0.3);
     }
     const head = new THREE.Group();
+    head.name = 'spotHead';
     head.position.y = 0.95;
     const c = cyl(head, 0.2, 0.15, 0.35, M(0x2b2b35, 0.4, 0.5), 0, 0, 0.05, 14);
     c.rotation.x = Math.PI / 2;

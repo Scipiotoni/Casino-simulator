@@ -3,7 +3,7 @@ import type { Modals } from './modals';
 import { h, clear } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
-import { GUNS, SLOTS, gunDef, gunModsOf, gunModsSummary, tunedGun } from '../game/guns';
+import { FISTS, GUNS, SLOTS, gunDef, gunModsOf, gunModsSummary, tunedGun } from '../game/guns';
 import { openGunCustomize } from './gunCustomize';
 import { gunThumb } from './preview';
 
@@ -16,8 +16,9 @@ export function openGunShop(game: Game, modals: Modals): void {
     clear(body);
     body.appendChild(h('p', { class: 'muted small', text: 'Guns and melee weapons only work out on the streets and sidewalks; inside any building they stay put away. Put what you own on keys 1–5 with the number buttons under each one. Paid from the cash you have on you.' }));
     const grid = h('div', { class: 'gun-grid' });
-    const guns = GUNS.filter((d) => !d.melee);
-    const melee = GUNS.filter((d) => d.melee);
+    // The lab's prototypes aren't for sale: they only show up here once you've stolen them.
+    const guns = GUNS.filter((d) => !d.melee && (!d.secret || g.guns.owned.includes(d.id)));
+    const melee = GUNS.filter((d) => d.melee && !d.builtin);
     for (const d of [...guns, ...melee]) {
       if (d === melee[0]) grid.appendChild(h('div', { class: 'gun-sep', text: '🏏 Melee' }));
       const owned = g.guns.owned.includes(d.id);
@@ -26,7 +27,7 @@ export function openGunShop(game: Game, modals: Modals): void {
       const mods = owned ? gunModsOf(g.guns, d.id) : null;
       const t = tunedGun(d, mods);
         const kind = d.flame ? 'Flame cone' : d.explosive ? `Explosive (${d.explosive.power} blast, ${d.explosive.radius} m)` : d.charge ? 'Charge shot · pierces 3' : d.burst ? `${d.burst}-round burst` : d.auto ? 'Full auto' : 'Semi-auto';
-      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${kind} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''}${d.dmg ? ` · ${d.dmg} damage` : ''}${d.headMul && d.headMul !== 2 ? ` · ×${d.headMul} headshots` : ''} · range ${Math.round(t.range)} m`;
+      const stats = d.melee ? `Melee · ${d.dmg} damage · reach ${d.range} m` : `${kind} · ${t.mag} rounds${d.pellets > 1 ? ` · ${d.pellets} pellets` : ''}${d.dmg ? ` · ${d.dmg} damage` : ''}${d.pierce && !d.charge ? ` · pierces ${d.pierce}` : ''}${d.headMul && d.headMul !== 2 ? ` · ×${d.headMul} headshots` : ''} · range ${Math.round(t.range)} m`;
       const fitted = mods ? gunModsSummary(mods) : '';
       const slotRow = h('div', { class: 'slot-row' });
       if (owned) {
@@ -43,6 +44,7 @@ export function openGunShop(game: Game, modals: Modals): void {
       grid.appendChild(h('div', { class: `gun-card${on ? ' on' : ''}${locked ? ' locked' : ''}` },
         h('img', { class: 'gun-thumb', src: gunThumb(d, mods), alt: '' }),
         h('div', { class: 'gun-name', text: d.name }),
+        d.secret ? h('div', { class: 'gun-stats pos', text: '🧪 Prototype stolen from Site 51-B · not for sale' }) : null,
         h('div', { class: 'muted small', text: d.blurb }),
         h('div', { class: 'gun-stats', text: stats }),
         fitted ? h('div', { class: 'gun-stats pos', text: `🎨 ${fitted}` }) : null,
@@ -75,6 +77,7 @@ export class GunBar {
   private swap: HTMLButtonElement;
   private ads: HTMLButtonElement;
   private roll: HTMLButtonElement;
+  private fists: HTMLButtonElement;
   private hint = h('div', { class: 'gb-hint' });
   private slotsEl = h('div', { class: 'gb-slots' });
   private reloadBtn!: HTMLButtonElement;
@@ -111,7 +114,12 @@ export class GunBar {
       class: 'gb-ads', text: 'AIM', 'aria-label': 'Aim down the sights',
       onClick: () => { g.gunplay.adsTouch = !g.gunplay.adsTouch; this.key = ''; },
     }) as HTMLButtonElement;
+    this.fists = h('button', {
+      class: 'gb-btn gb-fists', text: '👊', title: 'Fists (X or 0)', 'aria-label': 'Fists',
+      onClick: () => g.equipGun(g.guns.equipped === FISTS ? null : FISTS),
+    }) as HTMLButtonElement;
     this.el = h('div', { class: 'gunbar', hidden: true },
+      this.fists,
       this.slotsEl,
       h('div', { class: 'gb-info' }, this.name, this.ammo, this.hint),
       (this.reloadBtn = h('button', { class: 'gb-btn', text: '⟳', title: 'Reload (R)', 'aria-label': 'Reload', onClick: () => g.gunplay.reload() }) as HTMLButtonElement),
@@ -128,10 +136,11 @@ export class GunBar {
 
   update(): void {
     const g = this.game;
-    const has = g.guns.owned.length > 0 && g.state === 'playing';
     const d = gunDef(g.guns.equipped);
     const gp = g.gunplay;
     const out = gp.canShoot;
+    // Everyone has fists: the bar shows out on the street even before you buy a gun.
+    const has = g.state === 'playing' && (g.guns.owned.length > 0 || out || g.guns.equipped === FISTS);
     const fp = g.cam.mode === 'first';
     const key = `${has}|${d?.id}|${gp.def ? JSON.stringify(gp.def.mods) : ''}|${d ? gp.ammoOf(d.id) : 0}|${gp.reloading > 0}|${gp.perfectMag}|${out}|${g.input.isTouch}|${fp}|${gp.adsTouch}|${g.guns.slots.join(',')}`;
     if (key === this.key) return;
@@ -139,8 +148,8 @@ export class GunBar {
     this.el.hidden = !has;
     if (!has) return;
     this.el.classList.toggle('armed', !!d && out);
-    this.name.textContent = d ? `${d.melee ? '🏏' : '🔫'} ${d.name}` : '🔫 Holstered';
-    this.ammo.textContent = d ? (d.melee ? 'Melee' : gp.reloading > 0 ? 'Reloading… (R again to time it)' : `${gp.perfectMag ? '⚡ ' : ''}${gp.ammoOf(d.id)} / ${gp.def?.mag ?? d.mag}`) : '1–5 to draw';
+    this.name.textContent = d ? `${d.builtin ? '👊' : d.melee ? '🏏' : '🔫'} ${d.name}` : '🔫 Holstered';
+    this.ammo.textContent = d ? (d.melee ? 'Melee' : gp.reloading > 0 ? 'Reloading… (R again to time it)' : `${gp.perfectMag ? '⚡ ' : ''}${gp.ammoOf(d.id)} / ${gp.def?.mag ?? d.mag}`) : 'X fists · 1–5 weapons';
     // The five slots: click to draw, the number key does the same.
     this.slotsEl.replaceChildren(...g.guns.slots.map((id, k) => {
       const sd = gunDef(id);
@@ -152,10 +161,12 @@ export class GunBar {
       }, h('b', { text: String(k + 1) }), h('img', { src: sd ? gunThumb(sd, sm) : '', alt: '', hidden: !sd }));
     }));
     this.hint.textContent = !d ? '' : out
-      ? (d.melee ? (g.input.isTouch ? 'Tap FIRE to swing' : 'Click to swing · C roll') : g.input.isTouch ? (fp ? 'Drag to look · Hold FIRE' : 'Hold FIRE') : d.charge ? 'Hold to charge, release to fire · C roll' : fp ? 'Click shoot · Right-click aim · R reload · C roll' : 'Click to shoot · R reload · C roll · V first person')
+      ? (d.melee ? (g.input.isTouch ? 'Tap FIRE jab · hold heavy · BLOCK' : 'Tap jab · hold heavy · right-click block · C roll') : g.input.isTouch ? (fp ? 'Drag to look · Hold FIRE' : 'Hold FIRE') : d.charge ? 'Hold to charge, release to fire · C roll' : fp ? 'Click shoot · Right-click aim · R reload · C roll' : 'Click to shoot · R reload · C roll · V first person')
       : 'Street only';
     this.fire.hidden = !g.input.isTouch || !d || !out;
-    this.ads.hidden = !g.input.isTouch || !d || !out || !fp;
+    this.ads.hidden = !g.input.isTouch || !d || !out || (!fp && !d.melee);
+    this.ads.textContent = d?.melee ? 'BLOCK' : 'AIM';
+    this.fists.classList.toggle('on', g.guns.equipped === FISTS);
     this.roll.hidden = !g.input.isTouch || !out;
     this.ads.classList.toggle('on', gp.adsTouch);
     this.reloadBtn.hidden = !d || !!d.melee;
