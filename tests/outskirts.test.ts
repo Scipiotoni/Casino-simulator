@@ -243,3 +243,21 @@ describe('more cars, smaller hitboxes', () => {
     expect(carsTouch(v, 4.6, 0, 4.5)).toBe(false); // a car length ahead
   });
 });
+
+import { PLAYER_VIEW_R, SHOT_REACH, playerViewRadius } from '../src/net/net';
+import { GUNS } from '../src/game/guns';
+import { VIEW_DISTANCES } from '../src/world/viewDistance';
+
+describe('seeing other players from far away', () => {
+  it('draws them well past the old 90 m, further with a longer view distance', () => {
+    expect(playerViewRadius(1)).toBe(PLAYER_VIEW_R);
+    expect(PLAYER_VIEW_R).toBeGreaterThanOrEqual(300);
+    const radii = VIEW_DISTANCES.map((v) => playerViewRadius(v.scale));
+    for (let i = 1; i < radii.length; i++) expect(radii[i]).toBeGreaterThan(radii[i - 1]);
+  });
+
+  it('always draws anyone who can shoot you, whatever the view distance', () => {
+    for (const d of GUNS) expect(SHOT_REACH).toBeGreaterThan(d.range);
+    for (const v of VIEW_DISTANCES) expect(playerViewRadius(v.scale)).toBeGreaterThanOrEqual(SHOT_REACH);
+  });
+});

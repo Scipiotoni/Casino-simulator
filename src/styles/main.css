@@ -5024,6 +5024,21 @@ p.small {
 .net-label.prot {
   opacity: 0.6;
 }
+.net-label.far {
+  display: flex;
+  gap: 5px;
+  align-items: baseline;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  opacity: 0.82;
+}
+.nl-dist {
+  font-weight: 600;
+  opacity: 0.75;
+}
+.net-label.far.prot {
+  opacity: 0.5;
+}
 @media (max-width: 700px) {
   .hpbar {
     left: 8px;

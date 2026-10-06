@@ -17,13 +17,14 @@ import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { dampAngle } from '../core/math';
 import { Relay } from './relay';
-import { decodeGunMods, encodeGunMods, gunDef } from '../game/guns';
+import { GUNS, decodeGunMods, encodeGunMods, gunDef } from '../game/guns';
 import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, ROLL_TIME, bountyFor, type RemoteTarget } from '../game/combat';
 import { remoteShotEnd } from '../game/gunplay';
 import { type CarDef, type CarMods, buildCar, carDef, sanitizeMods, seatSpots } from '../world/vehicles';
 import { Car } from '../world/cityView';
 import { groundAt } from '../world/terrain';
+import { VIEW } from '../world/viewDistance';
 import { openGround } from '../world/city';
 import { type HeistRecord, cleanRecords } from '../game/heistRules';
 import type { HouseTarget } from '../game/heist';
@@ -102,6 +103,22 @@ export function banPrice(minutes: number): number {
 }
 
 const PID_KEY = 'jackpot-tycoon:pid';
+
+/**
+ * The longest shot in the game (the Gauss Cannon's 230 m) plus a little: other players are
+ * always drawn at least this far out, so you can see whoever can hit you, and their hits on
+ * you count from up to here.
+ */
+export const SHOT_REACH = Math.max(...GUNS.map((d) => d.range)) + 10;
+/** How far out other players (and their parked cars) are drawn at the Normal view distance. */
+export const PLAYER_VIEW_R = 320;
+/** Name tags shrink to a small tag with the distance beyond this. */
+const FAR_LABEL = 110;
+
+/** How far out other players are drawn for a view-distance scale (Near 0.7, Normal 1, Far 1.6). */
+export function playerViewRadius(scale: number): number {
+  return Math.max(SHOT_REACH, PLAYER_VIEW_R * scale);
+}
 
 interface LotDoc {
   owner: string;
@@ -220,6 +237,9 @@ interface Remote {
   seenLoot?: number;
   hpEl: HTMLElement;
   nameEl: HTMLElement;
+  /** How far away they are, on the name tag once they're a long way off (last value shown). */
+  distEl: HTMLElement;
+  distShown: number;
   /** Wanted stars they publish. */
   wl: number;
   /** Chat lines of theirs already shown (by id); undefined until first seen. */
@@ -504,11 +524,12 @@ export class Net {
         this.game.renderer.scene.add(model.root);
         const nameEl = h('span', { class: 'nl-name' });
         const hpEl = h('i', { class: 'nl-hp', hidden: true });
-        const label = h('div', { class: 'net-label' }, nameEl, hpEl);
+        const distEl = h('span', { class: 'nl-dist', hidden: true });
+        const label = h('div', { class: 'net-label' }, nameEl, distEl, hpEl);
         this.labelRoot.appendChild(label);
         r = {
           key: p.peer, pid, name: 'Player', model, lookKey, x: 0, z: 0, tx: 0, tz: 0, yaw: 0, floor: 0, lot: '', moving: false, out: false, gun: null, gm: '', shots: 0, held: null, label, visible: false,
-          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, carKey: '', car: null, carOpen: false, carSeats: [], ride: null, wl: 0,
+          bans: {}, owes: {}, casino: null, since: Date.now(), fx: new PlayerFx(model), rb: 0, hp: 100, ko: false, prot: false, hpEl, nameEl, distEl, distShown: -1, carKey: '', car: null, carOpen: false, carSeats: [], ride: null, wl: 0,
           buf: [], bufLot: '', gap: 120, vel: 0, rolls: -1, reloading: false, rollT: 0, reloadT: 0, ks: 0, feedSeen: new Set(), gifts: [],
           hz: '', al: false, heists: [],
           blocking: false, charge: 0, stunned: false,
@@ -665,7 +686,7 @@ export class Net {
       const dmg = Math.min(400, hits - r.seenHits);
       r.seenHits = hits;
       // Only shots fired out on the street, from close enough to reach you, count.
-      if ((r.out || this.fighting(r)) && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < 150) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
+      if ((r.out || this.fighting(r)) && r.visible && Math.hypot(r.x - g.player.x, r.z - g.player.z) < SHOT_REACH) g.combat.damage(dmg, r.pid, r.name, r.x, r.z);
     }
     // Fist fights: their punches and swings at you get blocked, parried or taken on your side.
     r.blocking = pr.bk === 1;
@@ -889,7 +910,8 @@ export class Net {
     const g = this.game;
     const me = g.street.worldToGlobal(g.player.x, g.player.z);
     const out = !g.inside && g.player.floor === 0;
-    for (const pv of this.parked.values()) pv.root.visible = out && Math.hypot(pv.x - me.x, pv.z - me.z) < 160;
+    const R = playerViewRadius(VIEW.scale);
+    for (const pv of this.parked.values()) pv.root.visible = out && Math.hypot(pv.x - me.x, pv.z - me.z) < R;
     const now = Date.now();
     for (const [k, t] of this.tookCars) if (now - t > 20000) this.tookCars.delete(k);
     if (this.took && now > this.took.until) this.took = null;
@@ -1620,6 +1642,7 @@ export class Net {
     const map: MapPlayer[] = [];
     const cam = g.renderer.camera;
     const { w, h: hh } = g.renderer.size;
+    const R = playerViewRadius(VIEW.scale);
     for (const r of this.remotes.values()) {
       const lotId = this.localLot(r.lot);
       const known = !!g.street.get(lotId);
@@ -1643,7 +1666,8 @@ export class Net {
       // A passenger sits in the driver's car, wherever their own updates put them.
       const seated = r.ride ? this.riderSpot(r.ride) : null;
       let visible = known && (outside || (lotId === g.street.activeId && g.inside && r.floor === g.viewFloor));
-      if (visible && Math.hypot(wx - g.player.x, wz - g.player.z) > 90) visible = false;
+      const dist = Math.hypot(wx - g.player.x, wz - g.player.z);
+      if (visible && dist > R) visible = false;
       if (visible && (!r.visible || Math.hypot(sp.x - r.x, sp.z - r.z) > 12)) {
         r.x = sp.x;
         r.z = sp.z;
@@ -1711,7 +1735,16 @@ export class Net {
         m.moveSpeed = r.vel / 1.4;
         m.setPose(r.vel > (outside ? 6.6 : 4.4) ? 'run' : 'walk');
       } else m.setPose('idle');
-      r.hpEl.hidden = !r.out || (r.hp >= 100 && !r.ko);
+      // A long way off: a smaller tag that says how far (no health bar).
+      const far = dist > FAR_LABEL;
+      r.label.classList.toggle('far', far);
+      const shown = far ? Math.round(dist / 10) * 10 : -1;
+      if (shown !== r.distShown) {
+        r.distShown = shown;
+        r.distEl.hidden = !far;
+        r.distEl.textContent = far ? `${shown} m` : '';
+      }
+      r.hpEl.hidden = far || !r.out || (r.hp >= 100 && !r.ko);
       if (!r.hpEl.hidden) r.hpEl.style.setProperty('--hp', `${r.ko ? 0 : r.hp}%`);
       r.label.classList.toggle('ko', r.ko);
       r.label.classList.toggle('prot', r.prot);
