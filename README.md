@@ -187,6 +187,16 @@ It runs in any modern browser on desktop or phone. Everything you see and hear i
 
 ![Character creator](docs/screenshot-creator.jpg)
 
+## The sequel: Casino Simulator 2
+
+Follow Interstate 15 south-east out of town, across the dunes and down to the bay: the
+highway carries on as a cable-stayed bridge out over the water to **Jackpot Island**,
+[Casino Simulator 2](https://scipiotoni.github.io/Casino-simulator-2/). Drive onto the
+bridge and the game offers to take you across (your casino is saved first). On the island,
+driving back over its Interstate 15 bridge brings you home: you carry on at the end of the
+bridge here. The title screen links to the sequel too. `?island=<url>` points the bridge at
+another copy of the island (for testing).
+
 ## Controls
 
 | | Desktop | Touch |

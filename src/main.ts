@@ -1,4 +1,5 @@
 import '@fontsource/bungee/latin-400.css';
+import { arrivedFromIsland, goToIsland } from './game/sequel';
 import '@fontsource/nunito/latin-400.css';
 import '@fontsource/nunito/latin-700.css';
 import '@fontsource/nunito/latin-800.css';
@@ -190,6 +191,35 @@ async function start(hotData: unknown): Promise<void> {
     if (document.hidden) save();
   });
   window.addEventListener('pagehide', save);
+
+  // Interstate 15: the bridge at the end of the highway goes on to Jackpot Island (the sequel).
+  let atBridge = false;
+  // Back from the island: a saved game carries on at the end of the bridge (a new one starts at its casino as usual).
+  const backFromIsland = arrivedFromIsland();
+  const backToSave = backFromIsland && !!readSave();
+  let welcomed = false;
+  window.setInterval(() => {
+    if (game.state !== 'playing') return;
+    if (backFromIsland && !welcomed) {
+      welcomed = true;
+      const a = backToSave ? game.street.outskirts.bridgeArrival() : null;
+      if (a) game.teleportTo(a.x, a.z);
+      game.notify('Welcome back from Jackpot Island!', 'good');
+    }
+    const car = game.drive.driving;
+    const pg = car ? { x: car.x, z: car.z } : game.street.worldToGlobal(game.player.x, game.player.z);
+    const here = game.street.outskirts.bridgeZone(pg.x, pg.z) === 'ask';
+    if (here && !atBridge && !hud.modals.isOpen) {
+      hud.modals.confirm(
+        'Interstate 15 · Jackpot Island',
+        'The bridge runs out over the bay to Jackpot Island: Casino Simulator 2, a whole new island where everyone starts with a flat and a little cash. Your casino here is saved; drive back over the bridge any time.',
+        'Cross the bridge ▸',
+        () => goToIsland(() => game.saveNow()),
+        false,
+      );
+    }
+    atBridge = here;
+  }, 400);
 
   // Global shortcuts for panels
   window.addEventListener('keydown', (e) => {

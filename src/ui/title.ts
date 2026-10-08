@@ -1,4 +1,5 @@
 import { h, clear, icon, swatch } from './dom';
+import { goToIsland } from '../game/sequel';
 import type { Game, SaveData } from '../game/game';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS, type CasinoLook } from '../world/building';
 import { drawNeonText, roundRect } from '../render/textures';
@@ -68,6 +69,7 @@ export class TitleScreen {
     buttons.appendChild(h('button', { class: `btn ${save ? '' : 'gold '}big`, onClick: startNew },
       h('span', { class: 'btn-main', text: save ? 'New casino' : 'Open your casino' }), h('span', { class: 'btn-sub', text: 'Name it, style it, build it' })));
     buttons.appendChild(h('button', { class: 'btn ghost', html: `${icon('help', 16)} How to play`, onClick: () => { audio.unlock(); this.onHelp?.(); } }));
+    buttons.appendChild(h('button', { class: 'btn ghost', text: 'Casino Simulator 2: Jackpot Island ▸', title: 'The sequel, across the Interstate 15 bridge', onClick: () => { audio.unlock(); goToIsland(() => undefined); } }));
     this.card.append(
       logo,
       h('p', { class: 'tagline', text: 'Buy machines, place them anywhere, keep your guests happy and build the flashiest casino on the Strip.' }),

@@ -13,16 +13,50 @@ import { TerrainMesh } from './terrainMesh';
  * Everything around the city, in the global frame: real land (see `Terrain`) with a ring road
  * that follows the city's edge, roads out of every street and avenue that ends at it, highways
  * cut into the hills (up the river canyon into the mountains, east to an overlook on the
- * mesas, south across the dunes), the river through town between stone walls with bridges
- * where the streets cross it, and things to find out there: the "Welcome to Jackpot City"
- * sign, billboards, Lake Mojave, Pinewood Forest, an oasis, a solar farm, wind turbines, a
- * radio mast and hot-air balloons drifting over the Strip.
+ * mesas, south across the dunes to the bay, where the Interstate 15 bridge to Jackpot Island
+ * runs out over the water), the river through town between stone walls with bridges where
+ * the streets cross it, and things to find out there: the "Welcome to Jackpot City" sign,
+ * billboards, Lake Mojave, Pinewood Forest, an oasis, a solar farm, wind turbines, a radio
+ * mast and hot-air balloons drifting over the Strip.
  */
 
 /** Old ring road distance from the city's box (the military base is laid out from it). */
 export const RING = 70;
 const BELT_HALF = 5.5;
 const HIGHWAY_HALF = 5.5;
+
+/** Water level of the bay at the end of Interstate 15 (its bridge runs out over it to Jackpot Island). */
+export const BAY_LEVEL = 2;
+/** Half the bridge deck's width: the interstate's two lanes and a kerb each side. */
+const BRIDGE_HALF = 8;
+/** How high the bridge's main span runs over the bay (it leaves the clifftop a little lower). */
+const BRIDGE_SPAN_Y = BAY_LEVEL + 42;
+/** How far out the bridge is drawn (on past the haze, even at the far view distance). */
+const BRIDGE_LEN = 4400;
+/** The pylons of its cable-stayed main span, metres out from the shore. */
+const PYLONS = [1000, 1760];
+
+/** The last two points of Interstate 15 (on the original grid): it reaches the bay at the second. */
+function i15Tail(): [Pt, Pt] {
+  const [, fx1] = cityX(MIN_COLS);
+  const [, z1] = cityZ();
+  return [{ x: fx1 + 640, z: z1 + 1500 }, { x: fx1 + 980, z: z1 + 2300 }];
+}
+
+/** The Interstate 15 bridge: where it leaves the highway (global) and at what height, the way it runs (unit) and how far it's drawn. */
+export interface BridgeLine {
+  x: number;
+  z: number;
+  y: number;
+  dx: number;
+  dz: number;
+  len: number;
+}
+
+/** Height of the bridge's deck `s` metres out from the shore: from the end of the highway up to the main span. */
+export function bridgeY(b: BridgeLine, s: number): number {
+  return b.y + (BRIDGE_SPAN_Y - b.y) * smooth(s / 900);
+}
 
 interface Circle {
   x: number;
@@ -214,13 +248,67 @@ export class Outskirts {
   /** The oasis, the overlook and the end of the canyon road (map labels). */
   oasis: { x: number; z: number } | null = null;
   overlook: { x: number; z: number; y: number } | null = null;
+  /**
+   * The Interstate 15 bridge to Jackpot Island (the next game): it leaves the end of the
+   * highway on the shore of the bay and runs out over the water into the haze.
+   */
+  bridge: BridgeLine | null = null;
+  /** The bay it crosses, south-east of town (the box it's carved in; water wherever the land is below BAY_LEVEL). */
+  bay: { x0: number; x1: number; z0: number; z1: number } | null = null;
   private waterTex: THREE.CanvasTexture | null = null;
 
   /** Ground height (global) round the city: the land, the roads and bridges, the pier. */
   groundAt(gx: number, gz: number): number {
     const l = this.lake;
     if (l && Math.abs(gx - l.pierX) < 1.8 && gz > l.pierZ0 && gz < l.pierZ1) return 0.2;
+    const b = this.bridge;
+    if (b) {
+      const rx = gx - b.x;
+      const rz = gz - b.z;
+      const s = rx * b.dx + rz * b.dz;
+      if (s > 0 && s < b.len && Math.abs(rz * b.dx - rx * b.dz) < BRIDGE_HALF) return bridgeY(b, s);
+    }
     return this.terrain ? this.terrain.groundAt(gx, gz) : 0;
+  }
+
+  /** Where a point is against the bridge: `s` metres out along it from the shore, `u` across it (0 down the middle). */
+  private bridgeAt(gx: number, gz: number): { s: number; u: number } | null {
+    const b = this.bridge;
+    if (!b) return null;
+    const rx = gx - b.x;
+    const rz = gz - b.z;
+    return { s: rx * b.dx + rz * b.dz, u: rz * b.dx - rx * b.dz };
+  }
+
+  /** On the bridge's deck (`pad` metres either side of it counts too)? */
+  onBridge(gx: number, gz: number, pad = 0): boolean {
+    const p = this.bridgeAt(gx, gz);
+    return !!p && p.s > -pad && p.s < this.bridge!.len && Math.abs(p.u) < BRIDGE_HALF + pad;
+  }
+
+  /**
+   * Round the end of the bridge: 'ask' on the end of the highway and the first stretch of the
+   * deck (where the trip to Jackpot Island is offered), 'near' further along it or back down the
+   * road a little (still there: no asking again), null once you've left.
+   */
+  bridgeZone(gx: number, gz: number): 'ask' | 'near' | null {
+    const p = this.bridgeAt(gx, gz);
+    if (!p) return null;
+    const u = Math.abs(p.u);
+    if (p.s > -20 && p.s < 140 && u < BRIDGE_HALF + 2) return 'ask';
+    if (p.s > -90 && p.s < this.bridge!.len && u < BRIDGE_HALF + 14) return 'near';
+    return null;
+  }
+
+  /** Where you come back to from Jackpot Island: on the highway just short of the bridge, in the lane into town, facing town (global). */
+  bridgeArrival(): { x: number; z: number; yaw: number } | null {
+    const hw = this.highways.find((h) => h.name === 'Interstate 15');
+    if (!this.bridge || !hw) return null;
+    const p = hw.road.path.pointAt(hw.road.path.length - 45);
+    // Heading back up the highway, on the right-hand side of the road.
+    const fx = -p.dx;
+    const fz = -p.dz;
+    return { x: p.x - fz * 3.2, z: p.z + fx * 3.2, yaw: Math.atan2(fx, fz) };
   }
 
   /** Same as groundAt (kept for older callers). */
@@ -242,11 +330,18 @@ export class Outskirts {
       const v = (gz - p.z) / p.rz;
       if (u * u + v * v < 1) return true;
     }
-    return false;
+    return this.inBay(gx, gz) && !this.onBridge(gx, gz);
   }
 
-  /** In the lake, the forest or on their shores (no cacti there). */
+  /** Over the water of the bay (`above` metres up the shore counts too)? */
+  private inBay(gx: number, gz: number, above = 0): boolean {
+    const b = this.bay;
+    return !!b && !!this.terrain && gx > b.x0 - 220 && gx < b.x1 + 220 && gz > b.z0 - 220 && gz < b.z1 + 220 && this.terrain.sample(gx, gz) < BAY_LEVEL + above;
+  }
+
+  /** In the lake, the forest, the bay, under the bridge or on their shores (no cacti there). */
   private inNature(gx: number, gz: number, pad = 0): boolean {
+    if (this.inBay(gx, gz, 3) || this.onBridge(gx, gz, 6 + pad)) return true;
     const l = this.lake;
     if (l) {
       const u = (gx - l.x) / (l.rx + 40 + pad);
@@ -275,6 +370,9 @@ export class Outskirts {
     if (!t) return false;
     const s = slotAt(gx, gz, this.cols);
     if (s && this.plan?.has(s)) return false;
+    // On the bridge: anywhere between its kerbs (as far as the land goes); its guard rails stop you.
+    const p = this.bridgeAt(gx, gz);
+    if (p && p.s > 0 && p.s < this.bridge!.len && Math.abs(p.u) < BRIDGE_HALF + 1.5) return Math.abs(p.u) < BRIDGE_HALF - 0.8 && t.inBounds(gx, gz);
     return t.walkable(gx, gz) && !this.blocked(gx, gz) && !(this.extraBlock?.(gx, gz) ?? false);
   }
 
@@ -379,9 +477,16 @@ export class Outskirts {
     this.pond = { x: fcx + 20, z: fcz - 30, rx: 22, rz: 14 };
     this.oasis = { x: midX - 60, z: this.z0 - RING - 120 };
     this.overlook = { x: fx1 + 900, z: (this.z0 + this.z1) / 2, y: 26 };
+    // Interstate 15 meets the bay at its end; the bridge carries on the way it was heading.
+    const [back, end] = i15Tail();
+    const dl = Math.hypot(end.x - back.x, end.z - back.z);
+    this.bridge = { x: end.x, z: end.z, y: BAY_LEVEL + 8, dx: (end.x - back.x) / dl, dz: (end.z - back.z) / dl, len: BRIDGE_LEN };
+    this.bay = { x0: end.x - 450, x1: end.x + 1150, z0: end.z + 100, z1: end.z + 1500 };
 
     const t = new Terrain(plan, this.sites());
     this.terrain = t;
+    // The bridge leaves the highway where the land meets the bay (never lower than a clear span over the water).
+    this.bridge.y = Math.max(BAY_LEVEL + 8, t.sample(end.x, end.z));
     const belt = this.makeBelt(t, plan);
     this.belt = belt;
     this.roads = [{ path: belt, half: BELT_HALF }];
@@ -402,10 +507,15 @@ export class Outskirts {
     this.buildForest();
     this.buildScatter();
     this.buildLandmarks();
+    this.buildBay();
+    this.buildBridge();
     setWilds((x, z) => this.open(x, z));
   }
 
-  /** The places the land is levelled for: the base, the lake shore, the oasis, the solar farm, the overlook, the forest clearings. */
+  /**
+   * The places the land is levelled for: the base, the lake shore, the oasis, the solar farm,
+   * the overlook, the forest clearings, and the floor of the bay at the end of Interstate 15.
+   */
   private sites(): Site[] {
     const b = baseSite(this.cols);
     const l = this.lake!;
@@ -413,6 +523,7 @@ export class Outskirts {
     const o = this.oasis!;
     const ov = this.overlook!;
     const p = this.pond!;
+    const bay = this.bay!;
     const fcx = (f.x0 + f.x1) / 2;
     const fcz = (f.z0 + f.z1) / 2;
     const [, fx1] = cityX(MIN_COLS);
@@ -427,6 +538,7 @@ export class Outskirts {
       { x: fcx + 60, z: f.z0 + 60, rx: 12, rz: 12, blend: 20, round: true },
       { x: p.x, z: p.z, rx: p.rx + 10, rz: p.rz + 10, blend: 30, round: true },
       { x: fcx, z: f.z1 - 6, rx: 18, rz: 14, blend: 30, round: true },
+      { x: (bay.x0 + bay.x1) / 2, z: (bay.z0 + bay.z1) / 2, rx: (bay.x1 - bay.x0) / 2, rz: (bay.z1 - bay.z0) / 2, y: BAY_LEVEL - 14, blend: 200 },
     ];
   }
 
@@ -463,10 +575,16 @@ export class Outskirts {
     trees.build(this.group);
   }
 
-  /** Recolour the land: mossy forest floor, beach sand round the lake, green round the oasis, lawns by the river. */
+  /** Recolour the land: mossy forest floor, beach sand round the lake and the bay (its floor water blue, for the map), green round the oasis, lawns by the river. */
   private tint(x: number, z: number, c: THREE.Color): void {
     if (this.plan && this.riverPark(x, z, this.plan)) {
       c.copy(LAWN);
+      return;
+    }
+    if (this.inBay(x, z, 4)) {
+      const y = this.terrain!.sample(x, z);
+      if (y < BAY_LEVEL) c.copy(BAY_WATER);
+      else c.lerp(BEACH, smooth((BAY_LEVEL + 4 - y) / 3));
       return;
     }
     const f = this.forest;
@@ -574,7 +692,8 @@ export class Outskirts {
 
   /**
    * The highways: River Road up the canyon into the mountains, Mesa Drive east to the overlook,
-   * Interstate 15 south across the dunes, and the roads to the lake, the forest and the base.
+   * Interstate 15 south across the dunes to its bridge, and the roads to the lake, the forest
+   * and the base.
    */
   private makeHighways(t: Terrain, belt: Path): NamedRoad[] {
     const out: NamedRoad[] = [];
@@ -629,14 +748,16 @@ export class Outskirts {
         y1: ov.y,
       },
     });
-    // Interstate 15: south-east across the dunes, as far as the eye can see.
+    // Interstate 15: south-east across the dunes and down to the bay, where its bridge to
+    // Jackpot Island takes over.
     const s0 = this.beltPoint(belt, fx0 + 0.8 * W, z1 + 100);
     out.push({
       name: 'Interstate 15',
       road: {
-        path: smoothPath([s0, { x: s0.x + 110, z: s0.z + 300 }, { x: fx1 + 250, z: z1 + 820 }, { x: fx1 + 640, z: z1 + 1500 }, { x: fx1 + 980, z: z1 + 2300 }], 6),
+        path: smoothPath([s0, { x: s0.x + 110, z: s0.z + 300 }, { x: fx1 + 250, z: z1 + 820 }, ...i15Tail()], 6),
         half: HIGHWAY_HALF + 1,
         y0: 0,
+        y1: this.bridge!.y,
       },
     });
     // Lake Road down to the beach car park.
@@ -1493,6 +1614,207 @@ export class Outskirts {
     }
   }
 
+  /**
+   * The bay at the end of Interstate 15: water over its floor, and on out past the edge of the
+   * land to the horizon (Jackpot Island is somewhere out there in the haze).
+   */
+  private buildBay(): void {
+    const t = this.terrain!;
+    const b = this.bridge!;
+    const bay = this.bay!;
+    const tz1 = t.z0 + t.depth;
+    const pos: number[] = [];
+    const quad = (xa: number, za: number, xb: number, zb: number) => {
+      pos.push(xa, BAY_LEVEL, za, xa, BAY_LEVEL, zb, xb, BAY_LEVEL, zb, xa, BAY_LEVEL, za, xb, BAY_LEVEL, zb, xb, BAY_LEVEL, za);
+    };
+    // Over the land: only where it's under water (no puddles in the dunes round about).
+    const C = 24;
+    for (let z = bay.z0 - 220; z < tz1; z += C) {
+      for (let x = bay.x0 - 220; x < bay.x1 + 220; x += C) {
+        const lo = Math.min(t.sample(x, z), t.sample(x + C, z), t.sample(x, z + C), t.sample(x + C, z + C), t.sample(x + C / 2, z + C / 2));
+        if (lo < BAY_LEVEL + 0.5) quad(x, z, x + C, Math.min(tz1, z + C));
+      }
+    }
+    // Past the edge of the land: open water out beyond the haze.
+    quad(b.x - 3800, tz1 - 12, b.x + 3800, b.z + 4800);
+    const uv: number[] = [];
+    for (let i = 0; i < pos.length; i += 3) uv.push(pos[i] / 48, pos[i + 2] / 48);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.computeVertexNormals();
+    const water = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x1f7fa8, map: (this.waterTex ?? waterTexture()).clone(), roughness: 0.3, metalness: 0, emissive: 0x052838 }));
+    water.receiveShadow = true;
+    water.name = 'bay';
+    this.group.add(water);
+  }
+
+  /**
+   * Interstate 15's bridge to Jackpot Island: from the end of the highway on the shore it climbs
+   * on concrete piers to a cable-stayed main span between two tall pylons and runs on over the
+   * water into the haze, with kerbs, guard rails and lamps all the way. A big overhead sign over
+   * the highway just before it points the way (and, the other way, back to town).
+   */
+  private buildBridge(): void {
+    const b = this.bridge!;
+    const t = this.terrain!;
+    const hw = this.highways.find((h) => h.name === 'Interstate 15');
+    if (!hw) return;
+    const g = this.group;
+    const ax = (s: number, u: number) => b.x + b.dx * s - b.dz * u;
+    const az = (s: number, u: number) => b.z + b.dz * s + b.dx * u;
+    const st: Station[] = [];
+    for (let s = 0; s <= b.len; s += 20) st.push({ x: ax(s, 0), z: az(s, 0), y: bridgeY(b, s), dx: b.dx, dz: b.dz });
+    // Deck, kerbs and guard rails, swept along it.
+    const deck = new Tris();
+    const kerb = new Tris();
+    const rail = new Tris();
+    sweep(st, boxShape(0, BRIDGE_HALF * 2, -2.2, 0.04), deck, 3);
+    for (const side of [-1, 1]) {
+      sweep(st, boxShape(side * (BRIDGE_HALF - 0.6), 1.2, 0.04, 0.5), kerb, 2);
+      for (const y of [0.55, 0.95]) sweep(st, boxShape(side * (BRIDGE_HALF - 0.1), 0.12, y - 0.11, y + 0.11), rail, 2);
+    }
+    const concrete = mat(0xd9d4ca, { rough: 0.85 });
+    const steel = mat(0x8fa3b8, { rough: 0.4, metal: 0.6 });
+    for (const [tris, m] of [[deck, mat(0xb9b4aa, { rough: 0.9 })], [kerb, concrete], [rail, steel]] as const) {
+      const mesh = tris.mesh(m);
+      if (!mesh) continue;
+      mesh.castShadow = true;
+      g.add(mesh);
+    }
+    // The interstate's lanes carry on over it (the markings in step with the highway's).
+    {
+      const pos: number[] = [];
+      const uv: number[] = [];
+      const idx: number[] = [];
+      const half = HIGHWAY_HALF + 1;
+      const v0 = hw.road.path.length / 12;
+      st.forEach((p, i) => {
+        const s = i * 20;
+        pos.push(p.x - p.dz * half, p.y + 0.07, p.z + p.dx * half, p.x + p.dz * half, p.y + 0.07, p.z - p.dx * half);
+        uv.push(0, v0 + s / 12, 1, v0 + s / 12);
+        if (i > 0) {
+          const a = (i - 1) * 2;
+          idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+        }
+      });
+      const rg = new THREE.BufferGeometry();
+      rg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      rg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      rg.setIndex(idx);
+      rg.computeVertexNormals();
+      const road = new THREE.Mesh(rg, new THREE.MeshStandardMaterial({ map: roadTexture(), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
+      road.receiveShadow = true;
+      g.add(road);
+    }
+    // Guard rail posts, and lamp posts every 60 m on alternate sides (lit after dark).
+    const across = Math.atan2(-b.dz, b.dx);
+    const posts: THREE.Matrix4[] = [];
+    for (let s = 2; s < b.len; s += 8) for (const side of [-1, 1]) posts.push(place(ax(s, side * (BRIDGE_HALF - 0.1)), bridgeY(b, s) + 0.55, az(s, side * (BRIDGE_HALF - 0.1))));
+    const pp = instancedChunks(new THREE.BoxGeometry(0.15, 1.1, 0.15), steel, posts, false, 400, 500);
+    if (pp) g.add(pp);
+    const poles: THREE.Matrix4[] = [];
+    const arms: THREE.Matrix4[] = [];
+    const heads: THREE.Matrix4[] = [];
+    for (let s = 30, k = 0; s < b.len; s += 60, k++) {
+      const side = k % 2 ? 1 : -1;
+      const y = bridgeY(b, s);
+      const u = side * (BRIDGE_HALF - 0.4);
+      poles.push(place(ax(s, u), y + 4.5, az(s, u)));
+      arms.push(place(ax(s, u - side * 1.1), y + 9, az(s, u - side * 1.1), across));
+      heads.push(place(ax(s, u - side * 2.1), y + 8.85, az(s, u - side * 2.1), across));
+    }
+    const lampSteel = mat(0x5a6470, { rough: 0.4, metal: 0.6 });
+    const glow = new THREE.MeshStandardMaterial({ color: 0xfff1c8, emissive: 0xfff1c8, emissiveIntensity: 1 });
+    this.signMats.push(glow);
+    for (const ig of [
+      instancedChunks(new THREE.CylinderGeometry(0.12, 0.18, 9, 8), lampSteel, poles, true, 800, 1200),
+      instancedChunks(new THREE.BoxGeometry(0.15, 0.15, 2.4), lampSteel, arms, false, 800, 1200),
+      instancedChunks(new THREE.BoxGeometry(0.6, 0.18, 0.9), glow, heads, false, 5000, Infinity),
+    ]) if (ig) g.add(ig);
+    // Piers on the approach spans (none under the main span: it hangs from the pylons).
+    const cols: THREE.Matrix4[] = [];
+    const caps: THREE.Matrix4[] = [];
+    for (let s = 70; s < b.len; s += 110) {
+      if (s > PYLONS[0] - 60 && s < PYLONS[1] + 60) continue;
+      const top = bridgeY(b, s) - 2.2;
+      for (const side of [-1, 1]) {
+        const x = ax(s, side * 5.5);
+        const z = az(s, side * 5.5);
+        const foot = Math.min(t.sample(x, z), BAY_LEVEL) - 3;
+        if (top - foot > 1) cols.push(place(x, (top + foot) / 2, z, 0, 1, top - foot, 1));
+      }
+      caps.push(place(ax(s, 0), top - 1.25, az(s, 0), across));
+    }
+    for (const ig of [
+      instancedChunks(new THREE.CylinderGeometry(1.6, 2, 1, 12), concrete, cols, true, 2000, Infinity),
+      instancedChunks(new THREE.BoxGeometry(4, 2.5, BRIDGE_HALF * 2 + 3), concrete, caps, true, 2000, Infinity),
+    ]) if (ig) g.add(ig);
+    // The pylons: A-frames leaning in over the deck, a red band at the head, warning lights,
+    // and a fan of stay cables down to each side of the deck.
+    const white: THREE.BufferGeometry[] = [];
+    const red: THREE.BufferGeometry[] = [];
+    const lights: THREE.BufferGeometry[] = [];
+    const cables = new Tris();
+    const TOP = BAY_LEVEL + 160;
+    for (const sp of PYLONS) {
+      // Built in the pylon's own frame (x across the deck, z along it), then set in place.
+      const frame = new THREE.Matrix4().makeBasis(new THREE.Vector3(b.dz, 0, -b.dx), new THREE.Vector3(0, 1, 0), new THREE.Vector3(b.dx, 0, b.dz)).setPosition(ax(sp, 0), 0, az(sp, 0));
+      const add = (list: THREE.BufferGeometry[], geo: THREE.BufferGeometry, x: number, y: number, z: number, rz = 0) => {
+        geo.rotateZ(rz);
+        geo.translate(x, y, z);
+        geo.applyMatrix4(frame);
+        list.push(geo.toNonIndexed());
+      };
+      const base = BAY_LEVEL - 3;
+      for (const side of [-1, 1]) {
+        const lean = Math.atan2(side * 13, TOP - base);
+        add(white, new THREE.BoxGeometry(6, Math.hypot(TOP - base, 13), 5), side * 10.5, (TOP + base) / 2, 0, lean);
+        add(lights, new THREE.SphereGeometry(0.8, 8, 6), side * 4, TOP + 1, 0);
+      }
+      add(white, new THREE.BoxGeometry(12, 5, 7), 0, TOP - 8, 0);
+      add(white, new THREE.BoxGeometry(30, 4, 7), 0, bridgeY(b, sp) - 4.2, 0);
+      add(white, new THREE.BoxGeometry(38, 6, 14), 0, base, 0);
+      add(red, new THREE.BoxGeometry(12.4, 1.2, 7.4), 0, TOP - 4, 0);
+      for (const dir of [-1, 1]) {
+        for (let i = 1; i <= 14; i++) {
+          const s = sp + dir * i * 26;
+          const hy = TOP - 12 - i * 3.2;
+          for (const side of [-1, 1]) {
+            const x0 = ax(sp, side * 4.5);
+            const z0 = az(sp, side * 4.5);
+            const x1 = ax(s, side * (BRIDGE_HALF - 0.6));
+            const z1 = az(s, side * (BRIDGE_HALF - 0.6));
+            const l = Math.hypot(x1 - x0, z1 - z0);
+            const dx = (x1 - x0) / l;
+            const dz = (z1 - z0) / l;
+            sweep([{ x: x0, z: z0, y: hy, dx, dz }, { x: x1, z: z1, y: bridgeY(b, s) + 0.8, dx, dz }], boxShape(0, 0.24, -0.12, 0.12), cables, 2);
+          }
+        }
+      }
+    }
+    const beacon = new THREE.MeshStandardMaterial({ color: 0xff2a2a, emissive: 0xff2a2a, emissiveIntensity: 1 });
+    this.signMats.push(beacon);
+    for (const [list, m] of [[white, mat(0xeeeae2, { rough: 0.7 })], [red, mat(0xd8452f, { rough: 0.6 })], [lights, beacon]] as const) {
+      const merged = mergeGeometries(list);
+      if (!merged) continue;
+      const mesh = new THREE.Mesh(merged, m);
+      mesh.castShadow = m !== beacon;
+      g.add(mesh);
+    }
+    const cm = cables.mesh(mat(0xf4f4f4, { rough: 0.4, metal: 0.3 }));
+    if (cm) g.add(cm);
+    // The overhead sign on the highway before it: Jackpot Island ahead; on its back, the way back to town.
+    const len = hw.road.path.length;
+    const p = hw.road.path.pointAt(len - 75);
+    const sign = gantry(highwaySign('JACKPOT ISLAND', 'BRIDGE · KEEP STRAIGHT ON'), highwaySign('JACKPOT CITY', 'THE STRIP · DOWNTOWN'), HIGHWAY_HALF + 3.6);
+    sign.position.set(p.x, t.roadY(hw.road, len - 75), p.z);
+    sign.rotation.y = Math.atan2(p.dx, p.dz);
+    g.add(sign);
+    this.glow(sign);
+    for (const side of [-1, 1]) this.block(p.x - p.dz * side * (HIGHWAY_HALF + 3.6), p.z + p.dx * side * (HIGHWAY_HALF + 3.6), 0.6);
+  }
+
   /** Spin the turbines, drift the balloons, blink the mast, run the river; signs glow brighter after dark. */
   update(dt: number, night: number): void {
     this.t += dt;
@@ -1526,6 +1848,7 @@ const FOREST_FLOOR = new THREE.Color(0x3d5a2e);
 const LAWN = new THREE.Color(0x5c9a45);
 const BEACH = new THREE.Color(0xe8d39c);
 const OASIS = new THREE.Color(0x7a8f4a);
+const BAY_WATER = new THREE.Color(0x2a8fc4);
 
 let waterTexCache: THREE.CanvasTexture | null = null;
 /** Ripples on the water (scrolled along the river so it flows). */
@@ -1761,6 +2084,103 @@ function billboard(title: string, sub: string, color: string, bg: string): THREE
   const walk = new THREE.Mesh(new THREE.BoxGeometry(12, 0.08, 0.7), steel);
   walk.position.set(0, 5.8, 0.25);
   g.add(walk);
+  return g;
+}
+
+/** A green overhead highway sign: the Interstate 15 shield, a place, a line under it and an arrow straight on. */
+function highwaySign(where: string, sub: string): THREE.CanvasTexture {
+  const { canvas, ctx } = makeCanvas(1024, 360);
+  ctx.fillStyle = '#0d6b3a';
+  roundRect(ctx, 0, 0, 1024, 360, 28);
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 10;
+  roundRect(ctx, 14, 14, 996, 332, 20);
+  ctx.stroke();
+  // The shield: red band over a blue body, white edge.
+  ctx.save();
+  ctx.translate(150, 180);
+  ctx.beginPath();
+  ctx.moveTo(-90, -100);
+  ctx.lineTo(90, -100);
+  ctx.quadraticCurveTo(100, 60, 0, 120);
+  ctx.quadraticCurveTo(-100, 60, -90, -100);
+  ctx.closePath();
+  ctx.fillStyle = '#1d3f9e';
+  ctx.fill();
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = '#c8202f';
+  ctx.fillRect(-100, -100, 200, 46);
+  ctx.restore();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 8;
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.font = '900 26px Nunito, Arial, sans-serif';
+  ctx.fillText('INTERSTATE', 0, -68, 160);
+  ctx.font = '900 104px Nunito, Arial, sans-serif';
+  ctx.fillText('15', 0, 58, 150);
+  ctx.restore();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 80px Nunito, Arial, sans-serif';
+  ctx.fillText(where, 280, 168, 560);
+  ctx.fillStyle = '#ffe9a0';
+  ctx.font = '800 38px Nunito, Arial, sans-serif';
+  ctx.fillText(sub, 284, 248, 560);
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(920, 48);
+  ctx.lineTo(985, 132);
+  ctx.lineTo(942, 132);
+  ctx.lineTo(942, 300);
+  ctx.lineTo(898, 300);
+  ctx.lineTo(898, 132);
+  ctx.lineTo(855, 132);
+  ctx.closePath();
+  ctx.fill();
+  return canvasTexture(canvas);
+}
+
+/**
+ * An overhead sign gantry across a highway: two steel posts `half` metres either side of it, a
+ * truss, and a panel each way (`ahead` faces traffic heading along +z, `back` the other way).
+ */
+function gantry(ahead: THREE.CanvasTexture, back: THREE.CanvasTexture, half: number): THREE.Group {
+  const g = new THREE.Group();
+  const steel = mat(0x8a8f96, { rough: 0.4, metal: 0.6 });
+  const dark = mat(0x3a3d42, { rough: 0.6, metal: 0.4 });
+  for (const side of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.7, 8.6, 0.7), steel);
+    post.position.set(side * half, 4.3, 0);
+    post.castShadow = true;
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.4, 1.4), dark);
+    foot.position.set(side * half, 0.2, 0);
+    g.add(post, foot);
+  }
+  for (const y of [7.2, 8.6]) {
+    for (const z of [-0.25, 0.25]) {
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(half * 2 + 0.7, 0.18, 0.18), steel);
+      beam.position.set(0, y, z);
+      g.add(beam);
+    }
+  }
+  for (let x = -half + 1.2; x < half; x += 2.4) {
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.4, 0.6), steel);
+    strut.position.set(x, 7.9, 0);
+    g.add(strut);
+  }
+  for (const [tex, face] of [[ahead, -1], [back, 1]] as const) {
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(11, 3.9), new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.6 }));
+    // Each panel over the right-hand lane of the traffic reading it.
+    panel.position.set(face * 3.6, 7.9, face * 0.62);
+    if (face < 0) panel.rotation.y = Math.PI;
+    const backing = new THREE.Mesh(new THREE.BoxGeometry(11.2, 4.1, 0.2), dark);
+    backing.position.set(face * 3.6, 7.9, face * 0.5);
+    g.add(backing, panel);
+  }
   return g;
 }
 
