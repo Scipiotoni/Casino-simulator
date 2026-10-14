@@ -17,7 +17,7 @@ import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
 import { DEALER_WAGE, MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
-import { HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, vaultTier } from '../game/house';
+import { HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, houseCap, houseCash, topTier, vaultName, vaultTier } from '../game/house';
 import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
@@ -388,15 +388,16 @@ export class Modals {
         if (block) body.appendChild(h('p', { class: 'muted small', text: block }));
         return;
       }
-      const t = vaultTier(hs.tier);
       body.append(
         h('div', { class: 'hotel-head' },
           h('div', { class: 'hotel-stars', text: '🏠' }),
           h('b', { text: hs.snap.name }),
           h('span', { class: 'muted small', text: `On ${STREET_NAMES[1]}. Your cash comes with you; the casino keeps running while you're home.` }),
         ),
-        kv('Vault', t ? `${t.name} · ${formatMoney(hs.vault)} of ${formatMoney(t.cap)}` : 'None yet: Build → Security → Vault'),
-        kv('Interest', t ? `${(t.interest * 100).toFixed(2)}% a day` : '—'),
+        ...(hs.vaults.length
+          ? hs.vaults.map((b) => kv(vaultName(hs, b), `${formatMoney(b.money)} of ${formatMoney(vaultTier(b.tier)?.cap ?? 0)} · ${((vaultTier(b.tier)?.interest ?? 0) * 100).toFixed(2)}% a day`))
+          : [kv('Vault', 'None yet: Build → Security → Vault')]),
+        kv('Vaults', hs.vaults.length ? `${hs.vaults.length} of ${MAX_VAULTS} · ${formatMoney(houseCash(hs))} of ${formatMoney(houseCap(hs))}` : `Up to ${MAX_VAULTS}`),
         kv('Security', `${g.houseSecurity}/100`),
         kv('Daily costs (guards and gadgets)', formatMoney(g.houseDailyCosts())),
       );
@@ -427,7 +428,7 @@ export class Modals {
       body.appendChild(h('div', { class: 'field-label', text: 'Vault tiers' }));
       const tiers = h('div', { class: 'tier-list' });
       for (const v of VAULT_TIERS) {
-        tiers.appendChild(h('div', { class: `tier${hs.tier === v.tier ? ' on' : hs.tier > v.tier ? ' done' : ''}` },
+        tiers.appendChild(h('div', { class: `tier${topTier(hs) === v.tier ? ' on' : topTier(hs) > v.tier ? ' done' : ''}` },
           h('b', { text: v.name }),
           h('span', { class: 'muted small', text: `${formatMoney(v.price)} · holds ${formatMoney(v.cap, true)} · ${v.digits} digits · ${v.bolts} bolts` }),
         ));

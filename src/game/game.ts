@@ -51,7 +51,7 @@ import {
 } from './save';
 import { RIVAL_ID, RIVAL_NAME, generateRival, rivalLook, rivalLotInfo, tickRival } from './rival';
 import {
-  type HouseState, HOUSE_LEVEL, HOUSE_PRICE, VAULT_TIERS, addLog, clampTransfer, newHouse, sanitizeHouse, securityRating, validCode, vaultInterest, vaultTier,
+  type HouseState, type VaultBox, HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, addLog, clampTransfer, fillVaults, houseCash, newHouse, newVaultKey, sanitizeHouse, securityRating, topTier, validCode, vaultBox, vaultInterest, vaultName, vaultTier,
   garageTier,
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
@@ -773,8 +773,9 @@ export class Game implements World, ItemHost {
     this.guns = guns;
     // Your house and its vault survive, but the vault starts empty again.
     if (house) {
-      if (house.vault > 0) addLog(house, this.day, `Rebirth ${roman(n)}: vault emptied`, -house.vault);
-      house.vault = 0;
+      const was = houseCash(house);
+      if (was > 0) addLog(house, this.day, `Rebirth ${roman(n)}: vaults emptied`, -was);
+      for (const b of house.vaults) b.money = 0;
       this.house = house;
     }
     this.refreshStreet();
@@ -916,9 +917,8 @@ export class Game implements World, ItemHost {
     const notes: string[] = [];
     const h = this.house;
     if (rest > 0 && h) {
-      const fit = Math.max(0, Math.min(rest, (vaultTier(h.tier)?.cap ?? 0) - h.vault));
+      const fit = fillVaults(h, rest);
       if (fit > 0) {
-        h.vault += fit;
         addLog(h, this.day, reason === 'gift' ? 'Gift (casino bank full)' : 'Reward (casino bank full)', fit);
         rest -= fit;
         notes.push(`${formatMoney(fit)} went into your house vault`);
@@ -969,7 +969,7 @@ export class Game implements World, ItemHost {
   /** Everything you're worth: both banks and the vault, minus what you owe. */
   get netWorth(): number {
     const casino = this.site === 'hotel' ? this.parked?.home.money ?? 0 : this.money;
-    return Math.round(casino + this.hotelMoney + (this.house?.vault ?? 0) - this.loanOwed);
+    return Math.round(casino + this.hotelMoney + (houseCash(this.house)) - this.loanOwed);
   }
 
   // ------------------------------------------------------------------ hotel
@@ -1302,7 +1302,9 @@ export class Game implements World, ItemHost {
 
   /** Your house on Palm Avenue (null until you buy one). It's also your bank. */
   house: HouseState | null = null;
-  /** The vault door is open (you typed the right code this visit). */
+  /** The vault you're at or using (its key): the one the keypad and the bank screen talk to. */
+  activeVault: string | null = null;
+  /** The active vault's door is open (you typed its code this visit). */
   vaultOpen = false;
   private vaultTries = 0;
   /** Epoch ms until which the keypad is locked after too many wrong codes. */
@@ -1343,7 +1345,7 @@ export class Game implements World, ItemHost {
    * The house as it looks from the street, plus what a burglar sizes up: the vault's tier and
    * contents, and the last robbery (so everyone shares the cooldown).
    */
-  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number; vt: number; vm: number; rb: HeistRecord | null } | null {
+  houseInfo(): { look: CasinoLook; width: number; depth: number; floors: number; vt: number; vm: number; vs: { k: string; t: number; m: number }[]; rb: HeistRecord | null } | null {
     const h = this.house;
     if (!h) return null;
     const live = this.site === 'house';
@@ -1352,8 +1354,9 @@ export class Game implements World, ItemHost {
       width: live ? this.layout.width : h.snap.layout.width,
       depth: live ? this.layout.depth : h.snap.layout.depth,
       floors: live ? this.floors : h.snap.floors,
-      vt: h.tier,
-      vm: Math.round(h.vault),
+      vt: topTier(h),
+      vm: Math.round(houseCash(h)),
+      vs: h.vaults.map((b) => ({ k: b.key, t: b.tier, m: Math.round(b.money) })),
       rb: h.robbed ?? null,
     };
   }
@@ -1404,7 +1407,7 @@ export class Game implements World, ItemHost {
     this.shiftPlayer(at.x, FACADE_Z - 1.5);
     audio.play('doorbell');
     this.events.emit('toast', {
-      text: h.tier ? 'Home sweet home. Walk up to your vault to bank some money.' : 'Home sweet home! Build → Security → Vault to turn it into your bank.',
+      text: h.vaults.length ? 'Home sweet home. Walk up to your vault to bank some money.' : 'Home sweet home! Build → Security → Vault to turn it into your bank.',
       kind: 'event',
     });
     this.afterSiteChange();
@@ -1433,22 +1436,63 @@ export class Game implements World, ItemHost {
     return this.site === 'hotel' ? this.closeHotel() : this.site === 'house' ? this.closeHouse() : null;
   }
 
-  /** Vault items in the loaded house take the vault's tier as their level (bigger, more bolts). */
+  /**
+   * Tie every vault in the loaded house to its own money, code and tier (by the item's label),
+   * and show each at its own tier (bigger, more bolts). A vault from an old save, or one
+   * that lost its tag, takes the first vault record nobody claims.
+   */
   syncVaultModel(): void {
-    if (!this.inHouse || !this.house) return;
-    for (const it of this.items.items) {
-      if (it.def.kind !== 'vault') continue;
-      const lvl = Math.max(1, this.house.tier);
+    const h = this.house;
+    if (!this.inHouse || !h) return;
+    const items = this.items.items.filter((i) => i.def.kind === 'vault');
+    const claimed = new Set<string>();
+    for (const it of items) if (it.label && vaultBox(h, it.label) && !claimed.has(it.label)) claimed.add(it.label);
+      else it.label = null;
+    for (const it of items) {
+      if (it.label) continue;
+      const free = h.vaults.find((b) => !claimed.has(b.key));
+      const box = free ?? (h.vaults.length < MAX_VAULTS ? { key: newVaultKey(h), money: 0, code: '', tier: 1 } : null);
+      if (!box) continue;
+      if (!free) h.vaults.push(box);
+      it.label = box.key;
+      claimed.add(box.key);
+    }
+    for (const it of items) {
+      const box = vaultBox(h, it.label);
+      const lvl = Math.max(1, box?.tier ?? 1);
       if (it.level !== lvl) {
         it.level = lvl;
         it.rebuildModel();
       }
-      it.model.event({ type: 'door', open: this.vaultOpen });
+      it.model.event({ type: 'door', open: this.vaultOpen && it.label === this.activeVault });
     }
   }
 
+  /** The vault you're using right now. */
+  get activeBox(): VaultBox | null {
+    return vaultBox(this.house, this.activeVault);
+  }
+
+  /** The placed vault with this key in the loaded house. */
+  vaultItem(key: string | null): PlacedItem | null {
+    return key ? this.items.items.find((i) => i.def.kind === 'vault' && i.label === key) ?? null : null;
+  }
+
+  /** Walk up to a vault: it becomes the one you use (closing the one you had open). */
+  useVault(item: PlacedItem): VaultBox | null {
+    this.syncVaultModel();
+    const box = vaultBox(this.house, item.label);
+    if (!box) return null;
+    if (this.activeVault !== box.key) {
+      this.closeVault();
+      this.activeVault = box.key;
+      this.vaultTries = 0;
+    }
+    return box;
+  }
+
   get vaultInfo() {
-    return vaultTier(this.house?.tier ?? 0);
+    return vaultTier(this.activeBox?.tier ?? topTier(this.house));
   }
 
   /** Security rating of the house, 0..100. */
@@ -1460,10 +1504,12 @@ export class Game implements World, ItemHost {
     const doors = live
       ? this.levels.reduce((a, l) => a + l.grid.doors().reduce((b, d) => b + (DOOR_TYPES[d.type]?.security ?? 0), 0), 0)
       : (h.snap.walls ?? []).reduce((a, w) => a + doorsInEncoded(w).reduce((b, t) => b + (DOOR_TYPES[t]?.security ?? 0), 0), 0);
-    const gadgets = doors + (live
+    // Every vault past the best one adds its own security too.
+    const extraVaults = h.vaults.reduce((a, b) => a + (vaultTier(b.tier)?.security ?? 0), 0) - (vaultTier(topTier(h))?.security ?? 0);
+    const gadgets = extraVaults + doors + (live
       ? this.items.items.reduce((a, i) => a + (i.def.security ?? 0), 0)
       : h.snap.items.reduce((a, i) => a + (ITEM_BY_ID.get(i.id)?.security ?? 0), 0));
-    return securityRating(h.tier, staff.filter((r) => r === 'security').length, staff.filter((r) => r === 'doorman').length, gadgets);
+    return securityRating(topTier(h), staff.filter((r) => r === 'security').length, staff.filter((r) => r === 'doorman').length, gadgets);
   }
 
   /** What the house costs a day: its guards' wages and its gadgets' upkeep. */
@@ -1480,10 +1526,10 @@ export class Game implements World, ItemHost {
    * the keypad for half a minute.
    */
   tryVaultCode(code: string): 'open' | 'wrong' | 'locked' | 'none' {
-    const h = this.house;
-    if (!h || !this.inHouse || !h.tier) return 'none';
+    const box = this.activeBox;
+    if (!box || !this.inHouse) return 'none';
     if (this.vaultLockUntil > Date.now()) return 'locked';
-    if (code === h.code) {
+    if (code === box.code) {
       this.vaultTries = 0;
       return 'open';
     }
@@ -1493,7 +1539,7 @@ export class Game implements World, ItemHost {
       this.vaultLockUntil = Date.now() + 30_000;
       audio.play('alarm');
       this.notify('🚨 Wrong code three times! The vault locked itself for 30 seconds and your guards came running.', 'bad');
-      const v = this.items.items.find((i) => i.def.kind === 'vault');
+      const v = this.vaultItem(box.key);
       if (v) for (const w of this.workers) if (w.role === 'security') w.x = v.cx + (Math.random() - 0.5) * 2, w.z = v.cz + 1.6;
       return 'locked';
     }
@@ -1502,7 +1548,7 @@ export class Game implements World, ItemHost {
 
   /** The unlock animation finished: the vault door swings open. */
   openVault(): void {
-    if (!this.house?.tier || !this.inHouse) return;
+    if (!this.activeBox || !this.inHouse) return;
     this.vaultOpen = true;
     this.stats.vaultOpened++;
     this.syncVaultModel();
@@ -1519,9 +1565,9 @@ export class Game implements World, ItemHost {
 
   /** Pick (or change) the vault code. It must have exactly as many digits as the vault's tier asks. */
   setVaultCode(code: string): boolean {
-    const h = this.house;
-    if (!h || !validCode(code, h.tier)) return false;
-    h.code = code;
+    const box = this.activeBox;
+    if (!box || !validCode(code, box.tier)) return false;
+    box.code = code;
     audio.play('purchase');
     this.notify('New vault code saved. Don’t forget it!', 'good');
     this.events.emit('house', undefined);
@@ -1532,8 +1578,9 @@ export class Game implements World, ItemHost {
   /** Upgrade the vault to the next tier (paid from your cash). A new tier asks for a longer code. */
   upgradeVault(newCode: string): boolean {
     const h = this.house;
-    const next = VAULT_TIERS[h?.tier ?? 0];
-    if (!h || !h.tier || !next) return false;
+    const box = this.activeBox;
+    const next = VAULT_TIERS[box?.tier ?? 0];
+    if (!h || !box || !next) return false;
     if (this.money < next.price) {
       audio.play('error');
       this.notify(`${next.name} costs ${formatMoney(next.price)}.`, 'bad');
@@ -1545,12 +1592,12 @@ export class Game implements World, ItemHost {
       return false;
     }
     this.spend(next.price, 'upgrade');
-    h.tier = next.tier;
-    h.code = newCode;
-    addLog(h, this.day, `Upgraded to ${next.name}`, -next.price);
+    box.tier = next.tier;
+    box.code = newCode;
+    addLog(h, this.day, `${h.vaults.length > 1 ? `Vault #${box.key.slice(1)} upgraded` : 'Upgraded'} to ${next.name}`, -next.price);
     audio.play('levelup');
     this.syncVaultModel();
-    const v = this.items.items.find((i) => i.def.kind === 'vault');
+    const v = this.vaultItem(box.key);
     if (v) this.effects.sparkle(v.cx, 1.5, v.cz, 40, 0xffd24a, 1.4);
     this.notify(`🔐 ${next.name}! Holds up to ${formatMoney(next.cap)} and pays ${(next.interest * 100).toFixed(2)}% interest a day.`, 'good');
     this.events.emit('house', undefined);
@@ -1569,31 +1616,57 @@ export class Game implements World, ItemHost {
    */
   vaultTransfer(target: 'casino' | 'hotel', amount: number): number {
     const h = this.house;
-    if (!h || !this.inHouse || !this.vaultOpen) return 0;
+    const box = this.activeBox;
+    if (!h || !box || !this.inHouse || !this.vaultOpen) return 0;
     if (target === 'hotel' && !this.hotel) return 0;
     const source = target === 'casino' ? this.money : this.hotelBank;
     // Withdrawals stop where the business's bank is full.
     if (amount < 0) amount = -Math.min(-amount, Math.max(0, MAX_BANK - source));
-    const moved = clampTransfer(amount, h.vault, h.tier, Math.max(0, source));
+    const moved = clampTransfer(amount, box.money, box.tier, Math.max(0, source));
     if (!moved) {
       audio.play('error');
-      const t = vaultTier(h.tier);
-      if (amount > 0 && t && h.vault >= t.cap) this.notify(`The ${t.name} is full (${formatMoney(t.cap)}). Upgrade it to store more.`, 'bad');
+      const t = vaultTier(box.tier);
+      if (amount > 0 && t && box.money >= t.cap) this.notify(`The ${t.name} is full (${formatMoney(t.cap)}). Upgrade it to store more.`, 'bad');
       else this.notify(amount > 0 ? `Not enough in the ${target} to deposit.` : 'The vault is empty.', 'bad');
       return 0;
     }
-    h.vault += moved;
+    box.money += moved;
     if (target === 'casino') {
       this.money -= moved;
       this.events.emit('money', { money: this.money, delta: -moved });
     } else if (this.hotel) this.hotel.bank -= moved;
     if (moved > 0) this.stats.deposited += moved;
-    addLog(h, this.day, moved > 0 ? `Deposit from the ${target}` : `Sent to the ${target}`, moved);
+    const which = h.vaults.length > 1 ? ` (vault #${box.key.slice(1)})` : '';
+    addLog(h, this.day, moved > 0 ? `Deposit from the ${target}${which}` : `Sent to the ${target}${which}`, moved);
     audio.play(moved > 0 ? 'coin' : 'cash');
-    const v = this.items.items.find((i) => i.def.kind === 'vault');
+    const v = this.vaultItem(box.key);
     if (v) this.effects.sparkle(v.cx, 1.2, v.cz, 14, 0xffd24a, 0.9);
     this.events.emit('house', undefined);
     this.events.emit('hotel', undefined);
+    this.requestSave();
+    return moved;
+  }
+
+  /** Move money from the open vault into another of your vaults. Returns how much moved. */
+  vaultMove(toKey: string, amount: number): number {
+    const h = this.house;
+    const from = this.activeBox;
+    const to = vaultBox(h, toKey);
+    if (!h || !from || !to || from === to || !this.inHouse || !this.vaultOpen) return 0;
+    const room = Math.max(0, (vaultTier(to.tier)?.cap ?? 0) - to.money);
+    const moved = Math.max(0, Math.min(Math.round(amount), from.money, room));
+    if (!moved) {
+      audio.play('error');
+      this.notify(from.money <= 0 ? 'This vault is empty.' : `${vaultName(h, to)} is full.`, 'bad');
+      return 0;
+    }
+    from.money -= moved;
+    to.money += moved;
+    addLog(h, this.day, `Moved: vault #${from.key.slice(1)} → #${to.key.slice(1)}`, moved);
+    audio.play('coin');
+    const v = this.vaultItem(to.key);
+    if (v) this.effects.sparkle(v.cx, 1.2, v.cz, 14, 0xffd24a, 0.9);
+    this.events.emit('house', undefined);
     this.requestSave();
     return moved;
   }
@@ -1658,7 +1731,9 @@ export class Game implements World, ItemHost {
     const t = lot.houseOf && lot.houseOf !== 'me' ? this.heistTarget(lot.houseOf) : null;
     if (!t) return null;
     const safes = t.snap.items.filter((i) => i.id === 'safe').length;
-    return { target: t, max: shareTake(t.vault, t.share ?? (t.online ? ONLINE_SHARE : OFFLINE_SHARE), 1, safes), safes };
+    // You crack one vault per break-in: the most you could take is from the fullest.
+    const best = t.vaults?.length ? Math.max(...t.vaults.map((v) => v.m)) : t.vault;
+    return { target: t, max: shareTake(best, t.share ?? (t.online ? ONLINE_SHARE : OFFLINE_SHARE), 1, safes), safes };
   }
 
   /**
@@ -1729,14 +1804,17 @@ export class Game implements World, ItemHost {
       if (seen[rec.i]) continue;
       seen[rec.i] = rec.t;
       changed = true;
-      const take = applyRobbery(h.vault, rec, h.robbed?.t ?? 0);
+      // The vault they cracked (robberies from before several vaults: the fullest one).
+      const box = vaultBox(h, rec.k) ?? [...h.vaults].sort((a, b) => b.money - a.money)[0];
+      if (!box) continue;
+      const take = applyRobbery(box.money, rec, h.robbed?.t ?? 0);
       if (take <= 0) continue;
-      h.vault -= take;
+      box.money -= take;
       h.robbed = { ...rec, a: take };
       addLog(h, this.day, `Robbed by ${rec.by}`, -take);
       this.stats.robbed = (this.stats.robbed ?? 0) + 1;
       audio.play('alarm');
-      this.notify(`💸 ${rec.by} broke into your house and robbed ${formatMoney(take)} from your vault! Guards, lasers, cameras and locked doors make the next one harder.`, 'bad');
+      this.notify(`💸 ${rec.by} broke into your house and robbed ${formatMoney(take)} from your ${vaultName(h, box)}! Guards, lasers, cameras and locked doors make the next one harder.`, 'bad');
       this.events.emit('house', undefined);
     }
     // Remember applied robberies longer than anyone publishes them, so none is taken twice.
@@ -2473,8 +2551,8 @@ export class Game implements World, ItemHost {
       gunsOwned: this.guns.owned.length,
       carsOwned: this.garage.owned.length,
       houseOwned: !!this.house,
-      vaultTier: this.house?.tier ?? 0,
-      vaultMoney: this.house?.vault ?? 0,
+      vaultTier: topTier(this.house),
+      vaultMoney: houseCash(this.house),
       houseGuards: this.inHouse ? this.staffCount('security') : this.house?.snap.staff.filter((st) => st.role === 'security').length ?? 0,
     };
   }
@@ -2771,8 +2849,8 @@ export class Game implements World, ItemHost {
 
   /** Why this item can't go in the building you're in (hotel indoor/outdoor rules). */
   placeBlock(def: ItemDef): string | null {
-    // (Moving your one vault is fine; buying a second isn't.)
-    if (def.kind === 'vault' && this.items.items.some((i) => i.def.kind === 'vault' && i !== this.build.movingItem)) return 'You already have a vault. Open it to upgrade it instead.';
+    // Up to MAX_VAULTS vaults (moving one you have is always fine).
+    if (def.kind === 'vault' && !this.build.movingItem && this.items.items.filter((i) => i.def.kind === 'vault').length >= MAX_VAULTS) return `A house holds at most ${MAX_VAULTS} vaults. Upgrade the ones you have instead.`;
     return this.inHotel ? zoneBlock(def, this.gardenSite) : null;
   }
 
@@ -2812,10 +2890,14 @@ export class Game implements World, ItemHost {
       this.notify(`${def.name} needs a dealer: click it to hire one (${formatMoney(DEALER_WAGE)} a day), or stand beside it and hold Space to deal yourself.`, 'info');
     }
     if (def.kind === 'vault' && this.house) {
-      // A brand-new vault: tier 1, and it wants a code before it'll hold anything.
-      if (!this.house.tier) this.house.tier = 1;
+      // A brand-new vault: its own record (tier 1, empty), and it wants its own code.
+      const box: VaultBox = { key: newVaultKey(this.house), money: 0, code: '', tier: 1 };
+      this.house.vaults.push(box);
+      item.label = box.key;
       item.pendingXp = 0;
       this.syncVaultModel();
+      this.useVault(item);
+      if (this.house.vaults.length > 1) this.notify(`Vault #${box.key.slice(1)} is in: it has its own code, money and upgrades. Spreading your cash keeps it safer (a burglar can only crack one vault per break-in).`, 'info');
       this.events.emit('vault', item);
     }
     this.requestSave();
@@ -2863,14 +2945,17 @@ export class Game implements World, ItemHost {
   sell(item: PlacedItem): void {
     if (item.def.fixed || this.visit) return;
     if (item.def.kind === 'vault' && this.house) {
-      if (this.house.vault > 0) {
+      const box = vaultBox(this.house, item.label);
+      if (box && box.money > 0) {
         audio.play('error');
         this.notify('Empty the vault before you sell it.', 'bad');
         return;
       }
-      this.house.tier = 0;
-      this.house.code = '';
-      this.vaultOpen = false;
+      if (box) this.house.vaults = this.house.vaults.filter((b) => b !== box);
+      if (this.activeVault === item.label) {
+        this.vaultOpen = false;
+        this.activeVault = null;
+      }
     }
     const refund = item.refundable;
     if (!refund && item.pendingXp) this.gainXp(item.pendingXp);
@@ -3824,21 +3909,31 @@ export class Game implements World, ItemHost {
           act: () => this.events.emit('heistGame', { kind: 'door', floor: pf, x: d.x, z: d.z, type: d.type }),
         };
       }
-      const v = hs.vault;
-      if (!target && v && v.floor === pf) {
+      // Any vault in the house: pick one to crack (one per break-in, so choose well).
+      for (const v of this.items.items) {
+        if (target) break;
+        if (v.def.kind !== 'vault' || v.floor !== pf) continue;
         const bb = v.bounds;
-        if (distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1) < 1.5) {
-          const label = hs.phase === 'locked' ? `🧨 Crack the ${hs.vaultTierName}`
-            : hs.phase === 'timelock' ? `⏳ Time lock: ${Math.ceil(hs.timelock)} s` : hs.phase === 'open' ? '💰 Grab the cash' : '🏃 Out the front door!';
-          target = {
-            kind: `hvault${hs.phase}`, label, hold: false,
-            anchor: () => new THREE.Vector3(v.cx, v.model.height + 0.5, v.cz),
-            act: () => {
-              if (hs.phase === 'locked') this.events.emit('heistGame', { kind: 'vault' });
-              else if (hs.phase === 'open') hs.grab();
-            },
-          };
+        if (distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1) >= 1.5) continue;
+        const mine = v === hs.vault;
+        if (!mine && hs.phase !== 'locked') {
+          target = { kind: `hvaultx${v.uid}`, label: '🔒 One vault per break-in: you’re on another one', hold: false, anchor: () => new THREE.Vector3(v.cx, v.model.height + 0.5, v.cz), act: () => undefined };
+          break;
         }
+        const info = hs.infoOf(v);
+        const tierName = vaultTier(info.t)?.name ?? 'vault';
+        const label = hs.phase === 'locked' ? `🧨 Crack the ${tierName}${this.items.items.filter((i) => i.def.kind === 'vault').length > 1 ? ` (~${formatMoney(info.m, true)} inside)` : ''}`
+          : hs.phase === 'timelock' ? `⏳ Time lock: ${Math.ceil(hs.timelock)} s` : hs.phase === 'open' ? '💰 Grab the cash' : '🏃 Out the front door!';
+        target = {
+          kind: `hvault${hs.phase}${v.uid}`, label, hold: false,
+          anchor: () => new THREE.Vector3(v.cx, v.model.height + 0.5, v.cz),
+          act: () => {
+            if (hs.phase === 'locked') {
+              hs.chooseVault(v);
+              this.events.emit('heistGame', { kind: 'vault' });
+            } else if (hs.phase === 'open') hs.grab();
+          },
+        };
       }
     }
     // A table with no dealer: stand beside it and hold Space to deal yourself.
@@ -3874,9 +3969,11 @@ export class Game implements World, ItemHost {
         if (it.def.kind !== 'vault' || it.floor !== pf) continue;
         const bb = it.bounds;
         if (distToRect(p.x, p.z, bb.x0, bb.z0, bb.x1, bb.z1) > 1.5) continue;
-        const h = this.house;
+        const box = vaultBox(this.house, it.label);
+        const open = this.vaultOpen && this.activeVault === it.label;
+        const n = this.house.vaults.length > 1 && box ? ` #${box.key.slice(1)}` : '';
         target = {
-          kind: `vault${this.vaultOpen ? 'o' : 'c'}`, label: !h.code ? '🔐 Set your vault code' : this.vaultOpen ? '💰 Use the vault' : '🔐 Open the vault', hold: false,
+          kind: `vault${it.label}${open ? 'o' : 'c'}`, label: !box?.code ? `🔐 Set the code for vault${n}` : open ? `💰 Use vault${n}` : `🔐 Open vault${n}`, hold: false,
           anchor: () => new THREE.Vector3(it.cx, it.model.height + 0.5, it.cz),
           act: () => this.events.emit('vault', it),
         };
@@ -4729,9 +4826,12 @@ export class Game implements World, ItemHost {
       const hc = this.houseDailyCosts();
       upkeep += hc;
       this.money -= hc;
-      const interest = vaultInterest(this.house);
+      const interest = this.house.vaults.reduce((a, b) => {
+        const i = vaultInterest(b);
+        b.money += i;
+        return a + i;
+      }, 0);
       if (interest > 0) {
-        this.house.vault += interest;
         addLog(this.house, this.day, 'Interest', interest);
       }
     }
@@ -4833,10 +4933,8 @@ export class Game implements World, ItemHost {
       const extra = Math.max(0, Math.round(bank - MAX_BANK));
       if (!extra) continue;
       const h = this.house;
-      const cap = vaultTier(h?.tier ?? 0)?.cap ?? 0;
-      const fit = h ? Math.max(0, Math.min(extra, cap - h.vault)) : 0;
+      const fit = h ? fillVaults(h, extra) : 0;
       if (h && fit > 0) {
-        h.vault += fit;
         addLog(h, this.day, `Overflow from the ${which} (bank limit)`, fit);
         moved += fit;
       }

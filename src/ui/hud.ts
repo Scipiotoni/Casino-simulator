@@ -23,6 +23,7 @@ import { openDealer } from './cars';
 import { openGarage } from './homeGarage';
 import { ChatBox } from './chat';
 import { openVault } from './vault';
+import { houseCash } from '../game/house';
 
 /** Heads-up display: top bar, goals, toolbar, selection card, toasts, touch controls. */
 export class Hud {
@@ -268,8 +269,8 @@ export class Hud {
     g.events.on('gunshop', () => {
       if (!this.modals.isOpen) openGunShop(g, this.modals);
     });
-    g.events.on('vault', () => {
-      if (!this.modals.isOpen) openVault(g, this.modals);
+    g.events.on('vault', (item) => {
+      if (!this.modals.isOpen) openVault(g, this.modals, item);
     });
     g.events.on('floor', () => this.renderFloors());
     g.events.on('expansion', () => this.renderFloors());
@@ -925,7 +926,7 @@ export class Hud {
       if (g.inHouse) {
         const hn = this.visitBar.querySelector('[data-live="house"]') as HTMLElement | null;
         const hs = g.house;
-        if (hn && hs) hn.textContent = hs.tier ? `Vault ${formatMoney(hs.vault)} · Security ${g.houseSecurity}/100` : 'Build → Security → Vault to start banking';
+        if (hn && hs) hn.textContent = hs.vaults.length ? `${hs.vaults.length > 1 ? `${hs.vaults.length} vaults` : 'Vault'} ${formatMoney(houseCash(hs))} · Security ${g.houseSecurity}/100` : 'Build → Security → Vault to start banking';
       }
       if (g.visit) {
         const vn = this.visitBar.querySelector('[data-live="vnet"]') as HTMLElement | null;

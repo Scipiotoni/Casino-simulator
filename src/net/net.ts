@@ -22,6 +22,7 @@ import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, ROLL_TIME, bountyFor, type RemoteTarget } from '../game/combat';
 import { remoteShotEnd } from '../game/gunplay';
 import { type CarDef, type CarMods, buildCar, carDef, sanitizeMods, seatSpots } from '../world/vehicles';
+import { MAX_VAULTS } from '../game/house';
 import { Car } from '../world/cityView';
 import { groundAt } from '../world/terrain';
 import { VIEW } from '../world/viewDistance';
@@ -164,6 +165,8 @@ interface HouseView {
   /** Vault tier (0 = none) and what's in it. */
   vt: number;
   vm: number;
+  /** Each vault: its key (the placed vault's label), tier and money. Missing from older players. */
+  vs?: { k: string; t: number; m: number }[];
   /** The last robbery of this house (the owner publishes it so everyone shares the cooldown). */
   rb: HeistRecord | null;
 }
@@ -1249,13 +1252,16 @@ export class Net {
     if (!snap || !hv) return null;
     const since = r?.casino?.house ? Date.now() - 15_000 : l?.updated ?? 0;
     let vault = hv.vm;
+    const vaults = (hv.vs ?? []).map((v) => ({ ...v }));
     const seen = new Set<string>();
     for (const rec of [...this.allRecords(), ...cleanRecords(this.game.net.heists ?? [])]) {
       if (rec.v !== pid || rec.t <= since || seen.has(rec.i)) continue;
       seen.add(rec.i);
       vault -= rec.a;
+      const hit = vaults.find((v) => v.k === rec.k) ?? [...vaults].sort((a, b) => b.m - a.m)[0];
+      if (hit) hit.m = Math.max(0, hit.m - rec.a);
     }
-    return { pid, owner: r?.name ?? l?.owner ?? 'Someone', snap, vault: Math.max(0, vault), tier: hv.vt, online: !!r };
+    return { pid, owner: r?.name ?? l?.owner ?? 'Someone', snap, vault: Math.max(0, vault), tier: hv.vt, online: !!r, vaults: vaults.length ? vaults : undefined };
   }
 
   /** Is this player in the same indoor fight as you: robbing your house, or the owner of the house you're robbing? */
@@ -1977,6 +1983,14 @@ function houseView(raw: unknown): HouseView | null {
   return {
     look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors,
     vt: Math.max(0, Math.min(5, Math.round(num(r.vt)))), vm: Math.max(0, Math.min(1e12, Math.floor(num(r.vm)))),
+    vs: Array.isArray(r.vs)
+      ? r.vs.slice(0, MAX_VAULTS).flatMap((v) => {
+        if (!v || typeof v !== 'object') return [];
+        const o = v as Record<string, unknown>;
+        if (typeof o.k !== 'string' || !/^V\d{1,2}$/.test(o.k)) return [];
+        return [{ k: o.k, t: Math.max(1, Math.min(5, Math.round(num(o.t)))), m: Math.max(0, Math.min(1e12, Math.floor(num(o.m)))) }];
+      })
+      : undefined,
     rb: cleanRecords(r.rb ? [r.rb] : [])[0] ?? null,
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { VAULT_TIERS, addLog, clampTransfer, newHouse, sanitizeHouse, securityRating, validCode, vaultInterest } from '../src/game/house';
+import { MAX_VAULTS, VAULT_TIERS, addLog, clampTransfer, fillVaults, houseCap, houseCash, newHouse, newVaultKey, sanitizeHouse, securityRating, topTier, validCode, vaultInterest } from '../src/game/house';
 import { GUNS, gunDef, sanitizeGuns } from '../src/game/guns';
 import { ITEMS, categoriesFor, itemDef, soldAt } from '../src/items/catalog';
 import { KIT_IDS } from '../src/items/models/kit';
@@ -25,12 +25,10 @@ describe('the house bank', () => {
   });
 
   it('pays interest up to capacity, and bigger vaults hold more', () => {
-    const h = newHouse('Ann', look);
-    h.tier = 1;
-    h.vault = 50000;
-    expect(vaultInterest(h)).toBe(250);
-    h.vault = VAULT_TIERS[0].cap;
-    expect(vaultInterest(h)).toBe(0);
+    const b = { key: 'V1', money: 50000, code: '', tier: 1 };
+    expect(vaultInterest(b)).toBe(250);
+    b.money = VAULT_TIERS[0].cap;
+    expect(vaultInterest(b)).toBe(0);
     for (let i = 1; i < VAULT_TIERS.length; i++) {
       expect(VAULT_TIERS[i].cap).toBeGreaterThan(VAULT_TIERS[i - 1].cap);
       expect(VAULT_TIERS[i].digits).toBe(VAULT_TIERS[i - 1].digits + 1);
@@ -45,19 +43,49 @@ describe('the house bank', () => {
 
   it('round-trips through a save and rejects junk', () => {
     const h = newHouse('Ann', look);
-    h.tier = 2;
-    h.code = '54321';
-    h.vault = 12345;
+    h.vaults.push({ key: 'V1', money: 12345, code: '54321', tier: 2 }, { key: 'V2', money: 500, code: '1111', tier: 1 });
     addLog(h, 3, 'Deposit', 12345);
     const back = sanitizeHouse(JSON.parse(JSON.stringify(h)), ['bungee'], sanitizeAppearance)!;
-    expect(back.vault).toBe(12345);
-    expect(back.code).toBe('54321');
+    expect(back.vaults).toEqual(h.vaults);
     expect(back.log[0].amount).toBe(12345);
     // A code that doesn't fit the tier is dropped; money can't exceed the vault.
-    const bad = sanitizeHouse({ ...h, code: '12', vault: 1e15 }, ['bungee'], sanitizeAppearance)!;
-    expect(bad.code).toBe('');
-    expect(bad.vault).toBe(VAULT_TIERS[1].cap);
+    const bad = sanitizeHouse({ ...h, vaults: [{ key: 'V1', code: '12', money: 1e15, tier: 2 }, { key: 'V1', money: 5, code: '', tier: 1 }, { key: 'X', money: 5, tier: 1 }] }, ['bungee'], sanitizeAppearance)!;
+    expect(bad.vaults.length).toBe(1);
+    expect(bad.vaults[0].code).toBe('');
+    expect(bad.vaults[0].money).toBe(VAULT_TIERS[1].cap);
     expect(sanitizeHouse(null, ['bungee'], sanitizeAppearance)).toBeNull();
+  });
+});
+
+describe('several vaults', () => {
+  const look2 = { name: 'Lucky', signFont: 'bungee', signColor: 0, wallColor: 0x3a1d4d, trimColor: 0 };
+
+  it('an old save with one vault becomes vault V1', () => {
+    const old = { ...newHouse('Ann', look2), vault: 7000, code: '4321', tier: 1 } as Record<string, unknown>;
+    delete old.vaults;
+    const h = sanitizeHouse(JSON.parse(JSON.stringify(old)), ['bungee'], sanitizeAppearance)!;
+    expect(h.vaults).toEqual([{ key: 'V1', money: 7000, code: '4321', tier: 1 }]);
+    // No vault in the old save: none now.
+    const none = { ...newHouse('Ann', look2), vault: 0, code: '', tier: 0 } as Record<string, unknown>;
+    delete none.vaults;
+    expect(sanitizeHouse(none, ['bungee'], sanitizeAppearance)!.vaults).toEqual([]);
+  });
+
+  it('each vault keeps its own money, and totals add them up', () => {
+    const h = newHouse('Ann', look2);
+    h.vaults.push({ key: 'V1', money: 0, code: '', tier: 1 }, { key: 'V2', money: 0, code: '', tier: 2 });
+    expect(newVaultKey(h)).toBe('V3');
+    expect(houseCap(h)).toBe(VAULT_TIERS[0].cap + VAULT_TIERS[1].cap);
+    expect(topTier(h)).toBe(2);
+    // Overflow fills them in order, as far as they hold.
+    expect(fillVaults(h, VAULT_TIERS[0].cap + 50)).toBe(VAULT_TIERS[0].cap + 50);
+    expect(h.vaults[0].money).toBe(VAULT_TIERS[0].cap);
+    expect(h.vaults[1].money).toBe(50);
+    expect(houseCash(h)).toBe(VAULT_TIERS[0].cap + 50);
+    expect(fillVaults(h, 1e15)).toBe(VAULT_TIERS[1].cap - 50);
+    // Never more than MAX_VAULTS from a save.
+    const many = Array.from({ length: 9 }, (_, i) => ({ key: `V${i + 1}`, money: 1, code: '', tier: 1 }));
+    expect(sanitizeHouse({ ...h, vaults: many }, ['bungee'], sanitizeAppearance)!.vaults.length).toBe(MAX_VAULTS);
   });
 });
 

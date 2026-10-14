@@ -3,7 +3,8 @@ import type { Modals } from './modals';
 import { h, clear, icon } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
-import { VAULT_TIERS, vaultTier } from '../game/house';
+import type { PlacedItem } from '../items/placedItem';
+import { VAULT_TIERS, houseCash, vaultName, vaultTier } from '../game/house';
 
 const STEEL = ['#9aa0ab', '#6f7480', '#7d93ad', '#e6f0fb', '#f2c14e'];
 
@@ -89,7 +90,7 @@ function moveVaultBtn(g: Game, modals: Modals): HTMLElement {
   return h('button', {
     class: 'btn', html: `${icon('move', 16)} Move vault`, title: 'Pick the vault up and put it somewhere else in your house',
     onClick: () => {
-      const v = g.items.items.find((i) => i.def.kind === 'vault');
+      const v = g.vaultItem(g.activeVault);
       if (!v || !g.inHouse || g.visit) return;
       modals.closeAll();
       g.select(null);
@@ -99,20 +100,25 @@ function moveVaultBtn(g: Game, modals: Modals): HTMLElement {
   });
 }
 
-export function openVault(game: Game, modals: Modals): void {
+export function openVault(game: Game, modals: Modals, item?: PlacedItem | null): void {
   const g = game;
   const hs = g.house;
-  if (!hs || !hs.tier) return;
+  if (!hs) return;
+  // The vault you walked up to (or clicked) is the one you open.
+  const it = item ?? g.vaultItem(g.activeVault) ?? g.items.items.find((i) => i.def.kind === 'vault') ?? null;
+  const box = it ? g.useVault(it) : g.activeBox;
+  if (!box) return;
   if (g.vaultOpen) {
     openBank(g, modals);
     return;
   }
-  const t = vaultTier(hs.tier)!;
-  if (!hs.code) {
-    pickCode(g, modals, t.digits, `Pick a ${t.digits}-digit code for your ${t.name}`, (code) => {
+  const t = vaultTier(box.tier)!;
+  const name = vaultName(hs, box);
+  if (!box.code) {
+    pickCode(g, modals, t.digits, `Pick a ${t.digits}-digit code for your ${name}`, (code) => {
       g.setVaultCode(code);
       modals.close();
-      openVault(g, modals);
+      openVault(g, modals, it);
     });
     return;
   }
@@ -132,8 +138,8 @@ export function openVault(game: Game, modals: Modals): void {
       audio.play('keyError');
       kp.shake('WRONG CODE');
     }
-  }, { title: t.name.toUpperCase(), sub: g.vaultLockUntil > Date.now() ? `LOCKED · ${locked()}s` : `ENTER ${t.digits}-DIGIT CODE`, hideDigits: true });
-  modals.open('Vault', h('div', { class: 'stack vault-pad', style: `--steel:${STEEL[hs.tier - 1]}` }, kp.el, h('div', { class: 'btn-row center' }, moveVaultBtn(g, modals))), { cls: 'small vault-modal' });
+  }, { title: name.toUpperCase(), sub: g.vaultLockUntil > Date.now() ? `LOCKED · ${locked()}s` : `ENTER ${t.digits}-DIGIT CODE`, hideDigits: true });
+  modals.open(name, h('div', { class: 'stack vault-pad', style: `--steel:${STEEL[box.tier - 1]}` }, kp.el, h('div', { class: 'btn-row center' }, moveVaultBtn(g, modals))), { cls: 'small vault-modal' });
 }
 
 /** Choose a new code (typed twice so a slip of the finger can't lock you out). */
@@ -512,8 +518,8 @@ function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: n
  * canvas so it looks the same everywhere; tap to skip.
  */
 export function playUnlock(g: Game, code: string, done: () => void): void {
-  const hs = g.house!;
-  const t = vaultTier(hs.tier)!;
+  const box = g.activeBox!;
+  const t = vaultTier(box.tier)!;
   const root = document.getElementById('ui') ?? document.body;
   const canvas = h('canvas', { class: 'va-canvas' }) as HTMLCanvasElement;
   const status = h('div', { class: 'va-status', text: 'VERIFYING…' });
@@ -521,8 +527,8 @@ export function playUnlock(g: Game, code: string, done: () => void): void {
   const overlay = h('div', { class: 'vault-anim' }, canvas, status, skip);
   root.appendChild(overlay);
   const ctx = canvas.getContext('2d')!;
-  const steel = STEEL[hs.tier - 1];
-  const cash = formatMoney(hs.vault);
+  const steel = STEEL[box.tier - 1];
+  const cash = formatMoney(box.money);
   const plan = unlockPlan(code, t.bolts);
   const size = () => {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -599,21 +605,22 @@ export function openBank(game: Game, modals: Modals): void {
   let amount = 1000;
   const render = () => {
     const hs = g.house;
-    if (!hs) return;
+    const box = g.activeBox;
+    if (!hs || !box) return;
     clear(body);
-    const t = vaultTier(hs.tier)!;
-    const fill = Math.min(1, hs.vault / t.cap);
+    const t = vaultTier(box.tier)!;
+    const fill = Math.min(1, box.money / t.cap);
     body.append(
-      h('div', { class: 'bank-head', style: `--steel:${STEEL[hs.tier - 1]}` },
+      h('div', { class: 'bank-head', style: `--steel:${STEEL[box.tier - 1]}` },
         h('div', { class: 'bank-icon', text: '🔐' }),
         h('div', {},
-          h('div', { class: 'bank-title', text: t.name }),
+          h('div', { class: 'bank-title', text: vaultName(hs, box) }),
           h('div', { class: 'muted small', text: `Holds up to ${formatMoney(t.cap)} · ${(t.interest * 100).toFixed(2)}% interest a day · ${t.digits}-digit code` }),
         ),
       ),
       h('div', { class: 'bank-balance' },
-        h('div', { class: 'muted small', text: 'IN THE VAULT' }),
-        h('div', { class: 'bank-big', text: formatMoney(hs.vault) }),
+        h('div', { class: 'muted small', text: hs.vaults.length > 1 ? `IN THIS VAULT · ${formatMoney(houseCash(hs))} IN ALL ${hs.vaults.length}` : 'IN THE VAULT' }),
+        h('div', { class: 'bank-big', text: formatMoney(box.money) }),
         h('div', { class: 'meter wide' }, h('i', { style: `width:${(fill * 100).toFixed(1)}%` })),
       ),
       h('div', { class: 'bank-accts' },
@@ -633,9 +640,8 @@ export function openBank(game: Game, modals: Modals): void {
     }
     body.appendChild(h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Amount' }), input, chips));
     const move = (target: 'casino' | 'hotel', sign: 1 | -1, all = false) => {
-      const hsx = g.house!;
       const src = target === 'casino' ? g.money : g.hotel?.bank ?? 0;
-      const a = all ? (sign > 0 ? Math.max(0, src) : hsx.vault) : amount;
+      const a = all ? (sign > 0 ? Math.max(0, src) : g.activeBox?.money ?? 0) : amount;
       const moved = g.vaultTransfer(target, sign * a);
       if (moved) g.notify(`${moved > 0 ? 'Deposited' : 'Sent'} ${formatMoney(Math.abs(moved))} ${moved > 0 ? `from the ${target}` : `to the ${target}`}.`, 'money');
       render();
@@ -648,11 +654,28 @@ export function openBank(game: Game, modals: Modals): void {
       h('button', { class: 'btn small', text: 'Deposit all casino cash', onClick: () => move('casino', 1, true) }),
       h('button', { class: 'btn small', text: 'Empty vault to casino', onClick: () => move('casino', -1, true) }),
     ));
+    // Between your vaults: spread the cash (a burglar only cracks one per break-in).
+    const others = hs.vaults.filter((b) => b !== box);
+    if (others.length) {
+      const row = h('div', { class: 'btn-row wrap' });
+      for (const o of others) {
+        row.appendChild(h('button', {
+          class: 'btn small', text: `➡ ${formatMoney(amount, true)} to ${vaultName(hs, o)}`,
+          title: `${formatMoney(o.money)} in it now`,
+          onClick: () => {
+            const moved = g.vaultMove(o.key, amount);
+            if (moved) g.notify(`Moved ${formatMoney(moved)} to ${vaultName(hs, o)}.`, 'money');
+            render();
+          },
+        }));
+      }
+      body.appendChild(h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Move to another vault' }), row));
+    }
     // Upgrade and code
-    const next = VAULT_TIERS[hs.tier];
+    const next = VAULT_TIERS[box.tier];
     const sec = h('div', { class: 'bank-sec' },
       h('div', { class: 'kv' }, h('span', { text: 'House security' }), h('b', { text: `${g.houseSecurity}/100` })),
-      h('p', { class: 'muted small', text: 'Bodyguards, gate guards, cameras, lasers and a bigger vault all raise it.' }),
+      h('p', { class: 'muted small', text: 'Bodyguards, gate guards, cameras, lasers and bigger vaults all raise it. Each vault has its own code: a burglar only cracks one per break-in.' }),
     );
     body.appendChild(sec);
     const btns = h('div', { class: 'btn-row wrap' });
@@ -698,7 +721,7 @@ export function openBank(game: Game, modals: Modals): void {
     const acct = body.querySelector('.acct b');
     if (acct) acct.textContent = formatMoney(g.money);
   });
-  modals.open('Your vault', body, {
+  modals.open(g.house && g.house.vaults.length > 1 ? 'Your vaults' : 'Your vault', body, {
     cls: 'vault-bank',
     onClose: () => {
       off();

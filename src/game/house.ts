@@ -12,12 +12,11 @@ import { type HeistRecord, cleanRecords } from './heistRules';
 export interface HouseState {
   /** The house's floor plan (rooms, furniture, the vault, guards). */
   snap: CasinoSnapshot;
-  /** Money in the vault. */
-  vault: number;
-  /** Vault code the owner picked ('' until one is set). */
-  code: string;
-  /** Vault tier: 0 = no vault yet, 1..VAULT_TIERS.length. */
-  tier: number;
+  /**
+   * Your vaults, each with its own money, code and tier. Each one is a vault placed in the
+   * house, tied to it by `key` (kept on the placed item as its label).
+   */
+  vaults: VaultBox[];
   /** Recent transfers, newest first. */
   log: VaultLog[];
   /** Garage size: 0 = none yet, 1..GARAGE_TIERS.length. */
@@ -57,6 +56,67 @@ export const GARAGE_TIERS: GarageTier[] = [
 
 export function garageTier(tier: number): GarageTier | null {
   return GARAGE_TIERS[tier - 1] ?? null;
+}
+
+/** One vault: what's in it, its code and its tier. */
+export interface VaultBox {
+  /** 'V1', 'V2'…: ties the vault to its placed item (the item's label). */
+  key: string;
+  /** Money inside. */
+  money: number;
+  /** Its code ('' until one is picked). */
+  code: string;
+  /** 1..VAULT_TIERS.length. */
+  tier: number;
+}
+
+/** Most vaults a house can have. */
+export const MAX_VAULTS = 4;
+
+/** All the money in all your vaults. */
+export function houseCash(h: HouseState | null | undefined): number {
+  return h ? h.vaults.reduce((a, b) => a + b.money, 0) : 0;
+}
+
+/** How much all your vaults can hold together. */
+export function houseCap(h: HouseState | null | undefined): number {
+  return h ? h.vaults.reduce((a, b) => a + (vaultTier(b.tier)?.cap ?? 0), 0) : 0;
+}
+
+/** Your best vault's tier (0 = no vault). */
+export function topTier(h: HouseState | null | undefined): number {
+  return h ? h.vaults.reduce((a, b) => Math.max(a, b.tier), 0) : 0;
+}
+
+/** The vault with this key. */
+export function vaultBox(h: HouseState | null | undefined, key: string | null | undefined): VaultBox | null {
+  return (h && key && h.vaults.find((b) => b.key === key)) || null;
+}
+
+/** A key no vault of this house uses yet. */
+export function newVaultKey(h: HouseState): string {
+  for (let i = 1; ; i++) if (!h.vaults.some((b) => b.key === `V${i}`)) return `V${i}`;
+}
+
+/** Name to show for a vault: its tier, numbered when you have more than one. */
+export function vaultName(h: HouseState, b: VaultBox): string {
+  const t = vaultTier(b.tier)?.name ?? 'Vault';
+  return h.vaults.length > 1 ? `${t} #${b.key.slice(1)}` : t;
+}
+
+/**
+ * Put money into the vaults, filling them in order (as far as they hold). Returns how much
+ * went in.
+ */
+export function fillVaults(h: HouseState, amount: number): number {
+  let left = Math.max(0, Math.round(amount));
+  for (const b of h.vaults) {
+    if (left <= 0) break;
+    const fit = Math.max(0, Math.min(left, (vaultTier(b.tier)?.cap ?? 0) - b.money));
+    b.money += fit;
+    left -= fit;
+  }
+  return Math.round(amount) - left;
 }
 
 export interface VaultLog {
@@ -112,9 +172,7 @@ export function newHouse(owner: string, look: CasinoLook): HouseState {
       staff: [],
       rating: 3,
     },
-    vault: 0,
-    code: '',
-    tier: 0,
+    vaults: [],
     log: [],
     garage: 0,
     parked: [],
@@ -137,10 +195,10 @@ export function clampTransfer(amount: number, vault: number, tier: number, sourc
 }
 
 /** One day of interest on what's in the vault (never past its capacity). */
-export function vaultInterest(h: HouseState): number {
-  const t = vaultTier(h.tier);
-  if (!t || h.vault <= 0) return 0;
-  return Math.max(0, Math.min(Math.round(h.vault * t.interest), t.cap - h.vault));
+export function vaultInterest(b: VaultBox): number {
+  const t = vaultTier(b.tier);
+  if (!t || b.money <= 0) return 0;
+  return Math.max(0, Math.min(Math.round(b.money * t.interest), t.cap - b.money));
 }
 
 /** Security rating 0..100: the vault, guards and gadgets. */
@@ -162,9 +220,7 @@ export function sanitizeHouse(raw: unknown, fonts: string[], sanitizeLook: (a: u
   const r = raw as Record<string, unknown>;
   const snap = sanitizeSnapshot(r.snap, fonts, sanitizeLook);
   if (!snap) return null;
-  // Keep the extra per-item state the snapshot sanitizer doesn't know about.
-  const tier = Math.round(num(r.tier, 0, VAULT_TIERS.length, 0));
-  const code = typeof r.code === 'string' && /^\d{0,8}$/.test(r.code) ? r.code : '';
+  const vaults = sanitizeVaults(r);
   const log: VaultLog[] = [];
   for (const it of Array.isArray(r.log) ? r.log.slice(0, MAX_VAULT_LOG) : []) {
     if (!it || typeof it !== 'object') continue;
@@ -173,14 +229,33 @@ export function sanitizeHouse(raw: unknown, fonts: string[], sanitizeLook: (a: u
   }
   return {
     snap,
-    vault: Math.round(num(r.vault, 0, vaultTier(tier)?.cap ?? 0, 0)),
-    code: validCode(code, tier) ? code : '',
-    tier,
+    vaults,
     log,
     garage: Math.round(num(r.garage, 0, GARAGE_TIERS.length, 0)),
     parked: sanitizeParked(r.parked, garageTier(Math.round(num(r.garage, 0, GARAGE_TIERS.length, 0)))?.cap ?? 0),
     robbed: cleanRecords(r.robbed ? [r.robbed] : [])[0] ?? null,
   };
+}
+
+/**
+ * The vaults from a save, checked. Saves from before you could have several kept one vault in
+ * `vault` / `code` / `tier`: that becomes vault V1.
+ */
+export function sanitizeVaults(r: Record<string, unknown>): VaultBox[] {
+  const out: VaultBox[] = [];
+  const box = (key: unknown, money: unknown, code: unknown, tierRaw: unknown) => {
+    const tier = Math.round(num(tierRaw, 0, VAULT_TIERS.length, 0));
+    if (tier < 1 || typeof key !== 'string' || !/^V\d{1,2}$/.test(key) || out.some((b) => b.key === key) || out.length >= MAX_VAULTS) return;
+    const c = typeof code === 'string' && validCode(code, tier) ? code : '';
+    out.push({ key, money: Math.round(num(money, 0, vaultTier(tier)?.cap ?? 0, 0)), code: c, tier });
+  };
+  if (Array.isArray(r.vaults)) {
+    for (const v of r.vaults) if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      box(o.key, o.money, o.code, o.tier);
+    }
+  } else box('V1', r.vault, r.code, r.tier);
+  return out;
 }
 
 /** Parked cars from a save: known car ids (once each) or kept traffic cars, at most `cap`. */

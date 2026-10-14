@@ -647,7 +647,9 @@ function openHeistAsk(g: Game, modals: Modals, lot: StreetLot): void {
       : `<b>${lot.owner}</b> is ${t.online ? '<span class="pos">● online</span>: you can take up to <b>50%</b> of the vault, but they can come home and fight you' : '<span class="muted">○ offline</span>: you can take up to <b>10%</b> of the vault'}.` }),
     hasVault
       ? h('div', { class: 'card-stats' },
-        h('div', { class: 'kv' }, h('span', { text: 'Vault' }), h('b', { text: `${tier?.name ?? 'Vault'} · ${formatMoney(t.vault)}` })),
+        ...(t.vaults && t.vaults.length > 1
+          ? [h('div', { class: 'kv' }, h('span', { text: `${t.vaults.length} vaults · crack one` }), h('b', { text: t.vaults.map((v) => `${vaultTier(v.t)?.name ?? 'Vault'} ${formatMoney(v.m, true)}`).join(' · ') }))]
+          : [h('div', { class: 'kv' }, h('span', { text: 'Vault' }), h('b', { text: `${tier?.name ?? 'Vault'} · ${formatMoney(t.vault)}` }))]),
         h('div', { class: 'kv' }, h('span', { text: 'A perfect run takes' }), h('b', { class: 'pos', text: formatMoney(pv.max) })),
         h('div', { class: 'kv' }, h('span', { text: 'Minigames to crack it' }), h('b', { text: vaultStages(t.tier).map((s) => STAGE_INFO[s.kind].icon).join(' ') })),
         h('div', { class: 'kv' }, h('span', { text: 'Time lock after that' }), h('b', { text: `${timelockSeconds(t.tier)} s` })),

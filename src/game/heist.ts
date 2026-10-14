@@ -24,9 +24,12 @@ export interface HouseTarget {
   pid: string;
   owner: string;
   snap: CasinoSnapshot;
-  /** Money in the vault (best known). */
+  /** Money in the vault (best known): all the vaults together. */
   vault: number;
+  /** The best vault's tier. */
   tier: number;
+  /** Each vault (its key, tier and money), when the owner has told the street. */
+  vaults?: { k: string; t: number; m: number }[];
   /** Is the owner playing right now (a bigger take, but they can come home and fight)? */
   online: boolean;
   /** Uncle Sal's NPC house: robberies stay private (each player has their own Sal) and it refills. */
@@ -447,7 +450,11 @@ export class Heist {
   alarmed = false;
   private silentCool = 0;
   private unlocked = new Set<string>();
+  /** The vault you're cracking (one per break-in), its key, tier and what's in it. */
   vault: PlacedItem | null = null;
+  vaultKey: string | null = null;
+  vaultTierNum = 1;
+  vaultMoney = 0;
   phase: VaultPhase = 'locked';
   timelock = 0;
   private timelockMax = 1;
@@ -480,11 +487,17 @@ export class Heist {
       w.dispose();
       g.workers = g.workers.filter((o) => o !== w);
     }
-    this.vault = g.items.items.find((i) => i.def.kind === 'vault') ?? null;
-    if (this.vault && this.vault.level !== this.tier) {
-      this.vault.level = this.tier;
-      this.vault.rebuildModel();
+    // Every vault shows its own tier; the guards stand by the fullest.
+    const vaults = g.items.items.filter((i) => i.def.kind === 'vault');
+    for (const v of vaults) {
+      const lvl = this.infoOf(v).t;
+      if (v.level !== lvl) {
+        v.level = lvl;
+        v.rebuildModel();
+      }
     }
+    const richest = [...vaults].sort((a, b) => this.infoOf(b).m - this.infoOf(a).m)[0] ?? null;
+    if (richest) this.chooseVault(richest);
     const g0 = g.gridAt(0);
     const spotNear = (x: number, z: number, r: number): [number, number] => {
       for (let k = 0; k < 30; k++) {
@@ -563,13 +576,32 @@ export class Heist {
     return !this.over && this.g.combat.ko <= 0;
   }
 
+  /** What the street knows of this vault: its tier and money (a house with one vault: all of it). */
+  infoOf(v: PlacedItem): { k: string | null; t: number; m: number } {
+    const list = this.target.vaults;
+    if (!list?.length) return { k: v.label, t: this.tier, m: this.target.vault };
+    const hit = list.find((x) => x.k === v.label);
+    return hit ? { k: hit.k, t: hit.t, m: hit.m } : { k: v.label, t: 1, m: 0 };
+  }
+
+  /** Pick the vault to crack (only before you start on one: one vault per break-in). */
+  chooseVault(v: PlacedItem): boolean {
+    if (this.phase !== 'locked' || this.over) return v === this.vault;
+    const info = this.infoOf(v);
+    this.vault = v;
+    this.vaultKey = info.k;
+    this.vaultTierNum = Math.max(1, info.t);
+    this.vaultMoney = info.m;
+    return true;
+  }
+
   get vaultTierName(): string {
-    return vaultTier(this.tier)?.name ?? 'Vault';
+    return vaultTier(this.vaultTierNum)?.name ?? 'Vault';
   }
 
   /** The most this run could take (a perfect run, given the floor safes). */
   get maxTake(): number {
-    return shareTake(this.target.vault, this.share, 1, this.safes);
+    return shareTake(this.vaultMoney, this.share, 1, this.safes);
   }
 
   /** Most of the vault a perfect run takes. */
@@ -583,7 +615,7 @@ export class Heist {
 
   /** The stages that crack the vault. */
   get vaultStages(): Stage[] {
-    return vaultStages(this.tier);
+    return vaultStages(this.vaultTierNum);
   }
 
   // ------------------------------------------------------------------ senses
@@ -707,7 +739,7 @@ export class Heist {
     if (this.over || this.phase !== 'locked') return;
     this.quality = runQuality(scores);
     this.phase = 'timelock';
-    this.timelock = this.timelockMax = timelockSeconds(this.tier);
+    this.timelock = this.timelockMax = timelockSeconds(this.vaultTierNum);
     audio.play('vaultWheel');
     this.g.notify(`🔐 Cracked! The ${this.vaultTierName}'s time lock opens in ${this.timelock} s. Hold them off till then (the drill is loud).`, 'good');
     this.g.events.emit('heist', undefined);
@@ -722,7 +754,7 @@ export class Heist {
   grab(): void {
     const g = this.g;
     if (this.over || this.phase !== 'open') return;
-    this.loot = Math.max(1, shareTake(this.target.vault, this.share, this.quality, this.safes));
+    this.loot = Math.max(1, shareTake(this.vaultMoney, this.share, this.quality, this.safes));
     this.phase = 'looted';
     const v = this.vault;
     if (v) g.effects.coinFlight(new THREE.Vector3(v.cx, 1.2, v.cz), () => g.playerPos.clone().setY(1.1), 14, () => audio.play('coin', { volume: 0.4 }));
@@ -841,7 +873,10 @@ export class Heist {
         // Uncle Sal restocks for you alone: nothing to publish.
         g.net.npcRobbed = Date.now();
       } else {
-        const rec: HeistRecord = { i: Math.random().toString(36).slice(2, 12), v: this.target.pid, by: g.player.name.slice(0, 20), t: Date.now(), a: this.loot, on: this.online ? 1 : 0 };
+        const rec: HeistRecord = {
+          i: Math.random().toString(36).slice(2, 12), v: this.target.pid, by: g.player.name.slice(0, 20), t: Date.now(), a: this.loot, on: this.online ? 1 : 0,
+          ...(this.vaultKey ? { k: this.vaultKey } : {}),
+        };
         g.net.heists = [rec, ...cleanRecords(g.net.heists ?? [])].slice(0, MAX_RECORDS);
       }
       g.addMoney(this.loot, 'loot');

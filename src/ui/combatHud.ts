@@ -5,6 +5,7 @@ import { MAX_HP } from '../game/combat';
 import { MAX_STAMINA } from '../game/melee';
 import { PERFECT_WINDOW } from '../game/guns';
 import { drawReticle, reticleKey } from './reticle';
+import { houseCash } from '../game/house';
 
 /**
  * Everything on screen for street fights and first person: the crosshair (it opens up as you
@@ -226,7 +227,7 @@ export class CombatHud {
           h('div', { class: 'ko-title', text: c.lastKo?.busted ? 'BUSTED' : 'KNOCKED OUT' }),
           h('div', { class: 'ko-by', text: c.lastKo?.busted ? 'The police caught up with you' : c.lastKo ? `by ${c.lastKo.by}` : '' }),
           h('div', { class: 'ko-lost', text: c.lastKo && c.lastKo.lost > 0 ? `−${formatMoney(c.lastKo.lost)} ${c.lastKo.busted ? 'fine' : 'taken from your pockets'}` : 'Your pockets were empty' }),
-          h('div', { class: 'ko-tip', text: g.house?.vault ? `Your vault is untouched: ${formatMoney(g.house.vault)} safe at home.` : 'Money in your vault at home is always safe.' }),
+          h('div', { class: 'ko-tip', text: houseCash(g.house) ? `Your vaults are untouched: ${formatMoney(houseCash(g.house))} safe at home.` : 'Money in your vault at home is always safe.' }),
           h('div', { class: 'ko-where', text: 'Wake up at' }),
           h('div', { class: 'ko-spots', role: 'radiogroup', 'aria-label': 'Where you wake up' },
             ...spots.map((d, i) => h('button', {
