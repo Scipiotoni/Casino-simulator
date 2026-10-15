@@ -128,7 +128,7 @@ describe('visitor ledgers never wipe your bank', () => {
   });
 
   it('banks top out at 20 million', () => {
-    expect(MAX_BANK).toBe(20_000_000);
+    expect(MAX_BANK).toBe(1_000_000_000);
   });
 });
 

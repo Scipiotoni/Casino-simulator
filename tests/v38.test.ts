@@ -55,3 +55,20 @@ describe('heist locked doors', () => {
     expect(heistReachable(g, ...front, ...back, () => true)).toBe(true);
   });
 });
+
+describe('big money and big crowds', () => {
+  it('cash holds a billion and Fort Knox ten billion', async () => {
+    const { VAULT_TIERS } = await import('../src/game/house');
+    expect(VAULT_TIERS[VAULT_TIERS.length - 1].cap).toBe(10_000_000_000);
+  });
+
+  it('Ultra AFK draws every guest in one batch, up to 10,000', async () => {
+    const { GhostCrowd, GHOST_MAX } = await import('../src/render/ghostCrowd');
+    expect(GHOST_MAX).toBe(10_000);
+    const crowd = new GhostCrowd(50);
+    crowd.set(Array.from({ length: 80 }, (_, i) => ({ x: i, z: 0, color: 0xff0000, scale: 1 })));
+    expect(crowd.mesh.count).toBe(50);
+    crowd.set([]);
+    expect(crowd.mesh.count).toBe(0);
+  });
+});

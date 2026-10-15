@@ -7978,3 +7978,19 @@ p.small {
   animation: cr-won 0.5s ease-in-out 3;
   box-shadow: 0 0 0 3px var(--gold), 0 0 18px var(--gold);
 }
+
+/* ------------------------------------------------------------------ staff: fire in bulk */
+.staff-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.staff-pick {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--gold, #f2b632);
+}
+.staff-bulk {
+  margin-bottom: 4px;
+}

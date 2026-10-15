@@ -730,3 +730,103 @@ export function openBank(game: Game, modals: Modals): void {
     },
   });
 }
+
+/**
+ * Remote banking, from anywhere: pick a vault, type its code, then take cash out (or put
+ * it in) without going home.
+ */
+export function openRemoteBank(game: Game, modals: Modals): void {
+  const g = game;
+  const block = g.remoteBlock();
+  if (block) {
+    audio.play('error');
+    g.notify(block, 'bad');
+    return;
+  }
+  const hs = g.house!;
+  const body = h('div', { class: 'stack' });
+  body.appendChild(h('p', { class: 'muted small', text: 'Take cash out of a vault (or put some in) from anywhere. You still need that vault’s code.' }));
+  const list = h('div', { class: 'staff-list' });
+  for (const b of hs.vaults) {
+    const t = vaultTier(b.tier);
+    list.appendChild(h('div', { class: 'staff-row' },
+      h('div', {}, h('b', { text: vaultName(hs, b) }), h('span', { class: 'muted', text: ` · ${formatMoney(b.money)}${t ? ` of ${formatMoney(t.cap, true)}` : ''}` })),
+      h('div', { class: 'btn-row' },
+        b.code
+          ? h('button', { class: 'btn small gold', text: '📲 Unlock', onClick: () => remoteKeypad(g, modals, b.key) })
+          : h('span', { class: 'muted small', text: 'Pick its code at home first' }),
+      ),
+    ));
+  }
+  body.appendChild(list);
+  modals.open('📲 Remote banking', body, { cls: 'small' });
+}
+
+function remoteKeypad(g: Game, modals: Modals, key: string): void {
+  const hs = g.house;
+  const box = hs?.vaults.find((b) => b.key === key);
+  if (!hs || !box) return;
+  const t = vaultTier(box.tier)!;
+  const locked = () => Math.ceil((g.vaultLockUntil - Date.now()) / 1000);
+  const kp = keypad(t.digits, (code) => {
+    const r = g.remoteUnlock(key, code);
+    if (r === 'open') {
+      audio.play('vaultClunk');
+      modals.close();
+      remoteBank(g, modals);
+    } else if (r === 'locked') {
+      audio.play('keyError');
+      kp.shake(`LOCKED · try again in ${locked()}s`);
+    } else {
+      audio.play('keyError');
+      kp.shake(r === 'none' ? 'UNAVAILABLE' : 'WRONG CODE');
+    }
+  }, { title: vaultName(hs, box).toUpperCase(), sub: g.vaultLockUntil > Date.now() ? `LOCKED · ${locked()}s` : `ENTER ${t.digits}-DIGIT CODE`, hideDigits: true });
+  modals.open(`📲 ${vaultName(hs, box)}`, h('div', { class: 'stack vault-pad', style: `--steel:${STEEL[box.tier - 1]}` }, kp.el), { cls: 'small vault-modal' });
+}
+
+function remoteBank(g: Game, modals: Modals): void {
+  const body = h('div', { class: 'stack bank' });
+  let amount = 100_000;
+  const render = () => {
+    const hs = g.house;
+    const box = hs?.vaults.find((b) => b.key === g.remoteVault);
+    if (!hs || !box) return;
+    clear(body);
+    const t = vaultTier(box.tier)!;
+    body.append(
+      h('div', { class: 'bank-balance' },
+        h('div', { class: 'muted small', text: `📲 ${vaultName(hs, box).toUpperCase()} · REMOTE` }),
+        h('div', { class: 'bank-big', text: formatMoney(box.money) }),
+        h('div', { class: 'meter wide' }, h('i', { style: `width:${(Math.min(1, box.money / t.cap) * 100).toFixed(1)}%` })),
+      ),
+      h('div', { class: 'bank-accts' }, h('div', { class: 'acct' }, h('span', { text: '💵 Cash on you' }), h('b', { text: formatMoney(g.casinoCash) }))),
+    );
+    const input = h('input', { class: 'text-input', type: 'number', value: String(amount), 'aria-label': 'Amount' }) as HTMLInputElement;
+    input.min = '1';
+    input.addEventListener('input', () => (amount = Math.max(0, Math.round(Number(input.value) || 0))));
+    input.addEventListener('keydown', (e) => e.stopPropagation());
+    const chips = h('div', { class: 'chips' });
+    for (const v of [10_000, 100_000, 1_000_000, 100_000_000]) chips.appendChild(h('button', { class: `chip-btn${amount === v ? ' on' : ''}`, text: formatMoney(v, true), onClick: () => { amount = v; render(); } }));
+    body.appendChild(h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'Amount' }), input, chips));
+    const move = (a: number) => {
+      const moved = g.remoteTransfer(a);
+      if (moved) g.notify(moved < 0 ? `📲 Took ${formatMoney(-moved)} out of ${vaultName(hs, box)}.` : `📲 Put ${formatMoney(moved)} into ${vaultName(hs, box)}.`, 'money');
+      render();
+    };
+    body.appendChild(h('div', { class: 'bank-actions' },
+      h('button', { class: 'btn gold', text: '⬆ Take out', onClick: () => move(-amount) }),
+      h('button', { class: 'btn', text: '⬇ Put in', onClick: () => move(amount) }),
+      h('button', { class: 'btn small', text: 'Take it all', onClick: () => move(-box.money) }),
+    ));
+  };
+  render();
+  const off = g.events.on('house', render);
+  modals.open('📲 Remote banking', body, {
+    cls: 'vault-bank small',
+    onClose: () => {
+      off();
+      g.remoteClose();
+    },
+  });
+}

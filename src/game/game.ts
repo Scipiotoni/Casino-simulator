@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Renderer, type Quality } from '../render/renderer';
+import { GHOST_MAX, GhostCrowd, type GhostDot } from '../render/ghostCrowd';
 import { Effects } from '../render/effects';
 import { Input } from '../core/input';
 import { audio, type SfxName } from '../core/audio';
@@ -191,7 +192,7 @@ export const START_CHIPS = 10_000;
 const DAY_START = 10 * 60;
 const START_MONEY = 3000;
 /** Most a casino or hotel bank can hold; bank the rest in your house vault. */
-export const MAX_BANK = 20_000_000;
+export const MAX_BANK = 1_000_000_000;
 const JACKPOT_SEED = 5000;
 /** Win this much in one visit and the rival's security walks you out. */
 const RIVAL_WIN_LIMIT = 100000;
@@ -332,6 +333,10 @@ export class Game implements World, ItemHost {
   heistRecords: (() => HeistRecord[]) | null = null;
   /** The break-in you're in the middle of. */
   heist: Heist | null = null;
+  /** Ultra AFK's crowd markers (one draw call for every guest) and whose turn it is to think. */
+  private readonly ghosts = new GhostCrowd();
+  private ghostDots: GhostDot[] = [];
+  private custSlice = 0;
   /** Where the burglar last stood legitimately (a locked door can't be skipped by any route). */
   private heistSafe: { floor: number; x: number; z: number; tx: number; tz: number } | null = null;
   private heistBlockT = 0;
@@ -442,9 +447,10 @@ export class Game implements World, ItemHost {
     this.player.groundFn = ground;
     this.cam.groundFn = (x, z) => ground(x, z) + this.streetDrop;
     this.effects.ground = ground;
-    CharacterModel.crude = settings.quality === 'ult';
+    CharacterModel.crude = settings.quality === 'ult' || settings.quality === 'afk';
     this.setViewDistance(settings.viewDist ?? 'normal');
-    this.street.crowd.target = settings.quality === 'high' ? 30 : settings.quality === 'medium' ? 22 : settings.quality === 'low' ? 14 : 8;
+    this.street.crowd.target = crowdTarget(settings.quality);
+    scene.add(this.ghosts.mesh);
     scene.add(this.gunplay.group);
     this.street.city.onHonk = (c) => {
       const w = this.street.globalToWorld(c.x, c.z);
@@ -1647,6 +1653,83 @@ export class Game implements World, ItemHost {
     return moved;
   }
 
+  // ------------------------------------------------------------------ remote banking
+
+  /** A vault you unlocked from afar with its code (remote banking), or null. */
+  remoteVault: string | null = null;
+
+  /** Why remote banking won't work right now (null = go ahead). */
+  remoteBlock(): string | null {
+    if (!this.house?.vaults.length) return 'You don’t have a vault yet: put one in your house (Build → Security → Vault).';
+    if (this.combat.ko > 0) return 'You’re knocked out.';
+    if (this.intruders.length) return '🚨 Someone is breaking into your house right now: get home to stop them.';
+    return null;
+  }
+
+  /** Type a vault's code from anywhere. Three wrong codes lock every keypad for 30 seconds. */
+  remoteUnlock(key: string, code: string): 'open' | 'wrong' | 'locked' | 'none' {
+    const box = vaultBox(this.house, key);
+    if (!box || !box.code || this.remoteBlock()) return 'none';
+    if (this.vaultLockUntil > Date.now()) return 'locked';
+    if (code === box.code) {
+      this.vaultTries = 0;
+      this.remoteVault = key;
+      return 'open';
+    }
+    this.vaultTries++;
+    if (this.vaultTries >= 3) {
+      this.vaultTries = 0;
+      this.vaultLockUntil = Date.now() + 30_000;
+      audio.play('alarm');
+      this.notify('🚨 Wrong code three times! Your vaults locked themselves for 30 seconds.', 'bad');
+      return 'locked';
+    }
+    return 'wrong';
+  }
+
+  /**
+   * Remote banking: move money between the vault you unlocked and the cash you carry (your
+   * casino's bank). Negative takes money out, positive puts it in. Returns how much moved.
+   */
+  remoteTransfer(amount: number): number {
+    const h = this.house;
+    const box = vaultBox(h, this.remoteVault);
+    if (!h || !box) return 0;
+    const block = this.remoteBlock();
+    if (block) {
+      audio.play('error');
+      this.notify(block, 'bad');
+      this.remoteVault = null;
+      return 0;
+    }
+    const cash = this.casinoCash;
+    if (amount < 0) amount = -Math.min(-amount, Math.max(0, MAX_BANK - cash));
+    const moved = clampTransfer(amount, box.money, box.tier, Math.max(0, cash));
+    if (!moved) {
+      audio.play('error');
+      this.notify(amount < 0 ? (box.money <= 0 ? 'That vault is empty.' : `Your cash is at the ${formatMoney(MAX_BANK)} limit.`) : box.money >= (vaultTier(box.tier)?.cap ?? 0) ? 'That vault is full.' : 'Not enough cash on you.', 'bad');
+      return 0;
+    }
+    box.money += moved;
+    if (this.site === 'hotel' && this.parked) this.parked.home.money = Math.round(this.parked.home.money - moved);
+    else {
+      this.money -= moved;
+      this.events.emit('money', { money: this.money, delta: -moved });
+    }
+    if (moved > 0) this.stats.deposited += moved;
+    const which = h.vaults.length > 1 ? ` (vault #${box.key.slice(1)})` : '';
+    addLog(h, this.day, moved > 0 ? `Remote deposit${which}` : `Remote withdrawal${which}`, moved);
+    audio.play(moved > 0 ? 'coin' : 'cash');
+    this.events.emit('house', undefined);
+    this.requestSave();
+    return moved;
+  }
+
+  /** Lock the remotely opened vault again. */
+  remoteClose(): void {
+    this.remoteVault = null;
+  }
+
   /** Move money from the open vault into another of your vaults. Returns how much moved. */
   vaultMove(toKey: string, amount: number): number {
     const h = this.house;
@@ -2639,11 +2722,13 @@ export class Game implements World, ItemHost {
     const wealth = 0.9 + Math.max(0, this.rating - 1) * 0.4 + Math.min(0.8, this.level * 0.04);
     const c = new Customer(type, sx, sz, undefined, wealth);
     this.customers.push(c);
-    this.renderer.scene.add(c.model.root);
+    // Ultra AFK: no body, just a marker in the shared batch (and nothing in the scene graph).
+    if (this.afk) c.model.setGhost(true);
+    else this.renderer.scene.add(c.model.root);
     if (this.state === 'playing' && !this.visit) {
       this.stats.visitors++;
       this.dayAcc.visitors++;
-      if (type === 'vip') {
+      if (type === 'vip' && !this.afk) {
         this.notify(`A VIP high roller just arrived! Greet ${c.name.split(' ')[0]} for a tip.`, 'event');
         audio.play('doorbell');
       }
@@ -2658,7 +2743,12 @@ export class Game implements World, ItemHost {
 
   private maxCustomers(): number {
     const q = this.settings.quality;
-    return q === 'ult' ? 600 : q === 'high' ? 90 : q === 'medium' ? 60 : 38;
+    return q === 'afk' ? GHOST_MAX : q === 'ult' ? 600 : q === 'high' ? 90 : q === 'medium' ? 60 : 38;
+  }
+
+  /** Ultra AFK graphics: thousands of guests drawn as plain markers. */
+  get afk(): boolean {
+    return this.settings.quality === 'afk';
   }
 
   private hourMult(): number {
@@ -2710,12 +2800,15 @@ export class Game implements World, ItemHost {
     }
     const seats = this.items.gamblingSeats();
     const benchSeats = this.items.countKind((i) => i.def.kind === 'bench') * 2;
-    // Ult (AFK): far more guests than seats (the rest queue, watch and wander), arriving 3× as fast.
-    const ult = this.settings.quality === 'ult';
-    const cap = Math.min(this.maxCustomers(), Math.round(ult ? 10 + seats * 3 + benchSeats : 3 + seats * 1.15 + benchSeats * 0.5));
+    // Ultra Low: far more guests than seats (the rest queue, watch and wander), arriving 3× as
+    // fast. Ultra AFK: a crowd of up to 10,000, filling up in a couple of minutes.
+    const ult = this.settings.quality === 'ult' || this.afk;
+    const cap = Math.min(this.maxCustomers(), Math.round(this.afk ? 50 + seats * 50 + benchSeats * 5 : ult ? 10 + seats * 3 + benchSeats : 3 + seats * 1.15 + benchSeats * 0.5));
     const inside = this.customers.filter((c) => !c.exited).length;
     const mult = this.activeEvent?.spawnMult ?? 1;
-    if (seats > 0 && inside < cap) {
+    // Ultra AFK lets several in at once (more the emptier it is).
+    const batch = this.afk ? Math.max(1, Math.min(40, Math.round((cap - inside) / 120))) : 1;
+    for (let k = 0; k < batch && seats > 0 && inside + k < cap; k++) {
       let type: CustomerType = 'regular';
       const boost = this.visit ? { spawn: 1, vip: 0 } : hotelGuestBoost(this.hotel);
       const vipChance = (this.rating >= 2.5 ? 0.025 + (this.rating - 2.5) * 0.035 : 0) + boost.vip;
@@ -3078,6 +3171,23 @@ export class Game implements World, ItemHost {
     if (this.selection?.kind === 'worker' && this.selection.w === w) this.select(null);
     this.events.emit('staff', undefined);
     this.requestSave();
+  }
+
+  /** Fire several people at once (one save, one update). Returns how many left. */
+  fireMany(list: readonly Worker[]): number {
+    const gone = new Set(list.filter((w) => this.workers.includes(w)));
+    if (!gone.size) return 0;
+    for (const w of gone) {
+      w.release();
+      w.dispose();
+    }
+    this.workers = this.workers.filter((o) => !gone.has(o));
+    if (this.selection?.kind === 'worker' && gone.has(this.selection.w)) this.select(null);
+    audio.play('click');
+    this.notify(`${gone.size} ${gone.size === 1 ? 'person' : 'people'} let go.`, 'info');
+    this.events.emit('staff', undefined);
+    this.requestSave();
+    return gone.size;
   }
 
   // ------------------------------------------------------------------ growing the building
@@ -4874,7 +4984,7 @@ export class Game implements World, ItemHost {
 
   /** Running slowly for ~8 seconds in a row: suggest turning the graphics down. */
   private watchFps(span: number): void {
-    if (this.state !== 'playing' || this.modalOpen || document.hidden || this.settings.quality === 'low' || this.settings.quality === 'ult') {
+    if (this.state !== 'playing' || this.modalOpen || document.hidden || this.settings.quality === 'low' || this.settings.quality === 'ult' || this.settings.quality === 'afk') {
       this.slowFor = 0;
       return;
     }
@@ -4997,12 +5107,24 @@ export class Game implements World, ItemHost {
     }
     this.updateSpawner(sim);
     const vf = this.viewFloor;
-    for (const c of this.customers) {
+    // A big Ultra AFK crowd thinks in turns: each guest updates every few frames (with the
+    // time it missed), about 1,500 a frame.
+    const slices = this.afk ? Math.max(1, Math.ceil(this.customers.length / 1500)) : 1;
+    this.custSlice = (this.custSlice + 1) % slices;
+    for (let i = 0; i < this.customers.length; i++) {
+      const c = this.customers[i];
+      let cdt = sim;
+      if (slices > 1) {
+        c.pendingDt += sim;
+        if (i % slices !== this.custSlice) continue;
+        cdt = c.pendingDt;
+        c.pendingDt = 0;
+      }
       const hidden = c.floor !== vf || (!this.inside && c.inside);
       this.fxFloor = c.floor;
       this.effects.muted = hidden;
       this.floaters.muted = hidden;
-      c.update(sim, this);
+      c.update(cdt, this);
     }
     if (this.customers.some((c) => c.gone)) {
       this.customers = this.customers.filter((c) => {
@@ -5385,9 +5507,14 @@ export class Game implements World, ItemHost {
       this.street.group.position.y = this.streetDrop;
       this.renderer.markShadowsDirty(4);
     }
+    const dots = this.ghostDots;
+    dots.length = 0;
     for (const c of this.customers) {
-      c.model.root.visible = !c.inElevator && c.floor === vf && (inside || !c.inside);
+      const show = !c.inElevator && c.floor === vf && (inside || !c.inside);
+      c.model.root.visible = show;
+      if (show && c.model.ghost && !c.gone) dots.push({ x: c.x, z: c.z, color: ghostColor(c), scale: c.model.root.scale.x });
     }
+    this.ghosts.set(dots);
     for (const w of this.workers) {
       w.model.root.visible = !w.inElevator && w.floor === vf && (inside || w.z >= FACADE_Z);
     }
@@ -5623,16 +5750,41 @@ export class Game implements World, ItemHost {
   }
 
   setQuality(q: Quality): void {
+    const wasAfk = this.afk;
     this.settings.quality = q;
     this.renderer.setQuality(q);
-    // Ult (AFK): crude block people, so hundreds of guests stay cheap to draw.
-    CharacterModel.crude = q === 'ult';
-    // Everyone already here switches too (square heads only in Ult).
-    for (const c of this.customers) c.model.setCrude(CharacterModel.crude);
+    // Ultra Low and Ultra AFK: crude block people, so hundreds of guests stay cheap to draw.
+    CharacterModel.crude = q === 'ult' || q === 'afk';
+    // Everyone already here switches too (square heads only in the Ultra levels). In Ultra AFK
+    // guests lose their bodies altogether (the marker batch draws them).
+    for (const c of this.customers) {
+      c.model.setCrude(CharacterModel.crude);
+      c.model.setGhost(q === 'afk');
+      if (q === 'afk') c.model.root.removeFromParent();
+      else if (!c.model.root.parent && !c.gone) this.renderer.scene.add(c.model.root);
+    }
     for (const w of this.workers) w.model.setCrude(CharacterModel.crude);
     this.street.crowd.setCrude(CharacterModel.crude);
-    this.street.crowd.target = q === 'high' ? 30 : q === 'medium' ? 22 : q === 'low' ? 14 : 8;
+    this.street.crowd.target = crowdTarget(q);
+    // Leaving Ultra AFK: send most of the crowd home so the new level can cope.
+    if (wasAfk && q !== 'afk') {
+      const keep = this.maxCustomers();
+      let n = 0;
+      for (const c of this.customers) if (!c.exited && c.state !== 'leave' && ++n > keep) c.leave('Time to head home.');
+    }
   }
+}
+
+/** People on the street outside at each graphics level. */
+function crowdTarget(q: Quality): number {
+  return q === 'high' ? 30 : q === 'medium' ? 22 : q === 'low' ? 14 : q === 'ult' ? 8 : 4;
+}
+
+/** An Ultra AFK marker's colour: gold VIPs, teal tourists, otherwise their shirt. */
+function ghostColor(c: Customer): number {
+  if (c.type === 'vip') return 0xffc53d;
+  if (c.type === 'tourist') return 0x2fb8c9;
+  return c.model.appearance?.topColor ?? 0xd8d2c6;
 }
 
 /** The visiting player, as far as a machine's seat bookkeeping is concerned. */

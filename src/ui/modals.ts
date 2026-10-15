@@ -21,6 +21,7 @@ import { HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, houseCap, houseCash,
 import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
+import { openRemoteBank } from './vault';
 import { CharacterCreator } from './creator';
 import { type SocialApi, openDaily, openGift, openGifts, openLeaderboard, openLoan } from './social';
 
@@ -208,8 +209,19 @@ export class Modals {
   openStaff(): void {
     const g = this.game;
     const body = h('div', { class: 'stack' });
+    // Ticked in the team list (for "Fire selected").
+    const picked = new Set<Worker>();
+    const fireAsk = (list: Worker[], what: string) => {
+      if (!list.length) return;
+      this.confirm(`Fire ${what}?`, `${list.length === 1 ? 'They leave' : `All ${list.length} leave`} right away.`, 'Fire', () => {
+        g.fireMany(list);
+        for (const w of list) picked.delete(w);
+        render();
+      });
+    };
     const render = () => {
       clear(body);
+      for (const w of [...picked]) if (!g.workers.includes(w)) picked.delete(w);
       const roles = h('div', { class: 'role-grid' });
       for (const r of rolesAt(g.site)) {
         const count = g.workers.filter((w) => w.role === r.role).length;
@@ -222,6 +234,19 @@ export class Modals {
             class: 'btn gold small', text: locked ? `Level ${r.unlock}` : `Hire · ${formatMoney(r.wage)}`, disabled: locked,
             onClick: () => { if (g.hire(r.role)) render(); },
           }),
+          count
+            ? h('div', { class: 'btn-row' },
+              h('button', {
+                class: 'btn small danger', text: 'Fire 1', title: `Let the newest ${r.title.toLowerCase()} go`,
+                onClick: () => {
+                  const last = [...g.workers].reverse().find((w) => w.role === r.role);
+                  if (last) g.fireMany([last]);
+                  render();
+                },
+              }),
+              count > 1 ? h('button', { class: 'btn small danger', text: `Fire all ${count}`, onClick: () => fireAsk(g.workers.filter((w) => w.role === r.role), `all ${count} ${r.title.toLowerCase()}s`) }) : null,
+            )
+            : null,
         ));
       }
       body.appendChild(roles);
@@ -231,6 +256,16 @@ export class Modals {
         body.appendChild(h('div', { class: 'field-label', text: `Dealers · ${tables.length - missing}/${tables.length} tables · ${formatMoney(g.dealerWages)}/day` }));
         body.appendChild(h('p', { class: 'muted small', text: `Every table game needs a dealer (${formatMoney(DEALER_WAGE)} a day each). A table without one only runs while you stand beside it and hold Space to deal yourself.` }));
         if (missing) body.appendChild(h('button', { class: 'btn gold small', text: `${missing > 1 ? `Hire dealers for all ${missing} tables` : 'Hire a dealer for it'} · ${formatMoney(missing * DEALER_WAGE)}`, onClick: () => { g.hireAllDealers(); render(); } }));
+        const onDuty = tables.filter((t) => t.dealer);
+        if (onDuty.length > 1) {
+          body.appendChild(h('button', {
+            class: 'btn danger small', text: `Let all ${onDuty.length} dealers go`,
+            onClick: () => this.confirm(`Let all ${onDuty.length} dealers go?`, 'Those tables only run while you deal them yourself.', 'Let them go', () => {
+              for (const t of onDuty) g.fireDealer(t);
+              render();
+            }),
+          }));
+        }
         const list = h('div', { class: 'staff-list' });
         for (const t of tables) {
           list.appendChild(h('div', { class: 'staff-row' },
@@ -248,8 +283,15 @@ export class Modals {
       if (g.workers.length) {
         const list = h('div', { class: 'staff-list' });
         for (const w of g.workers) {
+          const box = h('input', { type: 'checkbox', class: 'staff-pick', 'aria-label': `Select ${w.name}` }) as HTMLInputElement;
+          box.checked = picked.has(w);
+          box.addEventListener('change', () => {
+            if (box.checked) picked.add(w);
+            else picked.delete(w);
+            render();
+          });
           list.appendChild(h('div', { class: 'staff-row' },
-            h('div', {}, h('b', { text: w.name }), h('span', { class: 'muted', text: ` · ${roleFor(w.role, g.site).title}` })),
+            h('label', { class: 'staff-name' }, box, h('b', { text: w.name }), h('span', { class: 'muted', text: ` · ${roleFor(w.role, g.site).title}` })),
             h('div', { class: 'muted small', text: w.statusLine }),
             h('div', { class: 'btn-row' },
               h('button', { class: 'btn small', text: 'Find', onClick: () => { this.close(); g.select({ kind: 'worker', w }); g.cam.focus.set(w.x, 0, w.z); } }),
@@ -258,7 +300,20 @@ export class Modals {
             ),
           ));
         }
-        body.appendChild(h('div', { class: 'field-label', text: 'Your team' }));
+        body.appendChild(h('div', { class: 'field-label', text: `Your team · ${g.workers.length}` }));
+        const all = picked.size === g.workers.length;
+        body.appendChild(h('div', { class: 'btn-row wrap staff-bulk' },
+          h('button', {
+            class: 'btn small', text: all ? 'Select none' : 'Select all',
+            onClick: () => {
+              if (all) picked.clear();
+              else for (const w of g.workers) picked.add(w);
+              render();
+            },
+          }),
+          h('button', { class: 'btn small danger', text: `Fire selected (${picked.size})`, disabled: !picked.size, onClick: () => fireAsk([...picked], picked.size === 1 ? [...picked][0].name : `${picked.size} people`) }),
+          h('button', { class: 'btn small danger', text: `Fire everyone (${g.workers.length})`, onClick: () => fireAsk([...g.workers], `all ${g.workers.length} staff`) }),
+        ));
         body.appendChild(list);
       } else {
         body.appendChild(h('p', { class: 'muted', text: 'No staff yet. Wages are paid at the end of each day.' }));
@@ -402,6 +457,7 @@ export class Modals {
         kv('Daily costs (guards and gadgets)', formatMoney(g.houseDailyCosts())),
       );
       const row = h('div', { class: 'btn-row wrap' });
+      if (hs.vaults.length) row.appendChild(h('button', { class: 'btn', text: '📲 Remote banking', onClick: () => { this.close(); openRemoteBank(g, this); } }));
       if (!g.inHouse) {
         row.appendChild(h('button', {
           class: 'btn gold', html: `${icon('home', 16)} Go home`,
@@ -767,6 +823,7 @@ export class Modals {
       }));
     }
     body.appendChild(row);
+    if (g.house?.vaults.length) body.appendChild(h('button', { class: 'btn small', text: '📲 Need cash? Remote banking', onClick: () => { this.close(); openRemoteBank(g, this); } }));
     this.open('Fast travel', body, { cls: 'small' });
   }
 
@@ -788,6 +845,7 @@ export class Modals {
       h('button', { class: 'btn', html: `${icon('save', 16)} Export / import`, onClick: () => this.openTransfer() }),
       h('button', { class: 'btn', text: `⟳ Rebirth${g.rebirths ? ` (${roman(g.rebirths)})` : ''}`, onClick: () => this.openRebirth() }),
       h('button', { class: 'btn', text: '🧭 Fast travel', onClick: () => { this.close(); this.openTravel(); } }),
+      g.house?.vaults.length ? h('button', { class: 'btn', text: '📲 Remote banking', title: 'Take cash out of your vaults from anywhere', onClick: () => { this.close(); openRemoteBank(g, this); } }) : null,
       h('button', { class: 'btn', text: '🆘 Unstuck', title: 'Frees you if you’re stuck anywhere: in a wall, the water, a seat, a car or a camera angle', onClick: () => { this.closeAll(); this.onUnstuck ? this.onUnstuck() : g.unstuck(); } }),
       h('button', { class: 'btn', text: '🚗 My cars', onClick: () => { this.close(); openDealer(g, this, true); } }),
       h('button', { class: 'btn', text: '📖 Casino school', onClick: () => { this.close(); openSchool(g, this); } }),
@@ -809,7 +867,7 @@ export class Modals {
     body.appendChild(toggle('Lounge music', () => st.musicOn, (v) => (st.musicOn = v)));
     body.appendChild(toggle('Show FPS', () => st.showFps, (v) => (st.showFps = v)));
     const q = h('div', { class: 'seg' });
-    for (const [id, label] of [['ult', 'Ult (AFK)'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
+    for (const [id, label] of [['afk', 'Ultra AFK'], ['ult', 'Ultra Low'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] as const) {
       q.appendChild(h('button', {
         class: `seg-btn${st.quality === id ? ' on' : ''}`, text: label,
         onClick: () => { g.setQuality(id); q.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.textContent === label)); this.onSettingsChanged?.(); },

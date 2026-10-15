@@ -869,6 +869,7 @@ export class CharacterModel {
 
   setAppearance(a: Appearance): void {
     this.appearance = { ...a };
+    if (this.ghost) return;
     for (const m of this.meshes) {
       m.parent?.remove(m);
       if (!m.userData.shared) m.geometry.dispose();
@@ -949,9 +950,33 @@ export class CharacterModel {
     this.setAppearance(this.appearance);
   }
 
-  /** Built crude (Ult graphics). */
+  /** Built crude (Ultra Low graphics), or a ghost (Ultra AFK). */
   get crudeBody(): boolean {
-    return !!this.opts.crude;
+    return !!this.opts.crude || this.ghost;
+  }
+
+  /**
+   * Ultra AFK: no body at all (the game draws one plain marker per person in a single batch),
+   * no animation. Off again rebuilds the body.
+   */
+  ghost = false;
+  setGhost(on: boolean): void {
+    if (this.ghost === on || this.opts.override) return;
+    this.ghost = on;
+    if (on) {
+      for (const m of this.meshes) {
+        m.parent?.remove(m);
+        if (!m.userData.shared) m.geometry.dispose();
+      }
+      this.meshes = [];
+      this.shadow?.removeFromParent();
+      this.shadow = null;
+      this.face.visible = false;
+    } else {
+      this.face.visible = !this.opts.crude;
+      if (!this.opts.crude && !this.shadow) this.root.add((this.shadow = blobShadow()));
+      this.setAppearance(this.appearance);
+    }
   }
 
   /** Group that follows the head (for hats, crowns and halos). */
@@ -1193,6 +1218,7 @@ export class CharacterModel {
   }
 
   update(dt: number): void {
+    if (this.ghost) return;
     this.t += dt;
     this.poseT += dt;
     const moving = this.pose === 'walk' || this.pose === 'run' || this.pose === 'sneak';

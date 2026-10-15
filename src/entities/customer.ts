@@ -26,6 +26,8 @@ let nextUid = 1;
 
 export class Customer extends Walker implements SeatUser {
   readonly uid = nextUid++;
+  /** Ultra AFK: time banked between this guest's (time-sliced) updates. */
+  pendingDt = 0;
   readonly name = randomName();
   wallet: number;
   bank: number;
@@ -905,7 +907,7 @@ export class Customer extends Walker implements SeatUser {
     if (this.walking && this.inside) {
       const guard = w.items.litterGuardAt(this.x, this.z, this.floor);
       // Ult (AFK) crowds are 3× bigger: each guest drops a third as much.
-      const p = (0.003 + this.pendingTrash * 0.09) * (1 - guard * 0.9) * (this.model.crudeBody ? 0.33 : 1);
+      const p = (0.003 + this.pendingTrash * 0.09) * (1 - guard * 0.9) * (this.model.ghost ? 0.03 : this.model.crudeBody ? 0.33 : 1);
       if (Math.random() < p * dt * 4) {
         const tx = Math.floor(this.x);
         const tz = Math.floor(this.z);

@@ -7,8 +7,11 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { setMaxAnisotropy } from './textures';
 
-/** 'ult' = AFK mode: half resolution, no effects, crude people, many more guests. */
-export type Quality = 'ult' | 'low' | 'medium' | 'high';
+/**
+ * 'ult' = Ultra Low: half resolution, no effects, crude block people, many more guests.
+ * 'afk' = Ultra AFK: lower still, guests drawn as plain markers (one draw call), up to 10,000.
+ */
+export type Quality = 'afk' | 'ult' | 'low' | 'medium' | 'high';
 
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
@@ -85,7 +88,7 @@ export class Renderer {
   setQuality(q: Quality): void {
     this.quality = q;
     const dpr = window.devicePixelRatio || 1;
-    const ratio = q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.5) : q === 'low' ? Math.min(dpr, 1) : 0.5;
+    const ratio = q === 'high' ? Math.min(dpr, 2) : q === 'medium' ? Math.min(dpr, 1.5) : q === 'low' ? Math.min(dpr, 1) : q === 'ult' ? 0.5 : 0.4;
     this.renderer.setPixelRatio(ratio);
     const shadows = q === 'medium' || q === 'high';
     this.renderer.shadowMap.enabled = shadows;

@@ -152,7 +152,7 @@ export const VAULT_TIERS: VaultTier[] = [
   { tier: 2, name: 'Bank Vault', price: 40_000, cap: 1_000_000, digits: 5, interest: 0.0075, bolts: 6, security: 20, blurb: 'Thick steel, six bolts and a five-digit code.' },
   { tier: 3, name: 'Titanium Vault', price: 250_000, cap: 10_000_000, digits: 6, interest: 0.01, bolts: 8, security: 32, blurb: 'Titanium plating and a six-digit code.' },
   { tier: 4, name: 'Diamond Vault', price: 1_500_000, cap: 100_000_000, digits: 7, interest: 0.0125, bolts: 10, security: 45, blurb: 'Diamond-hard door, ten bolts, seven digits.' },
-  { tier: 5, name: 'Fort Knox', price: 8_000_000, cap: 1_000_000_000, digits: 8, interest: 0.015, bolts: 12, security: 60, blurb: 'The ultimate vault: twelve bolts and an eight-digit code.' },
+  { tier: 5, name: 'Fort Knox', price: 8_000_000, cap: 10_000_000_000, digits: 8, interest: 0.015, bolts: 12, security: 60, blurb: 'The ultimate vault: twelve bolts and an eight-digit code.' },
 ];
 
 export function vaultTier(tier: number): VaultTier | null {
