@@ -1,3 +1,4 @@
+import { MONEY_MAX } from '../core/math';
 import type { CasinoSnapshot } from './save';
 import { sanitizeSnapshot } from './save';
 import type { CasinoLook } from '../world/building';
@@ -248,7 +249,7 @@ export function sanitizeHotel(raw: unknown, look: CasinoLook, fonts: string[], s
     });
   }
   return {
-    bank: Math.round(num(r.bank, -1e12, 1e15, HOTEL_START_CASH)),
+    bank: Math.round(num(r.bank, -MONEY_MAX, MONEY_MAX, HOTEL_START_CASH)),
     xp: Math.round(num(r.xp, 0, 1e12, 0)),
     level: Math.round(num(r.level, 1, 99, 1)),
     objectives: Array.isArray(r.objectives) ? r.objectives.filter((x): x is string => typeof x === 'string').slice(0, 200) : [],

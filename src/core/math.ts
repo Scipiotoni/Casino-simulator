@@ -71,9 +71,15 @@ export function distToRect(px: number, pz: number, minX: number, minZ: number, m
 
 const moneyFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
+/** The biggest amount of money the game stores exactly (saves and multiplayer clamp to it). */
+export const MONEY_MAX = Number.MAX_SAFE_INTEGER;
+
 export function formatMoney(n: number, compact = false): string {
+  if (!Number.isFinite(n)) return n < 0 ? '-Unlimited' : 'Unlimited';
   const sign = n < 0 ? '-' : '';
   const abs = Math.abs(Math.round(n));
+  if (compact && abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(abs >= 1e13 ? 1 : 2)}T`;
+  if (compact && abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(abs >= 1e10 ? 1 : 2)}B`;
   if (compact && abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`;
   if (compact && abs >= 100_000) return `${sign}$${(abs / 1000).toFixed(0)}K`;
   if (compact && abs >= 10_000) return `${sign}$${(abs / 1000).toFixed(1)}K`;

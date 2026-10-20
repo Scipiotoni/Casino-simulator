@@ -52,7 +52,7 @@ import {
 } from './save';
 import { RIVAL_ID, RIVAL_NAME, generateRival, rivalLook, rivalLotInfo, tickRival } from './rival';
 import {
-  type HouseState, type VaultBox, HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, addLog, clampTransfer, fillVaults, houseCash, newHouse, newVaultKey, sanitizeHouse, securityRating, topTier, validCode, vaultBox, vaultInterest, vaultName, vaultTier,
+  type HouseState, type VaultBox, HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, addLog, capWords, clampTransfer, fillVaults, houseCash, newHouse, newVaultKey, sanitizeHouse, securityRating, topTier, validCode, vaultBox, vaultInterest, vaultName, vaultTier,
   garageTier,
 } from './house';
 import { type GunState, emptyGuns, gunDef, sanitizeGuns } from './guns';
@@ -192,7 +192,8 @@ export const START_CHIPS = 10_000;
 const DAY_START = 10 * 60;
 const START_MONEY = 3000;
 /** Most a casino or hotel bank can hold; bank the rest in your house vault. */
-export const MAX_BANK = 1_000_000_000;
+/** No limit on what the casino and hotel banks (your cash) hold. */
+export const MAX_BANK = Infinity;
 const JACKPOT_SEED = 5000;
 /** Win this much in one visit and the rival's security walks you out. */
 const RIVAL_WIN_LIMIT = 100000;
@@ -1605,7 +1606,7 @@ export class Game implements World, ItemHost {
     this.syncVaultModel();
     const v = this.vaultItem(box.key);
     if (v) this.effects.sparkle(v.cx, 1.5, v.cz, 40, 0xffd24a, 1.4);
-    this.notify(`🔐 ${next.name}! Holds up to ${formatMoney(next.cap)} and pays ${(next.interest * 100).toFixed(2)}% interest a day.`, 'good');
+    this.notify(`🔐 ${next.name}! Holds ${capWords(next.cap)} and pays ${(next.interest * 100).toFixed(2)}% interest a day.`, 'good');
     this.events.emit('house', undefined);
     this.saveNow();
     return true;
@@ -2942,7 +2943,7 @@ export class Game implements World, ItemHost {
 
   /** Why this item can't go in the building you're in (hotel indoor/outdoor rules). */
   placeBlock(def: ItemDef): string | null {
-    // Up to MAX_VAULTS vaults (moving one you have is always fine).
+    // As many vaults as fit (MAX_VAULTS is unlimited; moving one you have is always fine).
     if (def.kind === 'vault' && !this.build.movingItem && this.items.items.filter((i) => i.def.kind === 'vault').length >= MAX_VAULTS) return `A house holds at most ${MAX_VAULTS} vaults. Upgrade the ones you have instead.`;
     return this.inHotel ? zoneBlock(def, this.gardenSite) : null;
   }

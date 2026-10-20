@@ -1,3 +1,4 @@
+import { MONEY_MAX } from '../core/math';
 import { migrateSave, newRival, sanitizeSnapshot, type SaveData } from './save';
 import { sanitizeAppearance } from '../entities/appearance';
 import { SIGN_FONTS } from '../world/building';
@@ -47,7 +48,7 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
   const save: SaveData = {
     ...snap,
     v: 2,
-    money: Math.round(num(r.money, -1e12, 1e15, 3000)),
+    money: Math.round(num(r.money, -MONEY_MAX, MONEY_MAX, 3000)),
     xp: Math.round(num(r.xp, 0, 1e12, 0)),
     level: Math.round(num(r.level, 1, 99, 1)),
     day: Math.round(num(r.day, 1, 1e6, 1)),
@@ -67,7 +68,7 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
     renamed: r.renamed === true,
     speed: 1,
     rival: {
-      bank: num(rv.bank, 0, 1e15, base.bank),
+      bank: num(rv.bank, 0, MONEY_MAX, base.bank),
       tier: Math.round(num(rv.tier, 0, 20, 0)),
       banUntil: 0,
       net: num(rv.net, -1e15, 1e15, 0),

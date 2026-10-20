@@ -127,8 +127,8 @@ describe('visitor ledgers never wipe your bank', () => {
     expect(creditBase(100_000, 'a1', 'a1', 80_000)).toBe(100_000);
   });
 
-  it('banks top out at 20 million', () => {
-    expect(MAX_BANK).toBe(1_000_000_000);
+  it('banks have no limit', () => {
+    expect(MAX_BANK).toBe(Infinity);
   });
 });
 

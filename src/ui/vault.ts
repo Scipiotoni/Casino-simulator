@@ -4,7 +4,7 @@ import { h, clear, icon } from './dom';
 import { formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import type { PlacedItem } from '../items/placedItem';
-import { VAULT_TIERS, houseCash, vaultName, vaultTier } from '../game/house';
+import { VAULT_TIERS, capWords, houseCash, vaultName, vaultTier } from '../game/house';
 
 const STEEL = ['#9aa0ab', '#6f7480', '#7d93ad', '#e6f0fb', '#f2c14e'];
 
@@ -609,19 +609,19 @@ export function openBank(game: Game, modals: Modals): void {
     if (!hs || !box) return;
     clear(body);
     const t = vaultTier(box.tier)!;
-    const fill = Math.min(1, box.money / t.cap);
+    const fill = Number.isFinite(t.cap) ? Math.min(1, box.money / t.cap) : 0;
     body.append(
       h('div', { class: 'bank-head', style: `--steel:${STEEL[box.tier - 1]}` },
         h('div', { class: 'bank-icon', text: '🔐' }),
         h('div', {},
           h('div', { class: 'bank-title', text: vaultName(hs, box) }),
-          h('div', { class: 'muted small', text: `Holds up to ${formatMoney(t.cap)} · ${(t.interest * 100).toFixed(2)}% interest a day · ${t.digits}-digit code` }),
+          h('div', { class: 'muted small', text: `Holds ${capWords(t.cap)} · ${(t.interest * 100).toFixed(2)}% interest a day · ${t.digits}-digit code` }),
         ),
       ),
       h('div', { class: 'bank-balance' },
         h('div', { class: 'muted small', text: hs.vaults.length > 1 ? `IN THIS VAULT · ${formatMoney(houseCash(hs))} IN ALL ${hs.vaults.length}` : 'IN THE VAULT' }),
         h('div', { class: 'bank-big', text: formatMoney(box.money) }),
-        h('div', { class: 'meter wide' }, h('i', { style: `width:${(fill * 100).toFixed(1)}%` })),
+        Number.isFinite(t.cap) ? h('div', { class: 'meter wide' }, h('i', { style: `width:${(fill * 100).toFixed(1)}%` })) : null,
       ),
       h('div', { class: 'bank-accts' },
         h('div', { class: 'acct' }, h('span', { text: '🎰 Casino cash' }), h('b', { text: formatMoney(g.money) })),
@@ -682,7 +682,7 @@ export function openBank(game: Game, modals: Modals): void {
     if (next) {
       btns.appendChild(h('button', {
         class: 'btn gold', html: `${icon('upgrade', 16)} ${next.name} <b>${formatMoney(next.price)}</b>`,
-        title: `${next.blurb} Holds ${formatMoney(next.cap)}.`,
+        title: `${next.blurb} Holds ${capWords(next.cap)}.`,
         onClick: () => {
           if (g.money < next.price) {
             audio.play('error');
@@ -705,7 +705,7 @@ export function openBank(game: Game, modals: Modals): void {
     }));
     btns.appendChild(moveVaultBtn(g, modals));
     body.appendChild(btns);
-    if (next) body.appendChild(h('p', { class: 'muted small', text: `Next: ${next.name}, holds ${formatMoney(next.cap)}, ${next.digits}-digit code, ${next.bolts} bolts, ${(next.interest * 100).toFixed(2)}% a day.` }));
+    if (next) body.appendChild(h('p', { class: 'muted small', text: `Next: ${next.name}, holds ${capWords(next.cap)}, ${next.digits}-digit code, ${next.bolts} bolts, ${(next.interest * 100).toFixed(2)}% a day.` }));
     if (hs.log.length) {
       body.appendChild(h('div', { class: 'field-label', text: 'Recent' }));
       const log = h('div', { class: 'bank-log' });
@@ -750,7 +750,7 @@ export function openRemoteBank(game: Game, modals: Modals): void {
   for (const b of hs.vaults) {
     const t = vaultTier(b.tier);
     list.appendChild(h('div', { class: 'staff-row' },
-      h('div', {}, h('b', { text: vaultName(hs, b) }), h('span', { class: 'muted', text: ` · ${formatMoney(b.money)}${t ? ` of ${formatMoney(t.cap, true)}` : ''}` })),
+      h('div', {}, h('b', { text: vaultName(hs, b) }), h('span', { class: 'muted', text: ` · ${formatMoney(b.money)}${t && Number.isFinite(t.cap) ? ` of ${formatMoney(t.cap, true)}` : ''}` })),
       h('div', { class: 'btn-row' },
         b.code
           ? h('button', { class: 'btn small gold', text: '📲 Unlock', onClick: () => remoteKeypad(g, modals, b.key) })
@@ -798,7 +798,7 @@ function remoteBank(g: Game, modals: Modals): void {
       h('div', { class: 'bank-balance' },
         h('div', { class: 'muted small', text: `📲 ${vaultName(hs, box).toUpperCase()} · REMOTE` }),
         h('div', { class: 'bank-big', text: formatMoney(box.money) }),
-        h('div', { class: 'meter wide' }, h('i', { style: `width:${(Math.min(1, box.money / t.cap) * 100).toFixed(1)}%` })),
+        Number.isFinite(t.cap) ? h('div', { class: 'meter wide' }, h('i', { style: `width:${(Math.min(1, box.money / t.cap) * 100).toFixed(1)}%` })) : null,
       ),
       h('div', { class: 'bank-accts' }, h('div', { class: 'acct' }, h('span', { text: '💵 Cash on you' }), h('b', { text: formatMoney(g.casinoCash) }))),
     );

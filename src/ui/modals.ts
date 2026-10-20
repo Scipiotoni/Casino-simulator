@@ -17,7 +17,7 @@ import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
 import { DEALER_WAGE, MAX_DOOR_GUARDS, roleFor, rolesAt } from '../entities/staff';
-import { HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, houseCap, houseCash, topTier, vaultName, vaultTier } from '../game/house';
+import { HOUSE_LEVEL, HOUSE_PRICE, MAX_VAULTS, VAULT_TIERS, capWords, houseCap, houseCash, topTier, vaultName, vaultTier } from '../game/house';
 import { FACADE_Z } from '../world/grid';
 import { STREET_NAMES } from '../world/city';
 import type { Worker } from '../entities/staff';
@@ -450,9 +450,9 @@ export class Modals {
           h('span', { class: 'muted small', text: `On ${STREET_NAMES[1]}. Your cash comes with you; the casino keeps running while you're home.` }),
         ),
         ...(hs.vaults.length
-          ? hs.vaults.map((b) => kv(vaultName(hs, b), `${formatMoney(b.money)} of ${formatMoney(vaultTier(b.tier)?.cap ?? 0)} · ${((vaultTier(b.tier)?.interest ?? 0) * 100).toFixed(2)}% a day`))
+          ? hs.vaults.map((b) => kv(vaultName(hs, b), `${formatMoney(b.money)}${Number.isFinite(vaultTier(b.tier)?.cap ?? 0) ? ` of ${formatMoney(vaultTier(b.tier)?.cap ?? 0)}` : ''} · ${((vaultTier(b.tier)?.interest ?? 0) * 100).toFixed(2)}% a day`))
           : [kv('Vault', 'None yet: Build → Security → Vault')]),
-        kv('Vaults', hs.vaults.length ? `${hs.vaults.length} of ${MAX_VAULTS} · ${formatMoney(houseCash(hs))} of ${formatMoney(houseCap(hs))}` : `Up to ${MAX_VAULTS}`),
+        kv('Vaults', hs.vaults.length ? `${hs.vaults.length}${Number.isFinite(MAX_VAULTS) ? ` of ${MAX_VAULTS}` : ''} · ${formatMoney(houseCash(hs))}${Number.isFinite(houseCap(hs)) ? ` of ${formatMoney(houseCap(hs))}` : ''}` : Number.isFinite(MAX_VAULTS) ? `Up to ${MAX_VAULTS}` : 'As many as you like'),
         kv('Security', `${g.houseSecurity}/100`),
         kv('Daily costs (guards and gadgets)', formatMoney(g.houseDailyCosts())),
       );
@@ -486,7 +486,7 @@ export class Modals {
       for (const v of VAULT_TIERS) {
         tiers.appendChild(h('div', { class: `tier${topTier(hs) === v.tier ? ' on' : topTier(hs) > v.tier ? ' done' : ''}` },
           h('b', { text: v.name }),
-          h('span', { class: 'muted small', text: `${formatMoney(v.price)} · holds ${formatMoney(v.cap, true)} · ${v.digits} digits · ${v.bolts} bolts` }),
+          h('span', { class: 'muted small', text: `${formatMoney(v.price)} · holds ${capWords(v.cap)} · ${v.digits} digits · ${v.bolts} bolts` }),
         ));
       }
       body.appendChild(tiers);

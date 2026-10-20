@@ -1,6 +1,7 @@
 import type { CasinoLook } from '../world/building';
 import type { CasinoSnapshot } from './save';
 import { sanitizeSnapshot } from './save';
+import { MONEY_MAX, formatMoney } from '../core/math';
 import type { Appearance } from '../entities/appearance';
 import { type HeistRecord, cleanRecords } from './heistRules';
 
@@ -71,7 +72,8 @@ export interface VaultBox {
 }
 
 /** Most vaults a house can have. */
-export const MAX_VAULTS = 4;
+/** No limit on vaults (keys run V1…V9999, far past what fits in a house). */
+export const MAX_VAULTS = Infinity;
 
 /** All the money in all your vaults. */
 export function houseCash(h: HouseState | null | undefined): number {
@@ -81,6 +83,11 @@ export function houseCash(h: HouseState | null | undefined): number {
 /** How much all your vaults can hold together. */
 export function houseCap(h: HouseState | null | undefined): number {
   return h ? h.vaults.reduce((a, b) => a + (vaultTier(b.tier)?.cap ?? 0), 0) : 0;
+}
+
+/** How much a vault holds, in words: "no limit" or "up to $X". */
+export function capWords(cap: number): string {
+  return Number.isFinite(cap) ? `up to ${formatMoney(cap)}` : 'no limit';
 }
 
 /** Your best vault's tier (0 = no vault). */
@@ -134,7 +141,7 @@ export interface VaultTier {
   name: string;
   /** Price of this tier (the first is the vault itself, from the shop). */
   price: number;
-  /** Most it can hold. */
+  /** Most it can hold (Infinity: no limit). */
   cap: number;
   /** Digits in its code. */
   digits: number;
@@ -148,11 +155,11 @@ export interface VaultTier {
 }
 
 export const VAULT_TIERS: VaultTier[] = [
-  { tier: 1, name: 'Steel Safe Room', price: 5000, cap: 100_000, digits: 4, interest: 0.005, bolts: 4, security: 10, blurb: 'A steel door with a four-digit code.' },
-  { tier: 2, name: 'Bank Vault', price: 40_000, cap: 1_000_000, digits: 5, interest: 0.0075, bolts: 6, security: 20, blurb: 'Thick steel, six bolts and a five-digit code.' },
-  { tier: 3, name: 'Titanium Vault', price: 250_000, cap: 10_000_000, digits: 6, interest: 0.01, bolts: 8, security: 32, blurb: 'Titanium plating and a six-digit code.' },
-  { tier: 4, name: 'Diamond Vault', price: 1_500_000, cap: 100_000_000, digits: 7, interest: 0.0125, bolts: 10, security: 45, blurb: 'Diamond-hard door, ten bolts, seven digits.' },
-  { tier: 5, name: 'Fort Knox', price: 8_000_000, cap: 10_000_000_000, digits: 8, interest: 0.015, bolts: 12, security: 60, blurb: 'The ultimate vault: twelve bolts and an eight-digit code.' },
+  { tier: 1, name: 'Steel Safe Room', price: 5000, cap: Infinity, digits: 4, interest: 0.005, bolts: 4, security: 10, blurb: 'A steel door with a four-digit code. Holds any amount.' },
+  { tier: 2, name: 'Bank Vault', price: 40_000, cap: Infinity, digits: 5, interest: 0.0075, bolts: 6, security: 20, blurb: 'Thick steel, six bolts and a five-digit code.' },
+  { tier: 3, name: 'Titanium Vault', price: 250_000, cap: Infinity, digits: 6, interest: 0.01, bolts: 8, security: 32, blurb: 'Titanium plating and a six-digit code.' },
+  { tier: 4, name: 'Diamond Vault', price: 1_500_000, cap: Infinity, digits: 7, interest: 0.0125, bolts: 10, security: 45, blurb: 'Diamond-hard door, ten bolts, seven digits.' },
+  { tier: 5, name: 'Fort Knox', price: 8_000_000, cap: Infinity, digits: 8, interest: 0.015, bolts: 12, security: 60, blurb: 'The ultimate vault: twelve bolts and an eight-digit code.' },
 ];
 
 export function vaultTier(tier: number): VaultTier | null {
@@ -225,7 +232,7 @@ export function sanitizeHouse(raw: unknown, fonts: string[], sanitizeLook: (a: u
   for (const it of Array.isArray(r.log) ? r.log.slice(0, MAX_VAULT_LOG) : []) {
     if (!it || typeof it !== 'object') continue;
     const l = it as Record<string, unknown>;
-    log.push({ day: Math.round(num(l.day, 0, 1e6, 0)), text: typeof l.text === 'string' ? l.text.slice(0, 60) : '', amount: Math.round(num(l.amount, -1e12, 1e12, 0)) });
+    log.push({ day: Math.round(num(l.day, 0, 1e6, 0)), text: typeof l.text === 'string' ? l.text.slice(0, 60) : '', amount: Math.round(num(l.amount, -MONEY_MAX, MONEY_MAX, 0)) });
   }
   return {
     snap,
@@ -245,9 +252,9 @@ export function sanitizeVaults(r: Record<string, unknown>): VaultBox[] {
   const out: VaultBox[] = [];
   const box = (key: unknown, money: unknown, code: unknown, tierRaw: unknown) => {
     const tier = Math.round(num(tierRaw, 0, VAULT_TIERS.length, 0));
-    if (tier < 1 || typeof key !== 'string' || !/^V\d{1,2}$/.test(key) || out.some((b) => b.key === key) || out.length >= MAX_VAULTS) return;
+    if (tier < 1 || typeof key !== 'string' || !/^V\d{1,4}$/.test(key) || out.some((b) => b.key === key) || out.length >= MAX_VAULTS) return;
     const c = typeof code === 'string' && validCode(code, tier) ? code : '';
-    out.push({ key, money: Math.round(num(money, 0, vaultTier(tier)?.cap ?? 0, 0)), code: c, tier });
+    out.push({ key, money: Math.round(num(money, 0, Math.min(MONEY_MAX, vaultTier(tier)?.cap ?? 0), 0)), code: c, tier });
   };
   if (Array.isArray(r.vaults)) {
     for (const v of r.vaults) if (v && typeof v === 'object') {

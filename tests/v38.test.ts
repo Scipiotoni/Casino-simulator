@@ -57,9 +57,13 @@ describe('heist locked doors', () => {
 });
 
 describe('big money and big crowds', () => {
-  it('cash holds a billion and Fort Knox ten billion', async () => {
+  it('cash and every vault hold any amount, and big sums read well', async () => {
     const { VAULT_TIERS } = await import('../src/game/house');
-    expect(VAULT_TIERS[VAULT_TIERS.length - 1].cap).toBe(10_000_000_000);
+    const { formatMoney } = await import('../src/core/math');
+    for (const t of VAULT_TIERS) expect(t.cap).toBe(Infinity);
+    expect(formatMoney(Infinity)).toBe('Unlimited');
+    expect(formatMoney(2.5e9, true)).toBe('$2.50B');
+    expect(formatMoney(3.2e13, true)).toBe('$32.0T');
   });
 
   it('Ultra AFK draws every guest in one batch, up to 10,000', async () => {

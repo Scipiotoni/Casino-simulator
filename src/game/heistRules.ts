@@ -223,8 +223,8 @@ export function cleanRecords(raw: unknown, now = Date.now()): HeistRecord[] {
     if (now - r.t > RECORD_TTL_MS || r.t > now + 60_000) continue;
     out.push({
       i: r.i.slice(0, 16), v: r.v.slice(0, 80), by: typeof r.by === 'string' ? r.by.replace(/[\u0000-\u001f]/g, '').slice(0, 20) : 'Someone',
-      t: r.t, a: Math.min(1e12, Math.floor(r.a)), on: r.on === 1 ? 1 : 0,
-      ...(typeof r.k === 'string' && /^V\d{1,2}$/.test(r.k) ? { k: r.k } : {}),
+      t: r.t, a: Math.min(Number.MAX_SAFE_INTEGER, Math.floor(r.a)), on: r.on === 1 ? 1 : 0,
+      ...(typeof r.k === 'string' && /^V\d{1,4}$/.test(r.k) ? { k: r.k } : {}),
     });
   }
   out.sort((a, b) => b.t - a.t);

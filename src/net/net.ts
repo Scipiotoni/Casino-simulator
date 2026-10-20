@@ -13,7 +13,7 @@ import { SIGN_FONTS, type CasinoLook } from '../world/building';
 import { CENTER_X, FACADE_Z, type Layout } from '../world/grid';
 import type { StreetLot } from '../world/street';
 import { h, icon, clear } from '../ui/dom';
-import { formatMoney } from '../core/math';
+import { MONEY_MAX, formatMoney } from '../core/math';
 import { audio } from '../core/audio';
 import { dampAngle } from '../core/math';
 import { Relay } from './relay';
@@ -22,7 +22,6 @@ import { buildGun } from '../items/models/guns';
 import { KO_MAX_LOSS, ROLL_TIME, bountyFor, type RemoteTarget } from '../game/combat';
 import { remoteShotEnd } from '../game/gunplay';
 import { type CarDef, type CarMods, buildCar, carDef, sanitizeMods, seatSpots } from '../world/vehicles';
-import { MAX_VAULTS } from '../game/house';
 import { Car } from '../world/cityView';
 import { groundAt } from '../world/terrain';
 import { VIEW } from '../world/viewDistance';
@@ -1630,7 +1629,7 @@ export class Net {
       if (ep) g.net.creditedEp[pid] = ep;
       let delta = Math.round(owed - prev);
       g.net.credited[pid] = owed;
-      if (Math.abs(delta) < 1 || Math.abs(delta) > 1e12) continue;
+      if (Math.abs(delta) < 1 || Math.abs(delta) > MONEY_MAX) continue;
       // A visitor's winnings are paid from what's actually in the bank, never past zero.
       if (delta < 0) delta = -Math.min(-delta, Math.max(0, Math.round(g.money)));
       if (!delta) continue;
@@ -1982,13 +1981,13 @@ function houseView(raw: unknown): HouseView | null {
   if (!snap) return null;
   return {
     look: snap.look, width: snap.layout.width, depth: snap.layout.depth, floors: snap.floors,
-    vt: Math.max(0, Math.min(5, Math.round(num(r.vt)))), vm: Math.max(0, Math.min(1e12, Math.floor(num(r.vm)))),
+    vt: Math.max(0, Math.min(5, Math.round(num(r.vt)))), vm: Math.max(0, Math.min(MONEY_MAX, Math.floor(num(r.vm)))),
     vs: Array.isArray(r.vs)
-      ? r.vs.slice(0, MAX_VAULTS).flatMap((v) => {
+      ? r.vs.slice(0, 200).flatMap((v) => {
         if (!v || typeof v !== 'object') return [];
         const o = v as Record<string, unknown>;
-        if (typeof o.k !== 'string' || !/^V\d{1,2}$/.test(o.k)) return [];
-        return [{ k: o.k, t: Math.max(1, Math.min(5, Math.round(num(o.t)))), m: Math.max(0, Math.min(1e12, Math.floor(num(o.m)))) }];
+        if (typeof o.k !== 'string' || !/^V\d{1,4}$/.test(o.k)) return [];
+        return [{ k: o.k, t: Math.max(1, Math.min(5, Math.round(num(o.t)))), m: Math.max(0, Math.min(MONEY_MAX, Math.floor(num(o.m)))) }];
       })
       : undefined,
     rb: cleanRecords(r.rb ? [r.rb] : [])[0] ?? null,

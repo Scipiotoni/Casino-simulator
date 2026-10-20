@@ -16,21 +16,21 @@ describe('the house bank', () => {
     expect(validCode('1234', 0)).toBe(false);
   });
 
-  it('transfers stay within the source, the vault and its capacity', () => {
-    const cap = VAULT_TIERS[0].cap;
+  it('transfers stay within the source and the vault (vaults hold any amount)', () => {
     expect(clampTransfer(5000, 0, 1, 3000)).toBe(3000);
-    expect(clampTransfer(5000, cap - 1000, 1, 1e9)).toBe(1000);
+    expect(clampTransfer(5e14, 4e15, 1, 1e15)).toBe(5e14);
     expect(clampTransfer(-5000, 2000, 1, 0)).toBe(-2000);
     expect(clampTransfer(100, 0, 0, 1e6)).toBe(0);
   });
 
-  it('pays interest up to capacity, and bigger vaults hold more', () => {
+  it('pays interest on any amount, and better vaults pay more', () => {
     const b = { key: 'V1', money: 50000, code: '', tier: 1 };
     expect(vaultInterest(b)).toBe(250);
-    b.money = VAULT_TIERS[0].cap;
-    expect(vaultInterest(b)).toBe(0);
+    b.money = 1e12;
+    expect(vaultInterest(b)).toBe(5e9);
     for (let i = 1; i < VAULT_TIERS.length; i++) {
-      expect(VAULT_TIERS[i].cap).toBeGreaterThan(VAULT_TIERS[i - 1].cap);
+      expect(VAULT_TIERS[i].cap).toBe(Infinity);
+      expect(VAULT_TIERS[i].interest).toBeGreaterThan(VAULT_TIERS[i - 1].interest);
       expect(VAULT_TIERS[i].digits).toBe(VAULT_TIERS[i - 1].digits + 1);
     }
   });
@@ -48,11 +48,11 @@ describe('the house bank', () => {
     const back = sanitizeHouse(JSON.parse(JSON.stringify(h)), ['bungee'], sanitizeAppearance)!;
     expect(back.vaults).toEqual(h.vaults);
     expect(back.log[0].amount).toBe(12345);
-    // A code that doesn't fit the tier is dropped; money can't exceed the vault.
-    const bad = sanitizeHouse({ ...h, vaults: [{ key: 'V1', code: '12', money: 1e15, tier: 2 }, { key: 'V1', money: 5, code: '', tier: 1 }, { key: 'X', money: 5, tier: 1 }] }, ['bungee'], sanitizeAppearance)!;
+    // A code that doesn't fit the tier is dropped; money stays a safe whole number.
+    const bad = sanitizeHouse({ ...h, vaults: [{ key: 'V1', code: '12', money: 1e300, tier: 2 }, { key: 'V1', money: 5, code: '', tier: 1 }, { key: 'X', money: 5, tier: 1 }] }, ['bungee'], sanitizeAppearance)!;
     expect(bad.vaults.length).toBe(1);
     expect(bad.vaults[0].code).toBe('');
-    expect(bad.vaults[0].money).toBe(VAULT_TIERS[1].cap);
+    expect(bad.vaults[0].money).toBe(Number.MAX_SAFE_INTEGER);
     expect(sanitizeHouse(null, ['bungee'], sanitizeAppearance)).toBeNull();
   });
 });
@@ -75,17 +75,17 @@ describe('several vaults', () => {
     const h = newHouse('Ann', look2);
     h.vaults.push({ key: 'V1', money: 0, code: '', tier: 1 }, { key: 'V2', money: 0, code: '', tier: 2 });
     expect(newVaultKey(h)).toBe('V3');
-    expect(houseCap(h)).toBe(VAULT_TIERS[0].cap + VAULT_TIERS[1].cap);
+    expect(houseCap(h)).toBe(Infinity);
     expect(topTier(h)).toBe(2);
-    // Overflow fills them in order, as far as they hold.
-    expect(fillVaults(h, VAULT_TIERS[0].cap + 50)).toBe(VAULT_TIERS[0].cap + 50);
-    expect(h.vaults[0].money).toBe(VAULT_TIERS[0].cap);
-    expect(h.vaults[1].money).toBe(50);
-    expect(houseCash(h)).toBe(VAULT_TIERS[0].cap + 50);
-    expect(fillVaults(h, 1e15)).toBe(VAULT_TIERS[1].cap - 50);
-    // Never more than MAX_VAULTS from a save.
-    const many = Array.from({ length: 9 }, (_, i) => ({ key: `V${i + 1}`, money: 1, code: '', tier: 1 }));
-    expect(sanitizeHouse({ ...h, vaults: many }, ['bungee'], sanitizeAppearance)!.vaults.length).toBe(MAX_VAULTS);
+    // Overflow goes into the first vault: it never fills up.
+    expect(fillVaults(h, 5e12)).toBe(5e12);
+    expect(h.vaults[0].money).toBe(5e12);
+    expect(h.vaults[1].money).toBe(0);
+    expect(houseCash(h)).toBe(5e12);
+    // No limit on how many vaults a save keeps.
+    expect(MAX_VAULTS).toBe(Infinity);
+    const many = Array.from({ length: 300 }, (_, i) => ({ key: `V${i + 1}`, money: 1, code: '', tier: 1 }));
+    expect(sanitizeHouse({ ...h, vaults: many }, ['bungee'], sanitizeAppearance)!.vaults.length).toBe(300);
   });
 });
 
