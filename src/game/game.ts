@@ -774,6 +774,19 @@ export class Game implements World, ItemHost {
     return cardMult(this.vipCard, this.blackCard, this.platinumCard);
   }
 
+  /** All your cards' multiplier, wherever you are (for what the casino earned while you were out). */
+  get cardsMult(): number {
+    return cardMult(this.vipCard, this.blackCard, this.platinumCard);
+  }
+
+  /**
+   * What the casino makes a second without the cards, to keep while you're away: it's paid
+   * back with whatever cards you hold by the time you return.
+   */
+  private get baseRate(): number {
+    return Math.max(0, this.incomePerMin / 60) / this.vipMult;
+  }
+
   /** Type "/give@s cassim platinum card" in chat: the Cassim Platinum Card is yours. */
   givePlatinumCard(): void {
     if (this.platinumCard) {
@@ -1209,7 +1222,7 @@ export class Game implements World, ItemHost {
         ? { home: fromHouse.home, away: fromHouse.away, rate: fromHouse.rate, netLog: this.netLog }
         : this.visit
         ? { home: this.serialize(), away: this.visit.away, rate: this.visit.rate, netLog: this.netLog }
-        : { home: this.serialize(), away: 0, rate: Math.max(0, this.incomePerMin / 60), netLog: this.netLog };
+        : { home: this.serialize(), away: 0, rate: this.baseRate, netLog: this.netLog };
       this.visit = null;
       this.parked = parked;
       this.site = 'hotel';
@@ -1471,7 +1484,7 @@ export class Game implements World, ItemHost {
       parked = { home: v.home, away: v.away, rate: v.rate, netLog: this.netLog };
       this.visit = null;
     } else {
-      parked = { home: this.serialize(), away: 0, rate: Math.max(0, this.incomePerMin / 60), netLog: this.netLog };
+      parked = { home: this.serialize(), away: 0, rate: this.baseRate, netLog: this.netLog };
     }
     this.parked = parked;
     this.site = 'house';
@@ -2254,7 +2267,7 @@ export class Game implements World, ItemHost {
     else {
       home = this.serialize();
       away = 0;
-      rate = Math.max(0, this.incomePerMin / 60);
+      rate = this.baseRate;
     }
     this.visit = { lot, home, away, rate, net: 0, hands: 0 };
     this.build.cancel(false);
@@ -2320,7 +2333,8 @@ export class Game implements World, ItemHost {
       this.cam.snap(this.player.x, this.player.z);
       this.doorCooldown = 2;
     } else this.shiftPlayer(at.x, FACADE_Z - 1.5);
-    const earned = this.catchUp(v.away, v.rate);
+    // Your cards count however you got them while you were out.
+    const earned = this.catchUp(v.away, v.rate * this.cardsMult);
     if (Math.abs(earned) >= 1) {
       this.events.emit('toast', { text: `While you were out your casino made ${earned >= 0 ? '+' : ''}${formatMoney(earned)}.`, kind: earned >= 0 ? 'money' : 'bad' });
     }
@@ -4940,6 +4954,12 @@ export class Game implements World, ItemHost {
     }
     if (isPlatinumCardCommand(raw)) {
       this.givePlatinumCard();
+      return;
+    }
+    // Anything else starting with "/" is a mistyped command: it never goes out or shows in chat.
+    if (raw.trim().startsWith('/')) {
+      audio.play('error');
+      this.notify('Unknown command (nobody saw it).', 'bad');
       return;
     }
     const text = cleanChat(raw);
