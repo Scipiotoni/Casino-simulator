@@ -111,6 +111,8 @@ export interface SaveData extends CasinoSnapshot {
   hotel?: import('./hotel').HotelState | null;
   /** Times you've been reborn. */
   rebirths?: number;
+  /** You hold the VIP card (x100 casino income). */
+  vip?: boolean;
   /** Your house and its vault (see src/game/house.ts). */
   house?: import('./house').HouseState | null;
   /** Guns you own (see src/game/guns.ts). */

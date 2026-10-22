@@ -76,3 +76,14 @@ describe('big money and big crowds', () => {
     expect(crowd.mesh.count).toBe(0);
   });
 });
+
+describe('the VIP card', () => {
+  it('is worth x100 and Juri Assman gets one free, however the name is typed', async () => {
+    const { VIP_MULT, isJuri } = await import('../src/game/game');
+    expect(VIP_MULT).toBe(100);
+    expect(isJuri('Juri Assman')).toBe(true);
+    expect(isJuri('juri  ASSMAN!')).toBe(true);
+    expect(isJuri('Juri')).toBe(false);
+    expect(isJuri('Boss')).toBe(false);
+  });
+});

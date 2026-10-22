@@ -160,6 +160,8 @@ export interface GameEvents {
   heistGame: { kind: 'vault' } | { kind: 'door'; floor: number; x: number; z: number; type: number };
   /** At another player's front door: ask before breaking in. */
   heistAsk: StreetLot;
+  /** You got the VIP card. */
+  vip: void;
 }
 
 export interface Settings {
@@ -638,6 +640,8 @@ export class Game implements World, ItemHost {
     this.parked = null;
     this.hotelAcc = 0;
     this.rebirths = 0;
+    this.vipCard = false;
+    this.events.emit('vip', undefined);
     this.house = null;
     this.guns = emptyGuns();
     this.gunplay.reset();
@@ -656,6 +660,7 @@ export class Game implements World, ItemHost {
     }
     this.player.setAppearance(opts.player);
     this.player.name = opts.playerName || 'Boss';
+    this.base.vipOwned = false;
     this.player.x = CENTER_X;
     this.player.z = FACADE_Z - 3;
     this.player.floor = 0;
@@ -748,6 +753,34 @@ export class Game implements World, ItemHost {
     return 1 + this.rebirths * 0.25;
   }
 
+  /** You hold the VIP card (from Fort Mojave): your casino earns x100. */
+  vipCard = false;
+  private vipCheckT = 0;
+
+  /** What the VIP card multiplies casino income by right now (only at your own casino). */
+  get vipMult(): number {
+    return this.vipCard && this.site === 'casino' && !this.visit ? VIP_MULT : 1;
+  }
+
+  /** Take the VIP card (from its case at Fort Mojave, or Juri's free one). */
+  giveVipCard(why: 'base' | 'gift'): void {
+    if (this.vipCard) return;
+    this.vipCard = true;
+    this.base.vipOwned = true;
+    audio.play('jackpot');
+    this.notify(why === 'gift'
+      ? `💳 Juri, this one's on the house: you have the VIP card. Everything your casino earns is now worth x${VIP_MULT}!`
+      : `💳 You grabbed the VIP card! Everything your casino earns is now worth x${VIP_MULT}. Now get out of the base alive!`, 'good');
+    if (why === 'base') this.base.vipTaken();
+    this.events.emit('vip', undefined);
+    this.requestSave();
+  }
+
+  /** Juri Assman gets the VIP card free, without raiding the base. */
+  private checkVipGift(): void {
+    if (!this.vipCard && isJuri(this.player.name)) this.giveVipCard('gift');
+  }
+
   /** What the next rebirth asks for. */
   get rebirthReq(): { level: number; money: number } {
     return { level: 15 + this.rebirths * 5, money: 1_000_000 * (this.rebirths + 1) };
@@ -774,7 +807,10 @@ export class Game implements World, ItemHost {
     const house = this.house;
     const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } };
     this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
+    const vip = this.vipCard;
     this.rebirths = n;
+    this.vipCard = vip;
+    this.base.vipOwned = vip;
     this.stats = stats;
     this.cosmetics = cos;
     this.guns = guns;
@@ -2465,10 +2501,11 @@ export class Game implements World, ItemHost {
         this.sfxAt('drink', item.cx, item.cz, 0.7);
       } else this.sfxAt('coin', item.cx, item.cz, 0.7);
       if (!home) return;
-      this.dayAcc.sales += o.bet;
-      this.logNet(o.bet);
-      this.addMoney(o.bet, 'collect');
-      if (playing) showMoney(o.bet);
+      const sale = o.bet * this.vipMult;
+      this.dayAcc.sales += sale;
+      this.logNet(sale);
+      this.addMoney(sale, 'collect');
+      if (playing) showMoney(sale);
       this.gainXp(1);
       return;
     }
@@ -2485,7 +2522,9 @@ export class Game implements World, ItemHost {
       this.gainXp(4 + Math.min(40, o.bet / 25));
       return;
     }
-    const net = o.bet - o.payout;
+    // The VIP card: a winning round for the house is worth x100 at your own casino.
+    const raw = o.bet - o.payout;
+    const net = raw > 0 ? raw * this.vipMult : raw;
     if (home) {
       this.stats.rounds++;
       this.logNet(net);
@@ -3368,6 +3407,7 @@ export class Game implements World, ItemHost {
   setPlayerLook(look: Appearance, name?: string): void {
     this.player.setAppearance(look);
     if (name !== undefined) this.player.name = name || 'Boss';
+    this.checkVipGift();
     for (const it of this.items.items) if (it.def.model === 'statue') it.rebuildModel();
     this.events.emit('look', undefined);
     this.requestSave();
@@ -4143,6 +4183,23 @@ export class Game implements World, ItemHost {
         }
       } else if (b.atHatch(pg.x, pg.z)) {
         target = { kind: 'hatch', label: '🕳 Lift the rusty hatch and climb down', hold: false, anchor, act: () => this.setUnderground(true) };
+      }
+    }
+    // Fort Mojave's VIP card: smash the case in front of HQ (hold Space) for x100 at your casino.
+    if (!target && !this.inside && !this.drive.driving) {
+      const pg = this.street.worldToGlobal(p.x, p.z);
+      if (this.base.atVipCard(pg.x, pg.z)) {
+        const c = this.street.globalToWorld(this.base.vipCase.x, this.base.vipCase.z);
+        target = {
+          kind: 'vipcard', label: this.vipCard ? '💳 You already have the VIP card' : `💳 Smash the case and take the VIP card (x${VIP_MULT} casino income)`, hold: !this.vipCard,
+          anchor: () => new THREE.Vector3(c.x, 2.4, c.z),
+          act: () => {
+            if (!this.vipCard) {
+              audio.play('glass');
+              this.giveVipCard('base');
+            }
+          },
+        };
       }
     }
     // Fort Mojave's armory: crack it for the army payroll (and the whole base comes after you).
@@ -5153,6 +5210,12 @@ export class Game implements World, ItemHost {
 
   private step(dt: number, render: boolean): void {
     this.bankFullT = Math.max(0, this.bankFullT - dt);
+    // Juri Assman's free VIP card (checked now and then, so a renamed or loaded game counts too).
+    this.vipCheckT -= dt;
+    if (this.vipCheckT <= 0) {
+      this.vipCheckT = 1;
+      if (this.state === 'playing') this.checkVipGift();
+    }
     this.capBanks();
     const sim = this.paused && !this.visit ? 0 : dt * (this.visit ? 1 : this.speed);
     // Gift cash waiting for room in the bank goes in (in real time: even while the game is paused).
@@ -5578,6 +5641,7 @@ export class Game implements World, ItemHost {
         cosmetics: { owned: [...this.cosmetics.owned], on: [...this.cosmetics.on] },
         hotel: this.hotelSave(),
         rebirths: this.rebirths,
+        vip: this.vipCard || undefined,
         net: JSON.parse(JSON.stringify(this.net)) as NetState,
         rival: { ...this.rival },
         savedAt: Date.now(),
@@ -5602,6 +5666,7 @@ export class Game implements World, ItemHost {
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         rebirths: this.rebirths,
+        vip: this.vipCard || undefined,
         net: JSON.parse(JSON.stringify(this.net)) as NetState,
         savedAt: Date.now(),
       };
@@ -5642,6 +5707,7 @@ export class Game implements World, ItemHost {
         playChips: Math.round(this.playChips),
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
       rebirths: this.rebirths,
+      vip: this.vipCard || undefined,
       net: JSON.parse(JSON.stringify(this.net)) as NetState,
       savedAt: Date.now(),
     };
@@ -5691,6 +5757,9 @@ export class Game implements World, ItemHost {
     this.street.police.reset();
     this.vaultOpen = false;
     this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
+    this.vipCard = s.vip === true;
+    this.base.vipOwned = this.vipCard;
+    this.events.emit('vip', undefined);
     this.applyCosmetics();
     this.player.floor = 0;
     const before = s.items.length;
@@ -5774,6 +5843,14 @@ export class Game implements World, ItemHost {
       for (const c of this.customers) if (!c.exited && c.state !== 'leave' && ++n > keep) c.leave('Time to head home.');
     }
   }
+}
+
+/** The VIP card's multiplier on casino income. */
+export const VIP_MULT = 100;
+
+/** Is this Juri Assman (any capitals, spaces or punctuation)? */
+export function isJuri(name: string): boolean {
+  return name.toLowerCase().replace(/[^a-z]/g, '') === 'juriassman';
 }
 
 /** People on the street outside at each graphics level. */

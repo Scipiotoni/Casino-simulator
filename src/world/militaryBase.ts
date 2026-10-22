@@ -296,6 +296,11 @@ export class MilitaryBase {
   private moving: Machine | null = null;
   /** Where the armory door is (global). */
   armoryDoor = { x: 0, z: 0 };
+  /** The VIP card's glass case in front of HQ (global), and the spinning card in it. */
+  vipCase = { x: 0, z: 0 };
+  private vipCard: THREE.Object3D | null = null;
+  /** You already have the VIP card: the case stands empty. */
+  vipOwned = false;
   /** The keycard to the prototype vault: on the commander, on the ground, or yours. */
   keycard: KeycardState = 'commander';
   private card: THREE.Group | null = null;
@@ -720,6 +725,7 @@ export class MilitaryBase {
     arPlate.rotation.y = Math.PI / 2;
     this.group.add(arPlate);
     this.armoryDoor = { x: cx - 48.6, z: cz + 62 };
+    this.buildVipCase(s);
     // Watchtowers with searchlights.
     for (const [lx, lz] of this.towerSpots()) {
       for (const [ox, oz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) this.box(s, dark, 0.22, 6, 0.22, lx + ox * 1.4, 3, lz + oz * 1.4, false);
@@ -1339,6 +1345,59 @@ export class MilitaryBase {
     this.raise(`You took the ${name} from Fort Mojave! The whole base is shooting and the police are coming.`);
   }
 
+  /**
+   * The VIP card: a gold card turning in a lit glass case beside HQ's front door, right on
+   * the base commander's patrol. Whoever holds it earns x100 at their casino.
+   */
+  private buildVipCase(s: THREE.Group): void {
+    const lx = 31;
+    const lz = -34.6;
+    const cx = this.cx;
+    const cz = this.cz;
+    this.box(s, mat(0x1d1f24, { metal: 0.5, rough: 0.35 }), 0.9, 1.0, 0.9, lx, 0.5, lz, false);
+    this.box(s, mat(0xd9b25a, { metal: 0.9, rough: 0.25 }), 0.96, 0.06, 0.96, lx, 1.03, lz, false);
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), new THREE.MeshStandardMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.22, metalness: 0.2, roughness: 0.05, depthWrite: false }));
+    glass.position.set(cx + lx, 1.46, cz + lz);
+    this.group.add(glass);
+    const card = new THREE.Group();
+    const face = makeCanvas(256, 160);
+    const g = face.ctx.createLinearGradient(0, 0, 256, 160);
+    g.addColorStop(0, '#fff1b0');
+    g.addColorStop(0.5, '#d9a531');
+    g.addColorStop(1, '#8a5a12');
+    face.ctx.fillStyle = g;
+    face.ctx.fillRect(0, 0, 256, 160);
+    face.ctx.fillStyle = '#17151f';
+    face.ctx.font = '900 46px Arial, sans-serif';
+    face.ctx.textAlign = 'center';
+    face.ctx.textBaseline = 'middle';
+    face.ctx.fillText('VIP', 128, 64);
+    face.ctx.font = '800 24px Arial, sans-serif';
+    face.ctx.fillText('x100 · CASINO', 128, 116);
+    const front = new THREE.MeshStandardMaterial({ map: canvasTexture(face.canvas), metalness: 0.6, roughness: 0.3, emissive: 0x3a2a08 });
+    const edge = mat(0xd9a531, { metal: 0.9, rough: 0.25 });
+    card.add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.32, 0.02), [edge, edge, edge, edge, front, front]));
+    card.position.set(cx + lx, 1.46, cz + lz);
+    this.group.add(card);
+    const light = new THREE.PointLight(0xffd27a, 1.4, 4);
+    light.position.set(cx + lx, 2.1, cz + lz);
+    this.group.add(light);
+    this.vipCard = card;
+    this.vipCase = { x: cx + lx, z: cz + lz };
+    this.circles.push({ x: cx + lx, z: cz + lz, r: 0.6 });
+  }
+
+  /** Close enough to the VIP card's case to grab it? (global) */
+  atVipCard(gx: number, gz: number): boolean {
+    return Math.hypot(gx - this.vipCase.x, gz - this.vipCase.z) < 2.2;
+  }
+
+  /** You smashed the case and took the VIP card: the base goes after you. */
+  vipTaken(): void {
+    this.vipOwned = true;
+    this.raise('🚨 Someone smashed the VIP card case! Every soldier on the base is after you.');
+  }
+
   /** Close enough to the armory door to crack it? (global) */
   atArmory(gx: number, gz: number): boolean {
     return Math.hypot(gx - this.armoryDoor.x, gz - this.armoryDoor.z) < 2.6;
@@ -1525,6 +1584,11 @@ export class MilitaryBase {
     if (dist > 200) for (const so of this.soldiers) so.model.root.visible = false;
     if (!this.group.visible && this.alarmT <= 0) return;
     if (this.radar) this.radar.rotation.y += dt * 0.8;
+    if (this.vipCard) {
+      this.vipCard.visible = !this.vipOwned;
+      this.vipCard.rotation.y += dt * 1.6;
+      this.vipCard.position.y = 1.46 + Math.sin(this.t * 2) * 0.04;
+    }
     const blink = this.alarmT > 0 ? Math.floor(this.t * 4) % 2 === 0 : (this.t % 2) < 0.4;
     for (const l of this.lights) l.visible = this.alarmT > 0 ? blink : true;
     for (const b of this.beams) {
