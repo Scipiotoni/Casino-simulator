@@ -1,4 +1,4 @@
-import { type Game, type Selection, type DayReport, floorName, roman } from '../game/game';
+import { type Game, type Selection, type DayReport, cardMult, floorName, roman } from '../game/game';
 import { h, icon, stars, clear, swatch } from './dom';
 import { formatClock, formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
@@ -264,8 +264,8 @@ export class Hud {
     g.events.on('visit', () => this.renderVisit());
     g.events.on('heist', () => this.renderVisit());
     const luxe = () => {
-      this.luxeEl.textContent = `${g.vipCard ? '💳 ' : ''}${g.blackCard ? '🖤 ' : ''}${g.cosmetics.on.map((id) => cosmetic(id)?.icon ?? '').join('')}`;
-      this.luxeEl.title = g.vipCard || g.blackCard ? `${[g.vipCard ? 'VIP card' : '', g.blackCard ? 'Cassim Black Card' : ''].filter(Boolean).join(' + ')}: your casino earns x${g.vipCard && g.blackCard ? '10,000' : '100'} · and your Luxe items` : 'Your Luxe items';
+      this.luxeEl.textContent = `${g.vipCard ? '💳 ' : ''}${g.blackCard ? '🖤 ' : ''}${g.platinumCard ? '🤍 ' : ''}${g.cosmetics.on.map((id) => cosmetic(id)?.icon ?? '').join('')}`;
+      this.luxeEl.title = g.vipCard || g.blackCard || g.platinumCard ? `${[g.vipCard ? 'VIP card' : '', g.blackCard ? 'Cassim Black Card' : '', g.platinumCard ? 'Cassim Platinum Card' : ''].filter(Boolean).join(' + ')}: your casino earns x${cardMult(g.vipCard, g.blackCard, g.platinumCard).toLocaleString('en-US')} · and your Luxe items` : 'Your Luxe items';
     };
     g.events.on('vip', luxe);
     g.events.on('cosmetics', luxe);

@@ -79,6 +79,7 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
     rebirths: Math.round(num(r.rebirths, 0, 99, 0)),
     vip: r.vip === true || undefined,
     black: r.black === true || undefined,
+    platinum: r.platinum === true || undefined,
   };
   return { save };
 }

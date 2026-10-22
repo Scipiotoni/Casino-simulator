@@ -642,6 +642,7 @@ export class Game implements World, ItemHost {
     this.rebirths = 0;
     this.vipCard = false;
     this.blackCard = false;
+    this.platinumCard = false;
     this.events.emit('vip', undefined);
     this.house = null;
     this.guns = emptyGuns();
@@ -761,10 +762,31 @@ export class Game implements World, ItemHost {
   /** The Cassim Black Card (from the chat command): another x100, on top of the VIP card. */
   blackCard = false;
 
-  /** What your cards multiply casino income by right now (only at your own casino; they stack). */
+  /** The Cassim Platinum Card (chat command): adds 1000x your base earnings on top of everything else. */
+  platinumCard = false;
+
+  /**
+   * What your cards multiply casino income by right now (only at your own casino). The VIP
+   * and black cards multiply together; the platinum card then adds 1000x the base on top.
+   */
   get vipMult(): number {
     if (this.site !== 'casino' || this.visit) return 1;
-    return (this.vipCard ? VIP_MULT : 1) * (this.blackCard ? VIP_MULT : 1);
+    return cardMult(this.vipCard, this.blackCard, this.platinumCard);
+  }
+
+  /** Type "/give@s cassim platinum card" in chat: the Cassim Platinum Card is yours. */
+  givePlatinumCard(): void {
+    if (this.platinumCard) {
+      this.addChat({ from: '', text: 'You already have the Cassim Platinum Card.', t: Date.now(), me: false, system: true });
+      return;
+    }
+    this.platinumCard = true;
+    audio.play('jackpot');
+    const now = cardMult(this.vipCard, this.blackCard, true);
+    this.addChat({ from: '', text: `🤍 Cassim Platinum Card received: +${PLATINUM_ADD}x your base earnings (x${now.toLocaleString('en-US')} in all).`, t: Date.now(), me: false, system: true });
+    this.notify(`🤍 The Cassim Platinum Card is yours! Your casino now earns ${PLATINUM_ADD}x its base income on top of what it made: x${now.toLocaleString('en-US')} in all.`, 'good');
+    this.events.emit('vip', undefined);
+    this.requestSave();
   }
 
   /** Type "/give@s cassim black card" in chat: the Cassim Black Card is yours. */
@@ -828,9 +850,11 @@ export class Game implements World, ItemHost {
     this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
     const vip = this.vipCard;
     const black = this.blackCard;
+    const platinum = this.platinumCard;
     this.rebirths = n;
     this.vipCard = vip;
     this.blackCard = black;
+    this.platinumCard = platinum;
     this.base.vipOwned = vip;
     this.stats = stats;
     this.cosmetics = cos;
@@ -4914,6 +4938,10 @@ export class Game implements World, ItemHost {
       this.giveBlackCard();
       return;
     }
+    if (isPlatinumCardCommand(raw)) {
+      this.givePlatinumCard();
+      return;
+    }
     const text = cleanChat(raw);
     if (!text) return;
     const now = Date.now();
@@ -5671,6 +5699,7 @@ export class Game implements World, ItemHost {
         rebirths: this.rebirths,
         vip: this.vipCard || undefined,
         black: this.blackCard || undefined,
+        platinum: this.platinumCard || undefined,
         net: JSON.parse(JSON.stringify(this.net)) as NetState,
         rival: { ...this.rival },
         savedAt: Date.now(),
@@ -5697,6 +5726,7 @@ export class Game implements World, ItemHost {
         rebirths: this.rebirths,
         vip: this.vipCard || undefined,
         black: this.blackCard || undefined,
+        platinum: this.platinumCard || undefined,
         net: JSON.parse(JSON.stringify(this.net)) as NetState,
         savedAt: Date.now(),
       };
@@ -5739,6 +5769,7 @@ export class Game implements World, ItemHost {
       rebirths: this.rebirths,
       vip: this.vipCard || undefined,
       black: this.blackCard || undefined,
+      platinum: this.platinumCard || undefined,
       net: JSON.parse(JSON.stringify(this.net)) as NetState,
       savedAt: Date.now(),
     };
@@ -5790,6 +5821,7 @@ export class Game implements World, ItemHost {
     this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
     this.vipCard = s.vip === true;
     this.blackCard = s.black === true;
+    this.platinumCard = s.platinum === true;
     this.base.vipOwned = this.vipCard;
     this.events.emit('vip', undefined);
     this.applyCosmetics();
@@ -5879,6 +5911,19 @@ export class Game implements World, ItemHost {
 
 /** The VIP card's multiplier on casino income. */
 export const VIP_MULT = 100;
+
+/** What the Cassim Platinum Card adds: 1000x your base (no-card) earnings. */
+export const PLATINUM_ADD = 1000;
+
+/** Your casino's income multiplier for the cards you hold. */
+export function cardMult(vip: boolean, black: boolean, platinum: boolean): number {
+  return (vip ? VIP_MULT : 1) * (black ? VIP_MULT : 1) + (platinum ? PLATINUM_ADD : 0);
+}
+
+/** The chat command for the Cassim Platinum Card: "/give@s cassim platinum card". */
+export function isPlatinumCardCommand(text: string): boolean {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ') === '/give@s cassim platinum card';
+}
 
 /** The chat command for the Cassim Black Card: "/give@s cassim black card" (any capitals, extra spaces between words). */
 export function isBlackCardCommand(text: string): boolean {
