@@ -2392,6 +2392,8 @@ export class Game implements World, ItemHost {
     if (!amount) return;
     // Rebirth bonus: everything your businesses earn is worth more.
     if (amount > 0 && this.rebirths > 0 && (reason === 'collect' || reason === 'tip')) amount = Math.round(amount * this.incomeMult);
+    // The VIP card: tips at your own casino are x100 too (rounds and sales are multiplied where they settle).
+    if (amount > 0 && reason === 'tip') amount *= this.vipMult;
     // The bank is full at MAX_BANK: income past that is lost.
     if (amount > 0) {
       amount = Math.min(amount, Math.max(0, MAX_BANK - this.money));
