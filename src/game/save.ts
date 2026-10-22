@@ -115,7 +115,7 @@ export interface SaveData extends CasinoSnapshot {
   vip?: boolean;
   /** You hold the Cassim Black Card (another x100). */
   black?: boolean;
-  /** You hold the Cassim Platinum Card (+1000x base income). */
+  /** You hold the Cassim Platinum Card (+10,000x base income). */
   platinum?: boolean;
   /** Your house and its vault (see src/game/house.ts). */
   house?: import('./house').HouseState | null;

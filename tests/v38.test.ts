@@ -100,15 +100,15 @@ describe('the Cassim Black Card', () => {
 });
 
 describe('the Cassim Platinum Card', () => {
-  it('adds 1000x the base on top of what the other cards make', async () => {
+  it('adds 10,000x the base on top of what the other cards make', async () => {
     const { cardMult, isPlatinumCardCommand } = await import('../src/game/game');
     expect(isPlatinumCardCommand('/give@s cassim platinum card')).toBe(true);
     expect(isPlatinumCardCommand('/GIVE@S  Cassim Platinum card ')).toBe(true);
     expect(isPlatinumCardCommand('/give @s cassim platinum card')).toBe(false);
     expect(cardMult(false, false, false)).toBe(1);
-    expect(cardMult(false, false, true)).toBe(1001);
-    expect(cardMult(true, false, true)).toBe(1100);
+    expect(cardMult(false, false, true)).toBe(10_001);
+    expect(cardMult(true, false, true)).toBe(10_100);
     expect(cardMult(true, true, false)).toBe(10_000);
-    expect(cardMult(true, true, true)).toBe(11_000);
+    expect(cardMult(true, true, true)).toBe(20_000);
   });
 });

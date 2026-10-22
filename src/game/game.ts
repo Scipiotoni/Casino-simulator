@@ -762,12 +762,12 @@ export class Game implements World, ItemHost {
   /** The Cassim Black Card (from the chat command): another x100, on top of the VIP card. */
   blackCard = false;
 
-  /** The Cassim Platinum Card (chat command): adds 1000x your base earnings on top of everything else. */
+  /** The Cassim Platinum Card (chat command): adds 10,000x your base earnings on top of everything else. */
   platinumCard = false;
 
   /**
    * What your cards multiply casino income by right now (only at your own casino). The VIP
-   * and black cards multiply together; the platinum card then adds 1000x the base on top.
+   * and black cards multiply together; the platinum card then adds 10,000x the base on top.
    */
   get vipMult(): number {
     if (this.site !== 'casino' || this.visit) return 1;
@@ -783,8 +783,8 @@ export class Game implements World, ItemHost {
     this.platinumCard = true;
     audio.play('jackpot');
     const now = cardMult(this.vipCard, this.blackCard, true);
-    this.addChat({ from: '', text: `🤍 Cassim Platinum Card received: +${PLATINUM_ADD}x your base earnings (x${now.toLocaleString('en-US')} in all).`, t: Date.now(), me: false, system: true });
-    this.notify(`🤍 The Cassim Platinum Card is yours! Your casino now earns ${PLATINUM_ADD}x its base income on top of what it made: x${now.toLocaleString('en-US')} in all.`, 'good');
+    this.addChat({ from: '', text: `🤍 Cassim Platinum Card received: +${PLATINUM_ADD.toLocaleString('en-US')}x your base earnings (x${now.toLocaleString('en-US')} in all).`, t: Date.now(), me: false, system: true });
+    this.notify(`🤍 The Cassim Platinum Card is yours! Your casino now earns ${PLATINUM_ADD.toLocaleString('en-US')}x its base income on top of what it made: x${now.toLocaleString('en-US')} in all.`, 'good');
     this.events.emit('vip', undefined);
     this.requestSave();
   }
@@ -5912,8 +5912,8 @@ export class Game implements World, ItemHost {
 /** The VIP card's multiplier on casino income. */
 export const VIP_MULT = 100;
 
-/** What the Cassim Platinum Card adds: 1000x your base (no-card) earnings. */
-export const PLATINUM_ADD = 1000;
+/** What the Cassim Platinum Card adds: 10,000x your base (no-card) earnings. */
+export const PLATINUM_ADD = 10_000;
 
 /** Your casino's income multiplier for the cards you hold. */
 export function cardMult(vip: boolean, black: boolean, platinum: boolean): number {
