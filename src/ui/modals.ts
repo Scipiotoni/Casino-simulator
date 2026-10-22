@@ -13,6 +13,7 @@ import { RETICLE_COLORS, RETICLE_STYLES, drawReticle } from './reticle';
 import { h, clear, icon, swatch, stars } from './dom';
 import { formatMoney, formatNumber } from '../core/math';
 import { audio } from '../core/audio';
+import { GAME_VERSION } from '../version';
 import { NEON_COLORS, SIGN_FONTS, WALL_COLORS } from '../world/building';
 import { DEPTH_STEP, MAX_WIDTH } from '../world/grid';
 import { MAX_DEPTH, MAX_DEPTH_STEPS } from '../world/city';
@@ -827,6 +828,33 @@ export class Modals {
     this.open('Fast travel', body, { cls: 'small' });
   }
 
+  /** Type a code (the same ones that work in chat) without going through the chat. */
+  openRedeem(): void {
+    const g = this.game;
+    const input = h('input', { class: 'text-input', type: 'text', maxLength: 80, placeholder: 'Type your code', 'aria-label': 'Code' }) as HTMLInputElement;
+    input.autocomplete = 'off';
+    input.setAttribute('autocapitalize', 'off');
+    input.spellcheck = false;
+    const status = h('p', { class: 'muted small', text: 'Codes work here or in the chat. Capitals and spaces don’t matter.' });
+    const go = () => {
+      if (!input.value.trim()) return;
+      if (g.redeemCode(input.value)) {
+        status.textContent = '✅ Code accepted!';
+        input.value = '';
+      } else {
+        audio.play('error');
+        status.textContent = '❌ That code doesn’t exist. Check the spelling.';
+      }
+    };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') go();
+    });
+    const body = h('div', { class: 'stack' }, input, h('button', { class: 'btn gold', text: 'Redeem', onClick: go }), status);
+    this.open('🎟 Redeem code', body, { cls: 'small' });
+    window.setTimeout(() => input.focus(), 50);
+  }
+
   openMenu(): void {
     const g = this.game;
     const st = g.settings;
@@ -854,6 +882,7 @@ export class Modals {
       h('button', { class: 'btn', text: '🏆 Leaderboard', onClick: () => openLeaderboard(g, this, this.social) }),
       h('button', { class: 'btn', text: `📅 Daily reward${g.dailyInfo().claimable ? ' •' : ''}`, onClick: () => this.openDaily() }),
       h('button', { class: 'btn', text: `🏦 Bank loan${g.loanOwed > 0 ? ` (${formatMoney(g.loanOwed)})` : ''}`, onClick: () => openLoan(g, this) }),
+      h('button', { class: 'btn', text: '🎟 Redeem code', onClick: () => this.openRedeem() }),
     ));
     body.appendChild(slider('Master volume', st.master, (v) => { st.master = v; this.onSettingsChanged?.(); }));
     body.appendChild(slider('Sound effects', st.sfx, (v) => { st.sfx = v; this.onSettingsChanged?.(); }));
@@ -882,8 +911,9 @@ export class Modals {
       }));
     }
     body.appendChild(h('div', { class: 'field row' }, h('span', { class: 'field-label', text: 'View distance' }), vd));
+    body.appendChild(h('p', { class: 'muted small', text: `Jackpot Tycoon · ${GAME_VERSION}` }));
     body.appendChild(h('p', { class: 'muted small', text: 'How far buildings, trees and street lamps are drawn in full (further out the city is simple blocks). Near is lighter on slow devices; Far looks further but costs more.' }));
-    body.appendChild(h('p', { class: 'muted small', text: 'Ult (AFK) is for leaving the game running: up to 600 guests (3× as many arrive, and far more than you have seats), everyone drawn as simple blocks, half resolution and no shadows or glow.' }));
+    body.appendChild(h('p', { class: 'muted small', text: 'For leaving the game running: Ultra Low has up to 600 guests drawn as simple blocks; Ultra AFK has up to 10,000, drawn as plain coloured posts. Both run at low resolution with no shadows or glow.' }));
     const cam = h('div', { class: 'seg' });
     for (const [id, label] of [['top', 'Top-down'], ['third', 'Third person'], ['first', 'First person']] as const) {
       cam.appendChild(h('button', {

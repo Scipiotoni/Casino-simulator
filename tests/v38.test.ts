@@ -89,12 +89,15 @@ describe('the VIP card', () => {
 });
 
 describe('the Cassim Black Card', () => {
-  it('comes from exactly "/give@s cassim black card" (any capitals, extra spaces between words)', async () => {
+  it('comes from "/give@s cassim black card" (forgiving about capitals, spaces and keyboards)', async () => {
     const { isBlackCardCommand } = await import('../src/game/game');
     expect(isBlackCardCommand('/give@s cassim black card')).toBe(true);
     expect(isBlackCardCommand('  /GIVE@S Cassim   Black Card ')).toBe(true);
-    expect(isBlackCardCommand('/give @s cassim black card')).toBe(false);
-    expect(isBlackCardCommand('give@s cassim black card')).toBe(false);
+    // Forgiving: spaces, no slash, a full stop, look-alike keyboard characters.
+    expect(isBlackCardCommand('/give @s cassim black card')).toBe(true);
+    expect(isBlackCardCommand('give@s cassim black card.')).toBe(true);
+    expect(isBlackCardCommand('／give＠s cassim black card')).toBe(true);
+    expect(isBlackCardCommand('/give@s cassim blak card')).toBe(false);
     expect(isBlackCardCommand('/give@s cassim black card please')).toBe(false);
   });
 });
@@ -104,7 +107,8 @@ describe('the Cassim Platinum Card', () => {
     const { cardMult, isPlatinumCardCommand } = await import('../src/game/game');
     expect(isPlatinumCardCommand('/give@s cassim platinum card')).toBe(true);
     expect(isPlatinumCardCommand('/GIVE@S  Cassim Platinum card ')).toBe(true);
-    expect(isPlatinumCardCommand('/give @s cassim platinum card')).toBe(false);
+    expect(isPlatinumCardCommand('/give @s cassim platinum card')).toBe(true);
+    expect(isPlatinumCardCommand('/give@s cassim gold card')).toBe(false);
     expect(cardMult(false, false, false)).toBe(1);
     expect(cardMult(false, false, true)).toBe(10_001);
     expect(cardMult(true, false, true)).toBe(10_100);

@@ -787,6 +787,18 @@ export class Game implements World, ItemHost {
     return Math.max(0, this.incomePerMin / 60) / this.vipMult;
   }
 
+  /**
+   * A code typed in chat or in Menu → Redeem code: gives its card. Returns true if it was a
+   * real code (even one you already used).
+   */
+  redeemCode(raw: string): boolean {
+    const card = codeCard(raw);
+    if (card === 'black') this.giveBlackCard();
+    else if (card === 'platinum') this.givePlatinumCard();
+    else return false;
+    return true;
+  }
+
   /** Type "/give@s cassim platinum card" in chat: the Cassim Platinum Card is yours. */
   givePlatinumCard(): void {
     if (this.platinumCard) {
@@ -4947,17 +4959,10 @@ export class Game implements World, ItemHost {
 
   /** Say something to everyone online (it also pops up over your head). */
   sendChat(raw: string): void {
-    // Chat commands stay on your side (nobody else sees them).
-    if (isBlackCardCommand(raw)) {
-      this.giveBlackCard();
-      return;
-    }
-    if (isPlatinumCardCommand(raw)) {
-      this.givePlatinumCard();
-      return;
-    }
+    // Codes and commands stay on your side (nobody else sees them).
+    if (this.redeemCode(raw)) return;
     // Anything else starting with "/" is a mistyped command: it never goes out or shows in chat.
-    if (raw.trim().startsWith('/')) {
+    if (raw.normalize('NFKC').trim().startsWith('/')) {
       audio.play('error');
       this.notify('Unknown command (nobody saw it).', 'bad');
       return;
@@ -5942,12 +5947,29 @@ export function cardMult(vip: boolean, black: boolean, platinum: boolean): numbe
 
 /** The chat command for the Cassim Platinum Card: "/give@s cassim platinum card". */
 export function isPlatinumCardCommand(text: string): boolean {
-  return text.trim().toLowerCase().replace(/\s+/g, ' ') === '/give@s cassim platinum card';
+  return codeCard(text) === 'platinum';
 }
 
-/** The chat command for the Cassim Black Card: "/give@s cassim black card" (any capitals, extra spaces between words). */
+/**
+ * A code as typed, made comparable: phone and other-language keyboards' look-alike
+ * characters (full-width ／ and ＠) folded to plain ones, capitals, spaces, invisible
+ * characters and a leading "/" ignored.
+ */
+export function normalizeCode(text: string): string {
+  return text.normalize('NFKC').toLowerCase().replace(/[\s\u200b-\u200d\u2060\ufeff]+/g, '').replace(/^\/+/, '').replace(/[.!]+$/, '');
+}
+
+/** Which card a code gives (null: not a code). */
+export function codeCard(text: string): 'black' | 'platinum' | null {
+  const c = normalizeCode(text);
+  if (c === 'give@scassimblackcard') return 'black';
+  if (c === 'give@scassimplatinumcard') return 'platinum';
+  return null;
+}
+
+/** The chat command for the Cassim Black Card: "/give@s cassim black card". */
 export function isBlackCardCommand(text: string): boolean {
-  return text.trim().toLowerCase().replace(/\s+/g, ' ') === '/give@s cassim black card';
+  return codeCard(text) === 'black';
 }
 
 /** Is this Juri Assman (any capitals, spaces or punctuation)? */
