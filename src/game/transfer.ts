@@ -78,6 +78,7 @@ export function parseImport(text: string): { save: SaveData } | { error: string 
     hotel: sanitizeHotel(r.hotel, snap.look, SIGN_FONTS.map((f) => f.id), sanitizeAppearance),
     rebirths: Math.round(num(r.rebirths, 0, 99, 0)),
     vip: r.vip === true || undefined,
+    black: r.black === true || undefined,
   };
   return { save };
 }

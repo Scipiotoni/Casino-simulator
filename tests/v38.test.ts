@@ -87,3 +87,14 @@ describe('the VIP card', () => {
     expect(isJuri('Boss')).toBe(false);
   });
 });
+
+describe('the Cassim Black Card', () => {
+  it('comes from exactly "/give@s cassim black card" (any capitals, extra spaces between words)', async () => {
+    const { isBlackCardCommand } = await import('../src/game/game');
+    expect(isBlackCardCommand('/give@s cassim black card')).toBe(true);
+    expect(isBlackCardCommand('  /GIVE@S Cassim   Black Card ')).toBe(true);
+    expect(isBlackCardCommand('/give @s cassim black card')).toBe(false);
+    expect(isBlackCardCommand('give@s cassim black card')).toBe(false);
+    expect(isBlackCardCommand('/give@s cassim black card please')).toBe(false);
+  });
+});

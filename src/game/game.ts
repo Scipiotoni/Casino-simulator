@@ -641,6 +641,7 @@ export class Game implements World, ItemHost {
     this.hotelAcc = 0;
     this.rebirths = 0;
     this.vipCard = false;
+    this.blackCard = false;
     this.events.emit('vip', undefined);
     this.house = null;
     this.guns = emptyGuns();
@@ -757,9 +758,27 @@ export class Game implements World, ItemHost {
   vipCard = false;
   private vipCheckT = 0;
 
-  /** What the VIP card multiplies casino income by right now (only at your own casino). */
+  /** The Cassim Black Card (from the chat command): another x100, on top of the VIP card. */
+  blackCard = false;
+
+  /** What your cards multiply casino income by right now (only at your own casino; they stack). */
   get vipMult(): number {
-    return this.vipCard && this.site === 'casino' && !this.visit ? VIP_MULT : 1;
+    if (this.site !== 'casino' || this.visit) return 1;
+    return (this.vipCard ? VIP_MULT : 1) * (this.blackCard ? VIP_MULT : 1);
+  }
+
+  /** Type "/give@s cassim black card" in chat: the Cassim Black Card is yours. */
+  giveBlackCard(): void {
+    if (this.blackCard) {
+      this.addChat({ from: '', text: 'You already have the Cassim Black Card.', t: Date.now(), me: false, system: true });
+      return;
+    }
+    this.blackCard = true;
+    audio.play('jackpot');
+    this.addChat({ from: '', text: `🖤 Cassim Black Card received: your casino earns x${VIP_MULT}${this.vipCard ? ` more (x${VIP_MULT * VIP_MULT} with your VIP card)` : ''}.`, t: Date.now(), me: false, system: true });
+    this.notify(`🖤 The Cassim Black Card is yours! Everything your casino earns is worth x${VIP_MULT}${this.vipCard ? ` more: x${VIP_MULT * VIP_MULT} with the VIP card` : ''}.`, 'good');
+    this.events.emit('vip', undefined);
+    this.requestSave();
   }
 
   /** Take the VIP card (from its case at Fort Mojave, or Juri's free one). */
@@ -808,8 +827,10 @@ export class Game implements World, ItemHost {
     const guns = { owned: [...this.guns.owned], equipped: this.guns.equipped, slots: [...this.guns.slots], mods: { ...this.guns.mods } };
     this.newGame({ name: this.building.look.name, look: { ...this.building.look }, player: { ...this.player.appearance }, playerName: this.player.name });
     const vip = this.vipCard;
+    const black = this.blackCard;
     this.rebirths = n;
     this.vipCard = vip;
+    this.blackCard = black;
     this.base.vipOwned = vip;
     this.stats = stats;
     this.cosmetics = cos;
@@ -4888,6 +4909,11 @@ export class Game implements World, ItemHost {
 
   /** Say something to everyone online (it also pops up over your head). */
   sendChat(raw: string): void {
+    // Chat commands stay on your side (nobody else sees them).
+    if (isBlackCardCommand(raw)) {
+      this.giveBlackCard();
+      return;
+    }
     const text = cleanChat(raw);
     if (!text) return;
     const now = Date.now();
@@ -5644,6 +5670,7 @@ export class Game implements World, ItemHost {
         hotel: this.hotelSave(),
         rebirths: this.rebirths,
         vip: this.vipCard || undefined,
+        black: this.blackCard || undefined,
         net: JSON.parse(JSON.stringify(this.net)) as NetState,
         rival: { ...this.rival },
         savedAt: Date.now(),
@@ -5669,6 +5696,7 @@ export class Game implements World, ItemHost {
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
         rebirths: this.rebirths,
         vip: this.vipCard || undefined,
+        black: this.blackCard || undefined,
         net: JSON.parse(JSON.stringify(this.net)) as NetState,
         savedAt: Date.now(),
       };
@@ -5710,6 +5738,7 @@ export class Game implements World, ItemHost {
         garage: { owned: [...this.garage.owned], colors: { ...this.garage.colors }, mods: JSON.parse(JSON.stringify(this.garage.mods)) },
       rebirths: this.rebirths,
       vip: this.vipCard || undefined,
+      black: this.blackCard || undefined,
       net: JSON.parse(JSON.stringify(this.net)) as NetState,
       savedAt: Date.now(),
     };
@@ -5760,6 +5789,7 @@ export class Game implements World, ItemHost {
     this.vaultOpen = false;
     this.rebirths = Math.max(0, Math.min(99, Math.round(Number(s.rebirths) || 0)));
     this.vipCard = s.vip === true;
+    this.blackCard = s.black === true;
     this.base.vipOwned = this.vipCard;
     this.events.emit('vip', undefined);
     this.applyCosmetics();
@@ -5849,6 +5879,11 @@ export class Game implements World, ItemHost {
 
 /** The VIP card's multiplier on casino income. */
 export const VIP_MULT = 100;
+
+/** The chat command for the Cassim Black Card: "/give@s cassim black card" (any capitals, extra spaces between words). */
+export function isBlackCardCommand(text: string): boolean {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ') === '/give@s cassim black card';
+}
 
 /** Is this Juri Assman (any capitals, spaces or punctuation)? */
 export function isJuri(name: string): boolean {
